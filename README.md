@@ -39,13 +39,58 @@ Full write-up, with numbers: [`docs/adr/0001-lecture-pipeline.md`](docs/adr/0001
 
 ## Status
 
-Design stage. ADR-0001 accepted; implementation tracked in [#1](https://github.com/nicklin11/glimpse/issues/1).
+Implementation stage. ADR-0001 accepted; the pipeline is tracked in
+[#3](https://github.com/nicklin11/glimpse/issues/3) with one sub-issue per stage.
+
+| Stage | Status |
+|---|---|
+| 0 `doctor` | **done** — [`#4`](https://github.com/nicklin11/glimpse/issues/4) |
+| 2-3 `audio` + `stt` | open, [`#5`](https://github.com/nicklin11/glimpse/issues/5) |
+| 4 `frames` | open, [`#7`](https://github.com/nicklin11/glimpse/issues/7) |
+| 5 `quality` | open, [`#9`](https://github.com/nicklin11/glimpse/issues/9) |
+| 6 `captions` | open, [`#10`](https://github.com/nicklin11/glimpse/issues/10) |
+| 8 `lint` | open, [`#6`](https://github.com/nicklin11/glimpse/issues/6) |
+| 9 `audit` | open, [`#11`](https://github.com/nicklin11/glimpse/issues/11) |
+| 11 `link` | open, [`#8`](https://github.com/nicklin11/glimpse/issues/8) |
+
+`glimpse doctor` works. `glimpse process` and `glimpse audit` exist as
+subcommands but exit 1 with a pointer to their tracking issue — they are not
+silently absent, and not falsely present.
+
+### Exit codes
+
+The exit-code table in ADR-0001 is a contract, and `src/glimpse/exitcodes.py` is
+its single source of truth so the document and the binary cannot drift:
+
+| Code | Meaning |
+|---|---|
+| 0 | success; all artefacts written and verified on disk |
+| 1 | usage error, including a subcommand not implemented in this build |
+| 2 | missing dependency — named, with a remediation line |
+| 3 | dependency present but failed — its stderr reproduced **verbatim** |
+| 4 | quality gate failed — note written, report says why |
+| 5 | audit found errors above threshold — note written and flagged |
 
 ## Dependencies
 
 `ffmpeg` / `ffprobe`, [`shipboard`](https://github.com/nicklin11/shipboard) (which
 brings whisper.cpp), and a model gateway for the vision and audit stages. Run
 `glimpse doctor` to check.
+
+Two failure modes are kept apart on purpose: *not installed* (exit 2, with a
+remediation line) and *installed but broken* (exit 3, with its own stderr
+reproduced verbatim). Collapsing them into one "not working" state would lose
+exactly the information a user needs — whether to install something or fix
+something.
+
+The vault location defaults to `~/Documents/obs_notes` and the model gateway is
+unconfigured by default. Override with `GLIMPSE_VAULT` and `GLIMPSE_GATEWAY_URL`.
+
+## Install
+
+```sh
+pipx install -e ~/Coding/glimpse
+```
 
 ## Privacy
 
