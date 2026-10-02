@@ -1,0 +1,23 @@
+# build / packaging
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# venvs
+.venv/
+venv/
+
+# test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# artefacts must never live in this repository (ADR-0001 D9).
+# Transcripts, frames and audit reports belong in the vault.
+frames/
+*.webm
+*.mp4
+*.opus
+*.wav
