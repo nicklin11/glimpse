@@ -1,12 +1,12 @@
-# snitchin
+# glimpse
 
 One command turns a lecture recording into a readable, **independently audited**
 Markdown note.
 
 ```
-snitchin process ~/Videos/lectures/.../1_lecture_OCS.webm
-snitchin audit note.md        # audit a note that already exists
-snitchin doctor               # what is missing, what is broken
+glimpse process ~/Videos/lectures/.../1_lecture_OCS.webm
+glimpse audit note.md        # audit a note that already exists
+glimpse doctor               # what is missing, what is broken
 ```
 
 ## What it does
@@ -39,13 +39,13 @@ Full write-up, with numbers: [`docs/adr/0001-lecture-pipeline.md`](docs/adr/0001
 
 ## Status
 
-Design stage. ADR-0001 accepted; implementation tracked in [#1](https://github.com/nicklin11/snitchin/issues/1).
+Design stage. ADR-0001 accepted; implementation tracked in [#1](https://github.com/nicklin11/glimpse/issues/1).
 
 ## Dependencies
 
 `ffmpeg` / `ffprobe`, [`shipboard`](https://github.com/nicklin11/shipboard) (which
 brings whisper.cpp), and a model gateway for the vision and audit stages. Run
-`snitchin doctor` to check.
+`glimpse doctor` to check.
 
 ## Privacy
 

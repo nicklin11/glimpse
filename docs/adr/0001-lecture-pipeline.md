@@ -32,12 +32,12 @@ The pipeline therefore needs two properties that pull in opposite directions:
 
 ### D1 — The name carries no meaning; the interface does
 
-The package is `snitchin`. The subcommand surface carries the meaning:
+The package is `glimpse`. The subcommand surface carries the meaning:
 
 ```
-snitchin process <video|audio>   # full pipeline
-snitchin audit <note.md>        # audit an existing note
-snitchin doctor                 # report missing/conflicting dependencies
+glimpse process <video|audio>   # full pipeline
+glimpse audit <note.md>         # audit an existing note
+glimpse doctor                  # report missing/conflicting dependencies
 ```
 
 Rationale: a CLI binary name cannot teach another agent what a tool does. `--help`,
@@ -45,15 +45,31 @@ the repository description and the skill description can. Names containing `ai`,
 `auto` or `smart` were rejected — they make a promise that cannot be verified before
 running the tool, and they go stale when the backing model changes.
 
-### D2 — snitchin depends on `shipboard`, and does not reimplement STT
+**Amendment 2026-10-02 — renamed `glimpse` → `glimpse`.** The rule above is unchanged;
+only the name is. Recorded because this section previously named `glimpse` as the
+choice, and an ADR that names a different package than the repository ships is a
+document that actively misleads.
+
+Two honest notes on the new name:
+
+- It sits closer to the line the rule draws than `glimpse` did. A "glimpse" suggests
+  a partial view, and this tool produces a complete, audited note. The mitigation is
+  the same one that always applied: the description, `--help` and the skill text
+  carry the meaning, and they are what another agent reads first.
+- `glimpse` is **taken on PyPI** ("Hierarchical visual models in C++ and Python").
+  That is irrelevant for a `pipx install` from git, and only becomes a problem if
+  the package is ever published under that name. Recorded now so the collision is not
+  rediscovered later.
+
+### D2 — glimpse depends on `shipboard`, and does not reimplement STT
 
 STT is delegated: `shipboard process PATH` already transcribes an existing file to
 stdout. whisper.cpp runs **CPU-only by design**, which keeps roughly 1.5 GiB of VRAM
-free for llama-swap. A second STT stack inside snitchin would duplicate that
+free for llama-swap. A second STT stack inside glimpse would duplicate that
 configuration and silently compete for the same resources.
 
-**Error propagation is part of the contract.** snitchin captures shipboard's stderr
-and surfaces it verbatim. If `shipboard` is absent, `snitchin doctor` says so with a
+**Error propagation is part of the contract.** glimpse captures shipboard's stderr
+and surfaces it verbatim. If `shipboard` is absent, `glimpse doctor` says so with a
 remediation line; `process` refuses to start rather than silently degrading. A tool
 that swallows its dependency's errors is worse than no tool, because the failure
 looks like success.
@@ -161,7 +177,7 @@ participant name, a personal IP or a hostname.
 ## The pipeline
 
 ```
-snitchin process ~/Videos/lectures/.../1_lecture_OCS.webm
+glimpse process ~/Videos/lectures/.../1_lecture_OCS.webm
 
   0  doctor      verify ffmpeg/ffprobe, shipboard, gateway reachability, vault
   1  probe       ffprobe: streams, duration, codecs -> decide audio-only or not
