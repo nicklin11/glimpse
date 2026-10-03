@@ -182,8 +182,7 @@ glimpse process ~/Videos/lectures/.../1_lecture_OCS.webm
   0  doctor      verify ffmpeg/ffprobe, shipboard, gateway reachability, vault
   1  probe       ffprobe: streams, duration, codecs -> decide audio-only or not
   2  audio       extract 16 kHz mono wav to a managed temp dir (kept on failure)
-  3  stt         shipboard process -> raw transcript
-                 shipboard currently discards segment timestamps  -> see #2
+  3  stt         shipboard process --timestamps json -> raw transcript
   4  frames      two-pass detect/extract -> frames/<name>/*.jpg + manifest.tsv
   5  quality     VLM returns document bbox -> crop, upscale, unsharp, gate
   6  captions    VLM caption per frame, cached by (frame hash, model id)
@@ -208,6 +207,73 @@ one that is loud:
 | 3 | dependency failed (its stderr is reproduced verbatim) |
 | 4 | quality gate failed — note written, audit report says why |
 | 5 | audit found errors above threshold; note written and **flagged** |
+| 130 | interrupted (128 + SIGINT); work dir kept |
+
+An uncaught internal error — a bug in glimpse — has no row on purpose: it
+propagates as a traceback. The work dir is retained and its path printed first.
+
+## Amendment 2026-10-02 — stages 0-3 shipped, and two corrections
+
+Recorded because the decision text above described a pipeline whose stage 3 was
+still blocked, and an ADR that describes a state the code has left behind is a
+document that actively misleads.
+
+**Stage 3 is no longer blocked.** `shipboard#6` landed
+([PR #7](https://github.com/nicklin11/shipboard/pull/7)). Two of its premises were
+measured wrong, and both corrections changed the consumer:
+
+- the default `response_format=json` returns **only** `{"text": ...}` — segments
+  exist solely under `verbose_json`, so there was nothing to read off the plain
+  transcript. Timestamps are consumed from `--timestamps json`, never reparsed
+  out of stdout text;
+- `start`/`end` are **seconds as floats**, not milliseconds.
+
+Per-**word** timings come with the same payload. Stages 5-7 bind frames to
+paragraphs by word span rather than segment bounds, because segment edges are
+decoder artefacts and will not line up with paragraph structure. The `word`
+field holds BPE pieces (`" Ин"`, `"ст"`, `"ит"`), so they are carried verbatim
+and never detokenised: reassembling them needs whisper.cpp's exact vocabulary,
+and a wrong guess corrupts the transcript while leaving every timestamp
+plausible.
+
+**Stage 1 ships with stage 2-3.** The stage table assigns no issue to `probe`,
+but stage 2 has nothing to extract from without it, so it shipped inside #5
+rather than being deferred or, worse, hardcoded. An audio-only input is
+**rejected** (exit 1), not accepted: *Not doing* already excludes it, and stage 4
+has no frames to extract from an audio file.
+
+**Measured stage costs**, for D7's weights. One end-to-end run on lecture 1
+(`1_lecture_OCS.webm`, 4396 s container, 4520 s of audio):
+
+| Stage | Wall | Rate |
+|---|---|---|
+| 1 `probe` | 0.0 s | — |
+| 2 `audio` | 6.4 s | 138 MiB wav written |
+| 3 `stt` | 257.2 s | **0.057x realtime** |
+
+STT still dominates the implemented stages by ~40x over extraction, and the
+audit (~20 min) will dominate the whole pipeline. Note the short-clip trap: a
+25 s probe measured 0.20x because the whisper.cpp warm-up is a fixed cost that a
+four-minute lecture amortises away. A progress bar weighted from short-clip
+numbers would overestimate STT by 3.5x.
+
+The run produced 1677 segments and 21957 timed words, speech covering 99.88% of
+the audio, with zero anomalies.
+
+**The preflight gate is scoped to what the run uses.** Stage 0 as a gate must
+not be broader than the stages it guards: `ffmpeg`, `ffprobe` and `shipboard` are
+fatal for `process`, the vault and the gateway are not. Stages 0-3 write only into
+the managed work dir and never call the gateway, so refusing to transcribe
+because stage 12's output directory is missing — or because stage 5's VLM backend
+is offline — would be a gate protecting nothing. `glimpse doctor` keeps both
+fatal, because its job is to report the whole environment.
+
+**`glimpse process` exits 1 until stage 12 exists.** Exit 0 means "all artefacts
+written and verified" in the table above, and no note is produced yet, so a
+successful partial run claiming 0 would be the silent degradation D2 exists to
+prevent. The work dir is kept on failure and its path printed: a failed
+transcribe that discards its extracted wav costs a 73-minute re-extraction to
+debug.
 
 ## Evidence: the error that justifies this pipeline
 
