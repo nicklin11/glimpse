@@ -58,7 +58,11 @@ def _doctor(_args: argparse.Namespace) -> int:
     print("", file=sys.stderr)
     for c in failed:
         print(f"glimpse: missing or broken dependency: {c.name}", file=sys.stderr)
-        if c.code == ec.MISSING_DEPENDENCY:
+        # The remediation is printed for *every* failure, not only for exit 2. It used to
+        # be gated on MISSING_DEPENDENCY, which meant a dependency that is installed and
+        # unreachable -- the case an endpoint backend introduces -- was named and then
+        # abandoned with no indication of what to do about it.
+        if c.remediation:
             print(f"glimpse:   remediation: {c.remediation}", file=sys.stderr)
         # D2: the dependency's own stderr, reproduced verbatim.
         if c.stderr:
