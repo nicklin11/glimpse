@@ -2,37 +2,52 @@
 
 Turns a lecture recording into a structured, **independently audited** Markdown note.
 
-No third-party Python packages. Python's standard library plus `ffmpeg`.
+One dependency (`numpy`, for the sharpness gate), plus `ffmpeg` and a transcription backend.
 
 ```
 glimpse process lecture.webm
 glimpse doctor
 ```
 
-## Status: stages 0-4 only
+## Status: all 12 stages built, one gap that needs an endpoint
 
-`glimpse process` **exits 1** until the remaining stages are built. Stages 1-4 run and
-produce artefacts; stages 5-12 do not exist yet. This is deliberate — the exit code
-distinguishes "failed" from "not built", and no stage is stubbed to look finished.
+`glimpse process` runs end to end. Exit 0 is conditional on three things, all of which are
+checked rather than assumed: every stage ran, every artefact it claimed is on disk (stage 12
+stats the filesystem — an exit code is a claim by the stage that would have failed), and a
+model actually wrote the note.
 
 | stage | does | state |
 |---|---|---|
 | 0 | `doctor`: report what is missing and what to do | works |
 | 1 | probe the recording | works |
 | 2 | extract 16 kHz mono audio | works |
-| 3 | transcribe, with word-level timings | works |
+| 3 | transcribe, with word-level timings | works — 0.070x realtime on 4520 s |
 | 4 | extract distinct on-screen frames | works |
-| 5 | read frames with a vision model | not built |
-| 6 | synthesise the note | not built |
-| 7 | link terminology across lectures | not built |
-| 8 | check every formula mechanically | not built |
-| 9 | audit in a separate model context | not built |
-| 10 | repair what the audit found | not built |
-| 11 | link references | not built |
-| 12 | final report | not built |
+| 5 | document-bbox crop, upscale, unsharp, sharpness gate | works |
+| 6 | align frames to transcript words | works |
+| 6 | **caption frames with a vision model** | **not built** — no vision client exists |
+| 7 | synthesise the note | works; falls back to a template without an endpoint |
+| 8 | check every formula mechanically | works |
+| 9 | audit in a separate model context | tier 1 works; tier 2 needs an endpoint |
+| 10 | repair what the audit found, mechanically only | works |
+| 11 | link terminology across lectures | works |
+| 12 | verify the bundle, then report | works |
 
-What you get today is a transcript with word timings and a set of frames, in an output
-directory. Not a note. This section says so rather than a screenshot implying otherwise.
+Two honest limits, neither of which is a stub dressed up as finished:
+
+- **Stage 6 has no vision client.** Alignment and frame-to-word binding work and are
+  exercised; the captioning call itself does not exist. The run reports
+  `captioning is NOT_CONFIGURED`.
+- **No model endpoint means no synthesis and no tier-2 audit.** Without one, stage 7 emits a
+  template skeleton and the process exits **1** rather than reporting a note nobody reviewed.
+  A template has eight headings and no synthesis behind it, and calling that success is the
+  silent-degradation failure the design is written against.
+
+### Verified on a real lecture
+
+`1_lecture_OCS.mp4`, AV1 1080p, 4520 s of audio, all twelve stages, this host. The run is in
+the 2026-10-04 amendment of ADR-0001, including the three defects it found in the code that
+produced it.
 
 ## Install
 
@@ -55,6 +70,17 @@ broken: `pipx install -e` resolves dependencies once, so a later change to
 python -m zipapp src -m glimpse.cli:main -o glimpse -p "/usr/bin/env python3"
 ./glimpse doctor
 ```
+
+**This works only if `python3` already has numpy importable.** `zipapp` archives a source
+tree; it does not install anything, and `src/` contains no numpy. The command above was
+verified on this host, where the system Python happens to have numpy 2.5.3 — the archive's
+shebang resolves `import numpy` against system site-packages. On a machine without it, stage 5
+dies at import while `--help` still works, because `--help` never reaches the gate.
+
+For an archive that stands alone, vendor the dependency in first (install numpy into a
+throwaway prefix, copy it into the tree, then zip) — which is the actual cost of the
+dependency, and the reason ADR-0002 records the import set as a constraint on the zipapp
+build rather than an incidental detail.
 
 ## Configure transcription
 
