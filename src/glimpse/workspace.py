@@ -70,9 +70,15 @@ class WorkDir:
         return True
 
     def note(self) -> str:
-        """One line describing where the artefacts are, or that they are gone."""
+        """One line describing where the artefacts are, or that the scratch is gone.
+
+        This deliberately does not claim the run succeeded. Retention is decided when the
+        pipeline finishes, before the exit code is: a degraded run removes its scratch
+        just as a clean one does, and the first version of this line printed "run
+        succeeded" next to exit 1 because the directory happened to be gone.
+        """
         if not self.retained:
-            return "work dir removed (run succeeded)"
+            return "work dir removed (scratch; the bundle holds the artefacts)"
         suffix = f" -- {self.retained_reason}" if self.retained_reason else ""
         return f"work dir KEPT for inspection: {self.path}{suffix}"
 

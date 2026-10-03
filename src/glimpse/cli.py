@@ -26,17 +26,6 @@ PENDING: dict[str, str] = {
     "does run as part of `process`",
 }
 
-# `process` exits non-zero even on a run where every stage succeeded, because the note is
-# not finished: D5 makes a note that has not been linked into the vault conditional, not
-# published. A note on disk that nothing has read is the failure this exit code exists for.
-# The code itself is decided at the end of `_process`: exit 5 when the audit found errors,
-# otherwise 1. So this message must not name a code -- it would be wrong half the time.
-PROCESS_INCOMPLETE = (
-    f"stages 0-{glp.IMPLEMENTED} completed; {glp.REMAINING_NOTE}. "
-    "The note is written, linted, audited and repaired, but has not been linked into the "
-    "vault or reported -- not a finished product."
-)
-
 
 def _render(checks: list[Check]) -> None:
     width = max((len(c.name) for c in checks), default=4)
@@ -123,19 +112,17 @@ def _pending(name: str) -> int:
 
 
 def _process(args: argparse.Namespace) -> int:
-    """Stages 1-10: probe -> audio -> stt -> frames -> quality -> caption -> synth -> lint
-    -> audit -> repair.
+    """Stages 1-12: probe -> audio -> stt -> frames -> quality -> caption -> synth -> lint
+    -> audit -> repair -> link -> report.
 
-    Never exits 0 while stages 11-12 are unbuilt. Exit 0 in ADR-0001 means "all
-    artefacts written and verified", and a note that no human or machine has read
-    is not that, so claiming success would be the exact silent-degradation failure
-    D2 is written against. This follows the precedent stage 0 set: invoking what
-    this build cannot do is a usage error.
+    Exits 0 only when stage 12 has stat'd the filesystem and found every artefact it
+    claimed. Exit 0 in ADR-0001 means "all artefacts written and verified", and the
+    second half of that is the half every pipeline before this one skipped: D3 records a
+    run that produced zero frames and exited successfully, because ffmpeg wrote an empty
+    file and exited 0.
 
-    The non-zero code is not fixed at 1. `AUDIT_FINDINGS` (5) takes precedence when
-    the audit produced error-tier findings, because 1 would read as "the run was
-    incomplete" and hide that the note exists and is wrong. Both messages are
-    printed either way; only the code disambiguates.
+    The precedence is 5 (errors in the note) > 4 (soft frames) > 1 (could not verify) >
+    0, and every message is printed regardless of which code comes out.
     """
     if not args.path:
         print("glimpse: process needs a recording to work on.", file=sys.stderr)
@@ -263,7 +250,6 @@ def _process(args: argparse.Namespace) -> int:
             "the rest, by name, in repair/repair.json",
             file=sys.stderr,
         )
-    print(f"glimpse: {PROCESS_INCOMPLETE}")
     print(f"glimpse: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing
     # the reader at files that release() just deleted is worse than saying
@@ -271,7 +257,48 @@ def _process(args: argparse.Namespace) -> int:
     if work.retained:
         for name in sorted(p.name for p in work.path.iterdir()):
             print(f"glimpse:   {work.path / name}")
-    return ec.AUDIT_FINDINGS if audit_errors else ec.USAGE
+
+    # Exit code precedence, and why it is this order.
+    #
+    #   5 -- the note exists and contains errors. This is the most specific statement
+    #        about the deliverable, so it outranks the others. When the quality gate also
+    #        failed, 5 still wins: the reader is told the note has errors AND, above, that
+    #        the frames were soft. Reporting 4 alone would hide the note's own verdict.
+    #   4 -- a content frame was soft. The note exists; its inputs were not.
+    #   1 -- the pipeline could not finish, could not verify what it produced, or produced
+    #        a note no model ever wrote. This is D3's point: a stage that exits 0 having
+    #        written nothing -- or having written a template and calling it synthesis --
+    #        has lied, and the only defence is that something measured the output instead
+    #        of trusting it.
+    #   0 -- every stage ran, every artefact is on disk, and the note was actually
+    #        synthesised.
+    if audit_errors:
+        return ec.AUDIT_FINDINGS
+    if not result.quality.ok:
+        return ec.QUALITY_GATE_FAILED
+    if result.note.degraded:
+        for warning in result.note.notes:
+            print(f"glimpse: synthesis: {warning}", file=sys.stderr)
+        print(
+            f"glimpse: the note was produced by '{result.note.synthesizer}', not by a "
+            f"model. Set GLIMPSE_LLM_ENDPOINT and re-run for a synthesised note.",
+            file=sys.stderr,
+        )
+        return ec.USAGE
+    if not result.report.ok:
+        for entry in result.report.missing:
+            print(
+                f"glimpse: MISSING {entry['artefact']} ({entry['detail']}): {entry['why']}",
+                file=sys.stderr,
+            )
+        print(
+            "glimpse:   this is D3: stages above reported success, and the filesystem "
+            "disagrees. Not exiting 0.",
+            file=sys.stderr,
+        )
+        return ec.USAGE
+    print(f"glimpse: all stages complete; artefacts verified in {result.bundle.root}")
+    return ec.OK
 
 
 def _audit(_args: argparse.Namespace) -> int:
@@ -353,9 +380,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="glimpse",
         description="Turn a lecture recording into a structured, audited Markdown note. "
-        f"Stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} are implemented; process exits "
-        f"non-zero until the rest are ({ec.AUDIT_FINDINGS} if the audit found errors, "
-        f"otherwise {ec.USAGE}), rather than pretending.",
+        f"Stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} are implemented. process exits 0 "
+        f"only when stage 12 has verified the artefacts on disk: {ec.AUDIT_FINDINGS} if "
+        f"the audit found errors, {ec.QUALITY_GATE_FAILED} if frames were soft, "
+        f"{ec.DEPENDENCY_FAILED} if a tool failed, {ec.USAGE} if it could not verify.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -370,9 +398,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_process = sub.add_parser(
         "process",
         help="run the pipeline on a recording",
-        description="Transcribe, extract frames, synthesise, audit, link. "
-        f"Stages 0-{glp.IMPLEMENTED} are implemented; the rest are tracked "
-        "in #3, and this exits 1 until they are.",
+        description="Transcribe, extract frames, synthesise, audit, link, report. "
+        f"Stages 0-{glp.IMPLEMENTED} are all implemented. Exits 0 only when the "
+        "bundle it wrote has been verified on disk.",
     )
     p_process.add_argument("path", nargs="?", help="video or audio file")
     p_process.add_argument(

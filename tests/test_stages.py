@@ -48,6 +48,7 @@ from glimpse import synth as glsy  # noqa: E402
 from glimpse import lint as glln  # noqa: E402
 from glimpse import audit as glau  # noqa: E402
 from glimpse import link as gllk  # noqa: E402
+from glimpse import report as glro  # noqa: E402
 from glimpse import repair as glrep  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
@@ -994,6 +995,13 @@ def fake_pipeline(source, work, **kw):
         # SimpleNamespace stand-in would let a broken audit pass every test here.
         audit=glau.Report(),
         repair=glrep.Report(),
+        link=gllk.Report(),
+        # A synthesised note, not a template: exit 0 is conditional on this being False,
+        # so a stand-in without the attribute would crash rather than assert.
+        note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
+        # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
+        # failure rather than a flag: that is the D3 case stage 12 exists for.
+        report=glro.Report(),
     )
 
 
@@ -1004,18 +1012,44 @@ out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["process", str(src)])
 text = out.getvalue()
-check("a partial run does NOT exit 0", rc == ec.USAGE, f"rc={rc}")
-# The note IS written now -- stage 7 produces it. What is missing is the audit, so the
-# message changed from "no note was written" to "unaudited". Asserting the old wording
-# would have kept a claim that stopped being true a stage ago.
-check("a partial run says what is still missing", "linked into the vault" in text, text)
 check(
-    "and does not claim no note was written",
-    "No note was written" not in text,
-    "the note exists now; saying otherwise is false",
+    # With every stage built, a run whose artefacts verified DOES exit 0. This is the
+    # assertion the old contract could not make: "a partial run does NOT exit 0" passed
+    # for the entire history of this file and would have kept passing forever.
+    "a run whose artefacts verified exits 0",
+    rc == ec.OK,
+    f"rc={rc}\n{text}",
 )
-check("a partial run names the unbuilt stage", "stage 12" in text, text)
-check("a partial run names the tracking issue", "#19" in text, text)
+check("and it says where the artefacts are", "verified" in text, text)
+
+
+# D3, which is what exit 0 is now conditional on. Every stage above reports success; this
+# is the case where the filesystem disagrees, and the code must not be 0.
+def unverified_pipeline(source, work, **kw):
+    result = fake_pipeline(source, work, **kw)
+    result.report.missing.append(
+        {"artefact": "note", "why": "the deliverable itself", "detail": "missing"}
+    )
+    return result
+
+
+glp.run = unverified_pipeline
+uout = io.StringIO()
+with redirect_stdout(uout), redirect_stderr(uout):
+    rc_unverified = glc.main(["process", str(src)])
+check(
+    "a run whose artefacts did NOT verify does NOT exit 0",
+    rc_unverified == ec.USAGE,
+    f"rc={rc_unverified}",
+)
+check(
+    "and it names what was missing",
+    "MISSING note" in uout.getvalue(),
+    uout.getvalue(),
+)
+glp.run = fake_pipeline
+rc_ok_again = glc.main(["process", str(src)])
+check("and it is recoverable, not latched", rc_ok_again == ec.OK, f"rc={rc_ok_again}")
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
 # and is not one. Asserted per-artefact: the bare word "transcript" also occurs
@@ -1173,7 +1207,13 @@ out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 after = len(list(work_root.glob("glimpse-*")))
-check("a dead gateway does NOT block stages 0-3", rc == ec.USAGE, f"rc={rc}")
+check(
+    # A dead gateway costs the vision stages, not the run. It must not turn a verified
+    # pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
+    "a dead gateway does NOT block the run",
+    rc == ec.OK,
+    f"rc={rc}",
+)
 check(
     "a missing vault does NOT block stages 0-3",
     "refusing to start" not in out.getvalue(),
@@ -3670,7 +3710,13 @@ rc5 = glc.main(["process", str(probe_src)])
 check("an error-tier finding exits 5, not 1", rc5 == ec.AUDIT_FINDINGS, f"rc={rc5}")
 glp.run = fake_pipeline
 rc1 = glc.main(["process", str(probe_src)])
-check("a clean audit still exits 1, because stage 12 is unbuilt", rc1 == ec.USAGE, f"rc={rc1}")
+check(
+    # The counterpart to the exit-5 assertion above: a clean audit on a verified run
+    # now exits 0, because stage 12 exists and every artefact is on disk.
+    "a clean audit on a verified run exits 0",
+    rc1 == ec.OK,
+    f"rc={rc1}",
+)
 
 # --- 17. stage 11: link --------------------------------------------------------------
 # Ported from ~/.local/bin/mscs-termlink. The two load-bearing properties are idempotence
@@ -3829,6 +3875,234 @@ check(
     "dry-run says what it would do and leaves the file alone",
     "dry run" in cbuf.getvalue() and excl.read_text(encoding="utf-8") == "MPC",
     cbuf.getvalue(),
+)
+
+# --- 18. stage 12: report — verify, do not trust -------------------------------------
+# D3's run: every stage exited 0, ffmpeg wrote an empty file, and the pipeline called it
+# success. These tests build that situation and require the code to refuse it.
+bdir = tmp / "report-bundle"
+
+
+def fill_bundle(with_note=True, frame_count=0, manifest_rows=0, zero_byte=()):
+    bdir.mkdir(parents=True, exist_ok=True)
+    for name in glro.REQUIRED:
+        if name == "note" and not with_note:
+            continue
+        # The key for the note is "note"; the file on disk is note.md. Writing the key
+        # verbatim produced a file literally named "note" and three spurious failures.
+        (bdir / ("note.md" if name == "note" else name)).write_text(
+            "" if name in zero_byte else "x", encoding="utf-8"
+        )
+    # Frames live in images/ as .png, and the quality gate writes enhanced .jpg copies
+    # beside them named <frame>_q.jpg -- one per frame that passed. The first version of
+    # count_frames globbed "*.jpg" in the bundle root and reported 0 frames on a bundle
+    # holding 16 correct ones; it would also have counted the derivatives had it matched.
+    images = bdir / "images"
+    images.mkdir(exist_ok=True)
+    for index in range(frame_count):
+        (images / f"f_{index:010d}.png").write_bytes(b"\x89PNG\r\n")
+        (images / f"f_{index:010d}_q.jpg").write_bytes(b"\xff\xd8\xff")
+    rows = ["pts_ms\ttime\tfile"]
+    rows += [f"{i * 1000}\t00:00:{i:02d}.00\tf_{i:010d}.png" for i in range(manifest_rows)]
+    (bdir / "manifest.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def run_report(stream=None):
+    return glro.run(
+        bdir,
+        final_note=bdir / "note.md",
+        synth_note=bdir / "note.synth.md",
+        artefacts={name: bdir / name for name in glro.REQUIRED},
+        stream=stream or io.StringIO(),
+    )
+
+
+shutil.rmtree(bdir, ignore_errors=True)
+fill_bundle(frame_count=18, manifest_rows=18)
+good = run_report()
+check("a complete bundle verifies", good.ok, good.summary())
+check("and it names what it verified", len(good.verified) == len(glro.REQUIRED), str(good.verified))
+check(
+    "and the frame count agrees",
+    (good.frames_found, good.frames_expected) == (18, 18),
+    good.summary(),
+)
+
+# A missing frame whose enhanced _q copy is still present is still a missing frame. This is
+# what a glob hides: the directory holds 18 files either way, but one of them is the
+# derivative rather than the frame.
+(bdir / "images" / "f_0000000007.png").unlink()
+orphan = run_report()
+check(
+    "a frame deleted while its enhanced copy remains is still counted as missing",
+    (orphan.frames_found, orphan.frames_expected) == (17, 18) and not orphan.ok,
+    f"{orphan.frames_found}/{orphan.frames_expected} ok={orphan.ok}",
+)
+(bdir / "images" / "f_0000000007.png").write_bytes(b"\x89PNG\r\n")
+check("and restoring it restores verification", run_report().ok, "not restored")
+check(
+    "every required entry states why it is required",
+    all(e["why"] for e in good.verified),
+    str(good.verified[:1]),
+)
+
+# The D3 case: the manifest says 18, the filesystem has 17. Every earlier stage exits 0.
+shutil.rmtree(bdir, ignore_errors=True)
+fill_bundle(frame_count=17, manifest_rows=18)
+short = run_report()
+check("a frame count that disagrees with the manifest is NOT ok", not short.ok, short.summary())
+check(
+    "and the disagreement is visible in the numbers",
+    (short.frames_found, short.frames_expected) == (17, 18),
+    f"{short.frames_found}/{short.frames_expected}",
+)
+
+# Header-only manifest, zero frames: legitimate for an audio-only source, and not counted
+# as one frame -- the header is not a data row.
+shutil.rmtree(bdir, ignore_errors=True)
+fill_bundle(frame_count=0, manifest_rows=0)
+header_only = run_report()
+check(
+    "a header-only manifest and zero frames is OK (audio-only is legitimate)",
+    header_only.ok,
+    header_only.summary(),
+)
+check(
+    "but it is not counted as 1 frame",
+    header_only.frames_expected == 0,
+    f"{header_only.frames_expected} rows counted",
+)
+
+shutil.rmtree(bdir, ignore_errors=True)
+fill_bundle(zero_byte=("audit.json",))
+empty = run_report()
+check("a zero-byte artefact fails verification", not empty.ok, empty.summary())
+check(
+    "and it is named, with the reason it was required",
+    any(m["artefact"] == "audit.json" and m["detail"] == "zero bytes" for m in empty.missing),
+    str(empty.missing),
+)
+check(
+    "an absent optional artefact is recorded, not counted as a failure",
+    any(a["artefact"] == glau.LLM_TRANSCRIPT_NAME for a in empty.absent),
+    str(empty.absent),
+)
+
+shutil.rmtree(bdir, ignore_errors=True)
+fill_bundle(with_note=False)
+nol = run_report()
+check("a missing note fails verification", not nol.ok, nol.summary())
+check(
+    "and the failure carries the reason",
+    any(m["artefact"] == "note" for m in nol.missing),
+    str(nol.missing),
+)
+
+# --- the note promotion -------------------------------------------------------------
+pdir = tmp / "promote"
+pdir.mkdir(parents=True, exist_ok=True)
+(pdir / "note.md").write_text("# stage 7\n", encoding="utf-8")
+(pdir / "note.linked.md").write_text("# stage 11\n", encoding="utf-8")
+published, moved = glro.promote_note(pdir, pdir / "note.linked.md", pdir / "note.md")
+check("the final note is published as note.md", published.name == "note.md", str(published))
+check(
+    "and its content is the LAST stage's",
+    published.read_text() == "# stage 11\n",
+    published.read_text(),
+)
+check(
+    "stage 7's original is preserved, not overwritten",
+    (pdir / glro.SYNTH_NOTE_NAME).read_text() == "# stage 7\n",
+    "the only record of what stage 7 produced was destroyed",
+)
+check("and it reports that it moved one", moved is True, str(moved))
+_, moved_again = glro.promote_note(pdir, pdir / "note.linked.md", pdir / glro.SYNTH_NOTE_NAME)
+check(
+    "promoting again when nothing changed does not duplicate",
+    moved_again is False,
+    "a second promotion made a pointless duplicate of itself",
+)
+
+# --- 19. the exit contract: what may not produce 0 -----------------------------------
+# Both rules below were decided after the first real 12-stage run, where each one produced a
+# run that looked finished and was not.
+dark = glq.FrameQuality(
+    name="f_0000000000.png",
+    source=tmp / "f_0000000000.png",
+    passed=False,
+    mege=23871.9,
+    threshold=26216.7,
+    crop_state="full_frame_fallback",
+    content_type=glq.CONTENT_DARK,
+    bbox_source="geometric",
+    edges=164944,
+    luma_mean=35.4,
+    luma_std=30.8,
+    reason="SOFT",
+)
+white = glq.FrameQuality(
+    name="f_0000009124.png",
+    source=tmp / "f_0000009124.png",
+    passed=False,
+    mege=24100.0,
+    threshold=26216.7,
+    crop_state="cropped",
+    content_type=glq.CONTENT_WHITE,
+    bbox_source="geometric",
+    edges=167414,
+    luma_mean=210.0,
+    luma_std=40.0,
+    reason="SOFT",
+)
+good_frame = glq.FrameQuality(
+    name="ok.png",
+    source=tmp / "ok.png",
+    passed=True,
+    mege=58925.6,
+    threshold=26216.7,
+    crop_state=glq.CROP_CROPPED,
+    content_type=glq.CONTENT_UNKNOWN,
+    bbox_source="geometric",
+    edges=167414,
+    luma_mean=63.9,
+    luma_std=68.7,
+)
+check(
+    "a dark canvas is recorded as failed",
+    dark in glq.Report(frames=[dark, good_frame]).failed,
+    "not recorded",
+)
+check(
+    "but it does not decide the exit code",
+    glq.Report(frames=[dark, good_frame]).ok,
+    "a dark frame at the head of a recording would block exit 0 on almost every lecture",
+)
+check(
+    "and the summary says it was excused rather than passed",
+    "dark-canvas not fatal" in glq.Report(frames=[dark, good_frame]).summary(),
+    glq.Report(frames=[dark, good_frame]).summary(),
+)
+check(
+    "a soft content frame is fatal",
+    not glq.Report(frames=[white, good_frame]).ok,
+    "a soft white document is real material the pipeline could not read",
+)
+check(
+    "and it is fatal even alongside passing frames",
+    len(glq.Report(frames=[white, good_frame]).failed_fatal) == 1,
+    str(glq.Report(frames=[white, good_frame]).failed_fatal),
+)
+
+# A template note is not a synthesised note.
+check(
+    "the template reports itself degraded even with every section filled",
+    glsy.synthesise(
+        json.loads(scaps.read_text())["alignments"],
+        "текст",
+        src_path,
+        glsy.TemplateSynthesizer(src_path, "текст", cuts),
+    ).degraded,
+    "a note no model wrote was reported as a clean synthesis",
 )
 
 glc.run_all = real_run_all

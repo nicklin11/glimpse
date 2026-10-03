@@ -44,6 +44,11 @@ pipx install .
 
 Requires Python 3.11+ and `ffmpeg`/`ffprobe` on `PATH`.
 
+If `glimpse` dies at import with `ModuleNotFoundError`, the venv is stale rather than
+broken: `pipx install -e` resolves dependencies once, so a later change to
+`pyproject.toml` does not reach the existing environment. Re-install with
+`pipx install --force -e <path>`. `glimpse doctor` names the missing module directly.
+
 ### As a single file, with no install
 
 ```
@@ -156,12 +161,20 @@ lecture rather than dictating a sentence:
 
 ```
 $XDG_STATE_HOME/glimpse/<lecture>/     (default: ~/.local/state/glimpse/<lecture>)
-├── transcript.json                   structured, with word timings
-├── transcript.raw.json               the endpoint's payload, untouched
-├── transcript.txt                    plain text
-├── manifest.tsv                      frame index: timestamp, path, reason
-├── detect.json                       the ffmpeg filter actually used
-└── images/                           extracted frames
+├── note.md                             the deliverable: synthesised, repaired, linked
+├── note.synth.md                       stage 7's original, kept as evidence
+├── transcript.json                     structured, with word timings
+├── transcript.raw.json                 the endpoint's payload, untouched
+├── transcript.txt                      plain text
+├── manifest.tsv                        frame index: timestamp, path, reason
+├── detect.json                         the ffmpeg filter actually used
+├── lint.json                           mechanical gate, before the audit
+├── audit.json                          findings, each with its quoted line
+├── repair.json                         what was changed and what was declined
+├── link.json                           wikilinks inserted
+├── report.json                         what stage 12 verified, and what it did not find
+├── report-provenance.json
+└── images/                             extracted frames
 ```
 
 Override with `--output-dir DIR` or `GLIMPSE_OUTPUT_DIR`. `--output-dir` names the bundle
@@ -182,19 +195,54 @@ glimpse process lecture.webm --vault-path ~/Documents/obs_notes/course/lecture-1
 The vault is a **copy target**, not the output root. Every file is verified after copying;
 one that lands short is an error rather than a silent success. Your bundle is left intact.
 
+## What one lecture costs
+
+Measured end to end on `1_lecture_OCS.mp4` (AV1 1080p, 4520 s) on this host:
+
+| Stage | Wall |
+|---|---|
+| 1 `probe` | 0.1 s |
+| 2 `audio` | 3.5 s |
+| 3 `stt` | 315.4 s (0.070x realtime) |
+| 4 `frames` | 319.2 s |
+| 5-12 | **7.7 s combined** |
+| **total** | **645.9 s** |
+
+98.8% of the wall clock is two stages that report nothing until they finish. Everything the
+pipeline does to the note — quality gating, alignment, synthesis, lint, audit, repair,
+linking, verification — is 1.2%.
+
+Model cost on this run: **zero**, because no endpoint was configured. Synthesis fell back to
+a template and the audit's tier 2 did not run. With a vision endpoint at the measured gateway
+price the visual budget is ~$0.01 per lecture (ADR-0005: 16 distinct screen states, against
+~131 880 decoded frames).
+
+Both figures are host-specific and one is a measurement that cleared a threshold rather than
+evidence of scale — see the 2026-10-04 amendment in ADR-0001.
+
 ## Exit codes
 
 | code | meaning |
 |---|---|
-| 0 | success |
-| 1 | usage error — or a stage that is not built yet |
+| 0 | every stage ran and every artefact it claimed is on disk |
+| 1 | usage error, or the run finished and could not verify what it wrote |
 | 2 | a dependency is missing |
 | 3 | a dependency is installed and failing |
 | 4 | a quality gate rejected the output |
-| 5 | the audit found things |
+| 5 | the audit found error-tier findings in the note |
 | 130 | interrupted |
 
 The codes are the contract. `glimpse` does not report success for work it did not do.
+
+Two of these are about verification rather than production, and they are the reason exit 0
+means something:
+
+- **0 is conditional on stage 12**, which stats the filesystem. An earlier version of this
+  pipeline reported success after ffmpeg had written an empty file and exited 0 — a
+  27-minute run that extracted zero frames. An exit code is a claim by the stage that
+  would have failed; a `stat` is a measurement.
+- **5 outranks 4** when both apply, because it is the more specific statement about the
+  deliverable. Both messages print regardless of which code comes out.
 
 ## Design decisions
 

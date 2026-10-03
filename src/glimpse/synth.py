@@ -371,12 +371,20 @@ def synthesise(
 
     markdown = assemble(note_title, bodies, sections)
     missing = [n for n, _, _ in SECTIONS if not bodies.get(n, "").strip()]
+    name = getattr(synthesizer, "name", "unknown")
+    # Falling back to the template is itself a degradation, independent of whether the
+    # sections came out filled. A template note has eight headings and no synthesis behind
+    # them; reporting it as a clean run is the silent-degradation failure D2 is written
+    # against, and `process` will now refuse to exit 0 on one.
+    used_template = name == "template"
+    if used_template and "synthesis did not run: no model endpoint configured" not in warnings:
+        warnings.append("synthesis did not run: no model endpoint configured")
     return Note(
         markdown=markdown,
         sections=reported,
-        synthesizer=getattr(synthesizer, "name", "unknown"),
+        synthesizer=name,
         model=model,
-        degraded=bool(warnings or missing),
+        degraded=used_template or bool(warnings or missing),
         notes=warnings,
     )
 

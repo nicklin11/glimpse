@@ -22,7 +22,21 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, audit, caption, frames, lint, link, probe, quality, repair, stages, stt, synth
+from . import (
+    audio,
+    audit,
+    caption,
+    frames,
+    lint,
+    link,
+    probe,
+    quality,
+    repair,
+    report,
+    stages,
+    stt,
+    synth,
+)
 from . import llm
 from .bundle import Bundle
 from .workspace import WorkDir
@@ -84,6 +98,9 @@ class RunResult:
     #: linked by 11. Stage 12 writes this file, not `synth.NOTE_NAME` -- publishing the
     #: stage-7 original would undo the two stages that ran after it.
     final_note: Path
+    #: D3's verdict on the filesystem. `report.ok` false is the one failure that must not
+    #: reach exit 0: every earlier stage claimed success, and only this one measured it.
+    report: report.Report
 
     @property
     def seconds(self) -> float:
@@ -373,6 +390,21 @@ def run(
     reports.append(StageReport(11, "link", time.monotonic() - began, lreport2.summary()))
     note_artefact = ldir2 / link.LINKED_NOTE
 
+    # --- stage 12: report --------------------------------------------------------
+    # The last stage, and the only one that verifies instead of writes. Everything before it
+    # makes claims; this one stats the filesystem and compares. Exit 0 depends on this.
+    began = time.monotonic()
+    rreport2 = report.run(
+        bundle.root,
+        final_note=note_artefact,
+        synth_note=Path(artefacts[synth.NOTE_NAME]),
+        artefacts=artefacts,
+        stream=out,
+    )
+    artefacts["note"] = bundle.root / synth.NOTE_NAME
+    artefacts[report.REPORT_NAME] = bundle.root / report.REPORT_NAME
+    reports.append(StageReport(12, "report", time.monotonic() - began, rreport2.summary()))
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -391,4 +423,5 @@ def run(
         repair=rreport,
         link=lreport2,
         final_note=note_artefact,
+        report=rreport2,
     )
