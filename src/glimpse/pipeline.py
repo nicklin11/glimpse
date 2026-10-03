@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, audit, caption, frames, lint, probe, quality, repair, stages, stt, synth
+from . import audio, audit, caption, frames, lint, link, probe, quality, repair, stages, stt, synth
 from . import llm
 from .bundle import Bundle
 from .workspace import WorkDir
@@ -76,6 +76,14 @@ class RunResult:
     audit: audit.Report
     #: What stage 10 could fix, and what it declined to.
     repair: repair.Report
+    #: Stage 11's link counts. `link.terms == 0` means no terms directory resolved: the note
+    #: is written unlinked, and saying "0 links" instead of "no vocabulary" would hide a
+    #: missing configuration as a clean result.
+    link: link.Report
+    #: The note every downstream stage should publish: stage 7's note, repaired by 10 and
+    #: linked by 11. Stage 12 writes this file, not `synth.NOTE_NAME` -- publishing the
+    #: stage-7 original would undo the two stages that ran after it.
+    final_note: Path
 
     @property
     def seconds(self) -> float:
@@ -122,6 +130,8 @@ def run(
     stream=None,
     note_title: str | None = None,
     glossary_path: str | None = None,
+    terms_dir: str | Path | None = None,
+    vault_path: str | Path | None = None,
 ) -> RunResult:
     """Stages 1-4 on `source`.
 
@@ -342,6 +352,27 @@ def run(
         artefacts[f"repair/{extra}"] = bundle.publish(f"repair/{extra}", rdir / extra)
     reports.append(StageReport(10, "repair", time.monotonic() - began, rreport.summary()))
 
+    # --- stage 11: link --------------------------------------------------------
+    # Links are injected into the REPAIRED note, not the stage-7 original: the repair stage
+    # exists because stage 7 writes a note that can be wrong, and linking the wrong text
+    # would give a wikilink to a defect that stage 10 just declined to fix.
+    began = time.monotonic()
+    ldir2 = work.dir("link")
+    tdir = link.resolve_terms_dir(terms_dir, vault_path)
+    lreport2 = link.run(
+        rdir / repair.REPAIRED_NOTE
+        if (rdir / repair.REPAIRED_NOTE).is_file()
+        else artefacts[synth.NOTE_NAME],
+        ldir2,
+        terms_dir=tdir,
+        stream=out,
+    )
+    for extra in link.ALL_ARTEFACTS:
+        if (ldir2 / extra).is_file():
+            artefacts[f"link/{extra}"] = bundle.publish(f"link/{extra}", ldir2 / extra)
+    reports.append(StageReport(11, "link", time.monotonic() - began, lreport2.summary()))
+    note_artefact = ldir2 / link.LINKED_NOTE
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -358,4 +389,6 @@ def run(
         lint=lreport,
         audit=areport,
         repair=rreport,
+        link=lreport2,
+        final_note=note_artefact,
     )

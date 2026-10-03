@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import exitcodes as ec
 from . import bundle as glb
+from . import link as gllnk
 from . import pipeline as glp
 from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
@@ -177,7 +178,14 @@ def _process(args: argparse.Namespace) -> int:
         )
         return ec.USAGE
     try:
-        result = glp.run(source, work, bundle=output, glossary_path=getattr(args, "glossary", None))
+        result = glp.run(
+            source,
+            work,
+            bundle=output,
+            glossary_path=getattr(args, "glossary", None),
+            terms_dir=getattr(args, "terms_dir", None),
+            vault_path=getattr(args, "vault_path", None),
+        )
     except runner.DependencyError as exc:
         work.retain(exc.message)
         runner.report(exc)
@@ -270,6 +278,77 @@ def _audit(_args: argparse.Namespace) -> int:
     return _pending("audit")
 
 
+def _terms_dir(args: argparse.Namespace):
+    """Resolved terms directory, or None with the reason already printed.
+
+    `_term_*` refuses to run rather than reporting "no terms found": those two look the
+    same in the output and only one of them means the vault was read.
+    """
+    resolved = gllnk.resolve_terms_dir(
+        getattr(args, "terms_dir", None), getattr(args, "vault_path", None)
+    )
+    if resolved is None:
+        print(
+            f"glimpse: no terms directory. Pass --terms-dir DIR, set "
+            f"{gllnk.TERMS_ENV}, or pass --vault-path DIR "
+            f"(looked for <vault>/{gllnk.COURSES_DIRNAME}/{gllnk.TERMS_DIRNAME}).",
+            file=sys.stderr,
+        )
+    return resolved
+
+
+def _term_link(args: argparse.Namespace) -> int:
+    terms_dir = _terms_dir(args)
+    if terms_dir is None:
+        return ec.USAGE
+    terms = gllnk.load_terms(terms_dir)
+    if not terms:
+        print(f"glimpse: no term notes in {terms_dir}", file=sys.stderr)
+        return ec.USAGE
+    targets = gllnk.collect_targets(args.paths, terms_dir, args.vault_path)
+    if not targets:
+        print("glimpse: no target notes to link", file=sys.stderr)
+        return ec.USAGE
+    report = gllnk.link_paths(targets, terms, write=args.write)
+    print(f"glimpse: {report.summary()}")
+    if report.per_term:
+        top = sorted(report.per_term.items(), key=lambda kv: -kv[1])[:10]
+        print("glimpse:   " + ", ".join(f"{name}x{count}" for name, count in top))
+    if not args.write and report.changed:
+        print("glimpse:   dry run -- pass --write to apply")
+    return ec.OK
+
+
+def _term_index(args: argparse.Namespace) -> int:
+    terms_dir = _terms_dir(args)
+    if terms_dir is None:
+        return ec.USAGE
+    terms = gllnk.load_terms(terms_dir)
+    lectures = gllnk.collect_targets([], terms_dir, args.vault_path)
+    table = gllnk.index_report(lectures, terms, only_used=args.only_used)
+    if not args.write:
+        print(table)
+        return ec.OK
+    dest = terms_dir / "_index.md"
+    dest.write_text(
+        "---\ntype: generated\n---\n\n"
+        "> Сгенерировано `glimpse term index --write`. Правь не руками.\n\n" + table + "\n",
+        encoding="utf-8",
+    )
+    print(f"glimpse: wrote {dest}")
+    return ec.OK
+
+
+def _term_check(args: argparse.Namespace) -> int:
+    terms_dir = _terms_dir(args)
+    if terms_dir is None:
+        return ec.USAGE
+    terms = gllnk.load_terms(terms_dir)
+    lectures = gllnk.collect_targets([], terms_dir, args.vault_path)
+    print(gllnk.check_report(terms, lectures, terms_dir))
+    return ec.OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="glimpse",
@@ -333,6 +412,15 @@ def build_parser() -> argparse.ArgumentParser:
             "rule finds nothing and the audit says so."
         ),
     )
+    p_process.add_argument(
+        "--terms-dir",
+        metavar="DIR",
+        help=(
+            "atomic term notes for stage 11. Default: $GLIMPSE_TERMS_DIR, then "
+            "<vault-path>/mscs/_terms. Without it the note is written unlinked and the "
+            "stage says so."
+        ),
+    )
     p_process.set_defaults(fn=_process)
 
     p_audit = sub.add_parser(
@@ -342,6 +430,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit.add_argument("note", nargs="?", help="Markdown note to audit")
     p_audit.set_defaults(fn=_audit)
+
+    # `mscs-termlink`'s three subcommands, kept as one group: the ported tool keeps its own
+    # vocabulary, and a bare top-level `check` would sit confusingly next to `doctor`.
+    p_term = sub.add_parser(
+        "term",
+        help="term vocabulary: link / index / check the vault's atomic term notes",
+        description=(
+            "Ported from ~/.local/bin/mscs-termlink (issue #8). The terms directory is "
+            "resolved from --terms-dir, then $GLIMPSE_TERMS_DIR, then "
+            "<--vault-path>/mscs/_terms."
+        ),
+    )
+    term_sub = p_term.add_subparsers(dest="term_cmd", required=True)
+
+    t_link = term_sub.add_parser("link", help="inject wikilinks; dry run unless --write")
+    t_link.add_argument("paths", nargs="*", help="files or directories (default: lecture notes)")
+    t_link.add_argument("--write", action="store_true", help="persist the changes")
+    t_link.add_argument("--terms-dir", metavar="DIR")
+    t_link.add_argument("--vault-path", metavar="DIR")
+    t_link.set_defaults(fn=_term_link)
+
+    t_index = term_sub.add_parser("index", help="report which lectures mention which term")
+    t_index.add_argument("--write", action="store_true", help="write _index.md")
+    t_index.add_argument("--only-used", action="store_true", help="omit terms used nowhere")
+    t_index.add_argument("--terms-dir", metavar="DIR")
+    t_index.add_argument("--vault-path", metavar="DIR")
+    t_index.set_defaults(fn=_term_index)
+
+    t_check = term_sub.add_parser("check", help="diagnostics on terms and lecture notes")
+    t_check.add_argument("--terms-dir", metavar="DIR")
+    t_check.add_argument("--vault-path", metavar="DIR")
+    t_check.set_defaults(fn=_term_check)
 
     return parser
 
