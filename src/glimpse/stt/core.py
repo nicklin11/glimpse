@@ -1,4 +1,4 @@
-"""Stage 3: transcribe through shipboard, keeping segment and word timings.
+"""Stage 3 core: the normalised transcript types, the parser, and the writers.
 
 D2: STT is delegated, never reimplemented. `shipboard process PATH --timestamps
 json` posts the wav to whisper.cpp and prints the raw `segments` array to stdout.
@@ -39,8 +39,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import exitcodes as ec
-from . import runner
+from .. import exitcodes as ec
+from .. import runner
 
 REMEDIATION = (
     "install: pipx install shipboard   (local checkout: pipx install -e ~/Coding/shipboard)"
@@ -122,6 +122,7 @@ class Transcript:
     segments: tuple[Segment, ...]
     anomalies: tuple[str, ...] = field(default_factory=tuple)
     raw_payload: bytes = b""
+    backend: str = "unknown"
 
     @property
     def speech_end(self) -> float:
@@ -140,89 +141,56 @@ class Transcript:
     def summary(self) -> str:
         return (
             f"{len(self.segments)} segments, {self.timed_words} timed words, "
-            f"speech to {self.speech_end:.1f}s of {self.audio_duration:.1f}s audio"
+            f"speech to {self.speech_end:.1f}s of {self.audio_duration:.1f}s audio "
+            f"[{self.backend}]"
         )
 
 
-def transcribe(wav: Path, *, audio_duration: float) -> Transcript:
-    """Run shipboard over `wav` and parse the timed segments it prints."""
-    runner.resolve("shipboard", REMEDIATION)  # exit 2 before any work is done
-    timeout = audio_duration * TIMEOUT_PER_REALTIME + TIMEOUT_MARGIN
-    raw = runner.run(
-        "shipboard",
-        ["process", str(wav), "--timestamps", "json"],
-        remediation=REMEDIATION,
-        timeout=timeout,
-    )
-
-    if not raw.strip():
-        raise runner.DependencyError(
-            name="shipboard",
-            code=ec.DEPENDENCY_FAILED,
-            message="shipboard exited 0 but printed nothing; no transcript was produced",
-            remediation="run `shipboard process <wav> --timestamps json` by hand",
-        )
-
-    segments, anomalies = _parse(raw)
-    if not segments:
-        raise runner.DependencyError(
-            name="shipboard",
-            code=ec.DEPENDENCY_FAILED,
-            message="shipboard returned an empty segments array",
-            stdout=_truncated(raw),
-            remediation=(
-                "a whisper.cpp build that ignores response_format=verbose_json "
-                "returns no segments; check the server build"
-            ),
-        )
-
-    transcript = Transcript(
-        wav=Path(wav),
-        audio_duration=audio_duration,
-        segments=segments,
-        anomalies=anomalies,
-        raw_payload=raw,
-    )
-    # A transcript with no word timings is not the payload this stage exists to
-    # produce: stages 5-7 bind frames to paragraphs by word span, and segment
-    # bounds alone would silently degrade them to guesswork. Fail here instead.
-    if transcript.timed_words == 0:
-        raise runner.DependencyError(
-            name="shipboard",
-            code=ec.DEPENDENCY_FAILED,
-            message=(
-                f"shipboard returned {len(segments)} segments but zero words carrying "
-                "timings; frame-to-paragraph binding needs per-word start/end"
-            ),
-            stdout=_truncated(raw),
-            remediation="check that the whisper.cpp build emits per-word timings",
-        )
-    return transcript
-
-
-def _parse(raw: bytes) -> tuple[tuple[Segment, ...], tuple[str, ...]]:
+def parse(raw: bytes, *, source: str) -> tuple[tuple[Segment, ...], tuple[str, ...]]:
     try:
         payload = json.loads(raw.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as exc:
         raise runner.DependencyError(
-            name="shipboard",
+            name=source,
             code=ec.DEPENDENCY_FAILED,
-            message=f"shipboard printed output that is not JSON ({exc})",
+            message=f"{source} returned output that is not JSON ({exc})",
             stdout=_truncated(raw),
-            remediation="run the command by hand to see what it prints",
+            remediation="run the backend by hand to see what it prints",
         ) from exc
 
+    # Two envelopes exist and the difference is not cosmetic. Measured against the live
+    # server: whisper.cpp `POST /inference` returns an **object**
+    # ({task, language, duration, text, segments, ...}), while shipboard returns a **bare
+    # array** -- it unwraps `["segments"]` itself. The segment contents are identical
+    # (`words` with word/start/end/t_dtw/probability, float seconds); only the wrapper
+    # differs. Guessing one shape would have failed against the other.
+    envelope = "array"
+    if isinstance(payload, dict):
+        envelope = "object"
+        segments_raw = payload.get("segments")
+        if segments_raw is None:
+            # Timings were never returned. One segment carrying the whole text is honest
+            # about what arrived; the word-coverage check in transcribe() then rejects it
+            # with a specific message instead of stages 5-7 losing their binding silently.
+            text = payload.get("text")
+            segments_raw = [{"id": 0, "start": 0.0, "end": 0.0, "text": text or "", "words": []}]
+        payload = segments_raw
     if not isinstance(payload, list):
         raise runner.DependencyError(
-            name="shipboard",
+            name=source,
             code=ec.DEPENDENCY_FAILED,
-            message=f"expected a JSON array of segments, got {type(payload).__name__}",
+            message=f"expected segments as a JSON array or an object, got {type(payload).__name__}",
             stdout=_truncated(raw),
-            remediation="the --timestamps json contract is an array; check the shipboard build",
+            remediation=(
+                "whisper.cpp verbose_json returns {..., 'segments': [...]}; "
+                "shipboard returns that array directly; check the backend build"
+            ),
         )
 
     segments: list[Segment] = []
     anomalies: list[str] = []
+    if envelope == "object":
+        anomalies.append(f"payload arrived as an object with a 'segments' key ({source})")
     previous_end = -1.0
 
     for index, item in enumerate(payload):

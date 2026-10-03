@@ -25,6 +25,7 @@ import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.error
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -665,6 +666,16 @@ check("a full-length extraction does not warn", ok is None, str(ok))
 
 
 # --- 6. stage 3: stt, timings as seconds, words left as BPE pieces ------------
+
+# Stage 3 picks a backend by autodetection, and autodetection depends on what happens to
+# be listening on 127.0.0.1 at the moment the suite runs. That is a property of the machine,
+# not of the code under test: with whisper.cpp up the suite would POST the synthetic wav
+# to the real server, and with it down it would fall back to shipboard. The backend is
+# pinned here so the section tests one backend, and autodetection is tested separately in
+# section 9 with both branches controlled.
+real_stt_backend = os.environ.get("GLIMPSE_STT")
+os.environ["GLIMPSE_STT"] = "shipboard"
+
 REAL_SEGMENTS = [
     {
         "id": 0,
@@ -748,10 +759,22 @@ install_fake({"shipboard": [(b"not json at all", b"", 0)]})
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check("non-JSON stdout -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
-install_fake({"shipboard": [(b'{"text": "plain"}', b"", 0)]})
+# A JSON object is no longer a shape error: whisper.cpp's own /inference returns
+# {task, language, duration, text, segments, ...}. Only shipboard unwraps it to a bare
+# array. Both are accepted, and the envelope is recorded as an anomaly.
+_install_fake_dict = {"shipboard": [(b'{"text": "plain"}', b"", 0)]}
+install_fake(_install_fake_dict)
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
-check("a dict instead of an array -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
-check("dict payload names the contract", "array" in exc.message, exc.message)
+check(
+    "an object payload with no timings -> exit 3",
+    exc is not None and exc.code == ec.DEPENDENCY_FAILED,
+    f"{getattr(exc, 'code', None)}",
+)
+check(
+    "it is rejected for the timings, not for the envelope",
+    "zero words carrying timings" in getattr(exc, "message", ""),
+    getattr(exc, "message", ""),
+)
 
 install_fake({"shipboard": [(b"[]", b"", 0)]})
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
@@ -1401,6 +1424,271 @@ check(
 )
 
 glr.run = real_run
+
+# --- 9. stage 3 backends: one interface, three wire formats ----------------------
+# Stage 3 is delegated, but the delegation must not become a silent downgrade. Every
+# backend returns raw bytes and one parser consumes them, so the only thing that differs
+# is the envelope -- and the one thing that must never differ is whether word timings
+# arrive.
+
+# --- 9. stage 3 backends: one interface, three wire formats ----------------------
+# Section 6 pinned GLIMPSE_STT=shipboard so it tests one backend. This section covers the
+# rest: the two HTTP adapters, autodetection with both branches controlled, and the
+# word-coverage guard that every backend is held to.
+
+# A whisper.cpp verbose_json segment, as the server returns it on this host.
+_http_segment = [
+    {
+        "id": 0,
+        "text": " Оптимальные системы",
+        "start": 0.0,
+        "end": 1.4,
+        "words": [
+            {"word": " Оп", "start": 0.0, "end": 0.4, "t_dtw": -1, "probability": 0.91},
+            {"word": "тимальные", "start": 0.4, "end": 1.4, "t_dtw": -1, "probability": 0.88},
+        ],
+    }
+]
+
+
+class FakeHTTP:
+    """Stands in for urllib.request.urlopen. Records what was sent, returns what is queued."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.sent = []
+
+    def __call__(self, request, timeout=None):
+        self.sent.append(request)
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return _Response(item)
+
+
+class _Response:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self, _n=-1):
+        return self.body if _n < 0 else self.body[:_n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def http_body(url_marker: str, obj) -> bytes:
+    return json.dumps(obj).encode()
+
+
+# -- native /inference: the protocol this host actually serves --------------------
+import glimpse.stt.backends as glsb  # noqa: E402
+import glimpse.stt.openai_compat as glso  # noqa: E402
+import glimpse.stt.shipboard as glss  # noqa: E402
+import glimpse.stt.whispercpp as glsw  # noqa: E402
+
+real_urlopen = glsw.urllib.request.urlopen
+real_oai_urlopen = glso.urllib.request.urlopen
+
+# The health route answers 200 and the inference route returns the array.
+http = FakeHTTP([b"ok", json.dumps(_http_segment).encode()])
+glsw.urllib.request.urlopen = http
+wav_file = tmp / "backend.wav"
+wav_file.write_bytes(b"RIFF" + b"\\0" * 60)
+tr_http = glstt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp")
+check("native backend produced segments", len(tr_http.segments) == 1, str(len(tr_http.segments)))
+check("native backend produced timed words", tr_http.timed_words == 2, str(tr_http.timed_words))
+check("the transcript names its backend", tr_http.backend == "whispercpp", tr_http.backend)
+check(
+    "the native backend asks for verbose_json",
+    b"verbose_json" in http.sent[-1].data,
+    str(http.sent[-1].data[:200]),
+)
+check(
+    "the native backend posts to /inference, not /v1/*",
+    http.sent[-1].full_url.endswith("/inference"),
+    http.sent[-1].full_url,
+)
+check("the native backend uploads the wav bytes", wav_file.read_bytes() in http.sent[-1].data)
+
+# A server that answers /health with 404 still serves /inference. Treating that as fatal
+# would break on a build that simply has no health route.
+http = FakeHTTP(
+    [urllib.error.HTTPError("u", 404, "Not Found", {}, None), json.dumps(_http_segment).encode()]
+)
+glsw.urllib.request.urlopen = http
+check(
+    "a 404 on /health is not fatal",
+    glstt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp").timed_words == 2,
+)
+
+# Connection refused must be exit 3 with a reachable remediation, not a traceback.
+glsw.urllib.request.urlopen = FakeHTTP([urllib.error.URLError(OSError(111, "Connection refused"))])
+exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="whispercpp")
+check(
+    "an unreachable endpoint -> exit 3",
+    exc.code == ec.DEPENDENCY_FAILED,
+    f"{getattr(exc, 'code', None)}",
+)
+check(
+    "the remediation names the env var",
+    "GLIMPSE_WHISPERCPP_URL" in exc.remediation,
+    exc.remediation,
+)
+
+# -- OpenAI-compatible: the envelope differs, the segments do not -----------------
+http = FakeHTTP(
+    [b"ok", json.dumps({"task": "transcribe", "text": "x", "segments": _http_segment}).encode()]
+)
+glso.urllib.request.urlopen = http
+tr_oai = glstt.transcribe(wav_file, audio_duration=1.4, backend="openai")
+check("openai backend produced segments", len(tr_oai.segments) == 1, str(len(tr_oai.segments)))
+check("openai backend produced timed words", tr_oai.timed_words == 2, str(tr_oai.timed_words))
+check(
+    "the openai backend asks for word granularity", b"timestamp_granularities" in http.sent[-1].data
+)
+# A parse failure must name the backend that produced it. Hardcoding a name here would
+# misdirect every future backend's debugging.
+glso.urllib.request.urlopen = FakeHTTP([b"ok", b"this is not json at all"])
+exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="openai")
+# The backend name is the DependencyError's `name`, which is what report() prints as the
+# failing dependency. That is the field a reader acts on, so that is the field to assert.
+check(
+    "a malformed payload names the backend that returned it",
+    exc is not None and getattr(exc, "name", "") == "openai",
+    getattr(exc, "name", ""),
+)
+exc = raises(glstt.parse, b"not json", source="some-other-backend")
+check(
+    "parse reports the source it was handed",
+    exc is not None and getattr(exc, "name", "") == "some-other-backend",
+    getattr(exc, "name", ""),
+)
+
+check(
+    "the openai backend posts to /v1/audio/transcriptions",
+    http.sent[-1].full_url.endswith("/v1/audio/transcriptions"),
+    http.sent[-1].full_url,
+)
+
+# The failure the whole interface exists for: a server that honours response_format=json
+# and ignores timestamp_granularities. Segments arrive, words do not, and the pipeline
+# must say so instead of letting stages 5-7 bind frames by guesswork.
+http = FakeHTTP([b"ok", json.dumps({"text": "one whole blob of text, no timings"}).encode()])
+glso.urllib.request.urlopen = http
+exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="openai")
+check(
+    "a backend returning no words -> exit 3",
+    exc.code == ec.DEPENDENCY_FAILED,
+    f"{getattr(exc, 'code', None)}",
+)
+check(
+    "the failure names the cause",
+    "zero words carrying timings" in getattr(exc, "message", ""),
+    getattr(exc, "message", ""),
+)
+check(
+    "the remediation names the ignored parameter",
+    "timestamp_granularities" in getattr(exc, "remediation", ""),
+    getattr(exc, "remediation", ""),
+)
+
+# A 401 on /v1/models means the server is there with a bad key -- not "nothing listening".
+glso.urllib.request.urlopen = FakeHTTP([urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)])
+check("a 401 on /v1/models is not fatal", glso.OpenAICompat("http://127.0.0.1:1").check() is None)
+
+# -- autodetection: both branches, neither dependent on the machine ---------------
+_install = glsb.resolve
+_install.__globals__  # noqa: B018 - keep the reference alive for the linter
+
+
+class _Fake:
+    def __init__(self, ok):
+        self.ok = ok
+
+    def available(self):
+        return self.ok
+
+    def check(self):
+        if not self.ok:
+            raise glr.DependencyError("stt", ec.DEPENDENCY_FAILED, "down", "up")
+
+
+# GLIMPSE_STT is still pinned to shipboard by section 6, so autodetection cannot be
+# exercised until it is unset. Left set, resolve() returns the shipboard branch and every
+# assertion below passes without testing anything. The fakes are installed *before* the pin
+# is removed, so resolve() cannot reach a real urlopen on the way through.
+real_wsc = glsw.HttpWhisperCpp
+real_sb = glss.Shipboard
+pinned = os.environ.pop("GLIMPSE_STT", None)
+
+
+class _Named:
+    def __init__(self, name, ok=True):
+        self.name = name
+        self.ok = ok
+
+    def available(self):
+        return self.ok
+
+
+glsw.HttpWhisperCpp = lambda: _Named("whispercpp", True)
+glss.Shipboard = lambda: _Named("shipboard", True)
+check(
+    "with both available, autodetect prefers the HTTP endpoint",
+    glsb.resolve().name == "whispercpp",
+    glsb.resolve().name,
+)
+check(
+    "autodetect never starts a subprocess before trying HTTP",
+    glsb.resolve().name != "shipboard",
+    glsb.resolve().name,
+)
+
+glsw.HttpWhisperCpp = lambda: _Fake(True)
+glss.Shipboard = lambda: _Fake(False)
+check("autodetect prefers a reachable HTTP endpoint", glsb.resolve().ok is True)
+
+glsw.HttpWhisperCpp = lambda: _Fake(False)
+glss.Shipboard = lambda: _Fake(True)
+check("autodetect falls back to shipboard when the endpoint is down", glsb.resolve().ok is True)
+
+glss.Shipboard = lambda: _Fake(False)
+exc = raises(glsb.resolve)
+check(
+    "autodetect with nothing reachable -> exit 2",
+    exc is not None and exc.code == ec.MISSING_DEPENDENCY,
+    f"{getattr(exc, 'code', 'autodetect picked something anyway')}",
+)
+check(
+    "the no-backend message names every way out",
+    exc is not None
+    and all(k in exc.remediation.lower() for k in ("whispercpp", "shipboard", "openai-compatible")),
+    getattr(exc, "remediation", ""),
+)
+
+glsw.HttpWhisperCpp = real_wsc
+glss.Shipboard = real_sb
+if pinned is not None:
+    os.environ["GLIMPSE_STT"] = pinned
+
+# An unknown backend name is a usage error, not a stack trace.
+exc = raises(glsb.resolve, "nonsense")
+check("an unknown backend name -> exit 1", exc.code == ec.USAGE, f"{getattr(exc, 'code', None)}")
+
+# The interfaces are structurally identical -- that is the contract, and a typo in one
+# backend's method name would otherwise only surface at runtime.
+for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat, glss.Shipboard):
+    check(
+        f"{_cls.__name__} satisfies TranscriptionBackend",
+        isinstance(_cls(), glsb.TranscriptionBackend),
+    )
+
+glsw.urllib.request.urlopen = real_urlopen
+glso.urllib.request.urlopen = real_oai_urlopen
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run
