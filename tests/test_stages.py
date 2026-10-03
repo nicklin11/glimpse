@@ -996,6 +996,9 @@ def fake_pipeline(source, work, **kw):
         audit=glau.Report(),
         repair=glrep.Report(),
         link=gllk.Report(),
+        # A synthesised note, not a template: exit 0 is conditional on this being False,
+        # so a stand-in without the attribute would crash rather than assert.
+        note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
         # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
         # failure rather than a flag: that is the D3 case stage 12 exists for.
         report=glro.Report(),
@@ -4018,6 +4021,88 @@ check(
     "promoting again when nothing changed does not duplicate",
     moved_again is False,
     "a second promotion made a pointless duplicate of itself",
+)
+
+# --- 19. the exit contract: what may not produce 0 -----------------------------------
+# Both rules below were decided after the first real 12-stage run, where each one produced a
+# run that looked finished and was not.
+dark = glq.FrameQuality(
+    name="f_0000000000.png",
+    source=tmp / "f_0000000000.png",
+    passed=False,
+    mege=23871.9,
+    threshold=26216.7,
+    crop_state="full_frame_fallback",
+    content_type=glq.CONTENT_DARK,
+    bbox_source="geometric",
+    edges=164944,
+    luma_mean=35.4,
+    luma_std=30.8,
+    reason="SOFT",
+)
+white = glq.FrameQuality(
+    name="f_0000009124.png",
+    source=tmp / "f_0000009124.png",
+    passed=False,
+    mege=24100.0,
+    threshold=26216.7,
+    crop_state="cropped",
+    content_type=glq.CONTENT_WHITE,
+    bbox_source="geometric",
+    edges=167414,
+    luma_mean=210.0,
+    luma_std=40.0,
+    reason="SOFT",
+)
+good_frame = glq.FrameQuality(
+    name="ok.png",
+    source=tmp / "ok.png",
+    passed=True,
+    mege=58925.6,
+    threshold=26216.7,
+    crop_state=glq.CROP_CROPPED,
+    content_type=glq.CONTENT_UNKNOWN,
+    bbox_source="geometric",
+    edges=167414,
+    luma_mean=63.9,
+    luma_std=68.7,
+)
+check(
+    "a dark canvas is recorded as failed",
+    dark in glq.Report(frames=[dark, good_frame]).failed,
+    "not recorded",
+)
+check(
+    "but it does not decide the exit code",
+    glq.Report(frames=[dark, good_frame]).ok,
+    "a dark frame at the head of a recording would block exit 0 on almost every lecture",
+)
+check(
+    "and the summary says it was excused rather than passed",
+    "dark-canvas not fatal" in glq.Report(frames=[dark, good_frame]).summary(),
+    glq.Report(frames=[dark, good_frame]).summary(),
+)
+check(
+    "a soft content frame is fatal",
+    not glq.Report(frames=[white, good_frame]).ok,
+    "a soft white document is real material the pipeline could not read",
+)
+check(
+    "and it is fatal even alongside passing frames",
+    len(glq.Report(frames=[white, good_frame]).failed_fatal) == 1,
+    str(glq.Report(frames=[white, good_frame]).failed_fatal),
+)
+
+# A template note is not a synthesised note.
+check(
+    "the template reports itself degraded even with every section filled",
+    glsy.synthesise(
+        json.loads(scaps.read_text())["alignments"],
+        "текст",
+        src_path,
+        glsy.TemplateSynthesizer(src_path, "текст", cuts),
+    ).degraded,
+    "a note no model wrote was reported as a clean synthesis",
 )
 
 glc.run_all = real_run_all

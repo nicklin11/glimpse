@@ -264,15 +264,27 @@ def _process(args: argparse.Namespace) -> int:
     #        about the deliverable, so it outranks the others. When the quality gate also
     #        failed, 5 still wins: the reader is told the note has errors AND, above, that
     #        the frames were soft. Reporting 4 alone would hide the note's own verdict.
-    #   4 -- the frames were soft. The note exists; its inputs were not.
-    #   1 -- the pipeline could not finish, or could not verify what it produced. This is
-    #        D3's point: a stage that exits 0 having written nothing has lied, and the
-    #        only defence is that something measured the filesystem instead of asking.
-    #   0 -- every stage ran and every artefact it claimed to write is on disk.
+    #   4 -- a content frame was soft. The note exists; its inputs were not.
+    #   1 -- the pipeline could not finish, could not verify what it produced, or produced
+    #        a note no model ever wrote. This is D3's point: a stage that exits 0 having
+    #        written nothing -- or having written a template and calling it synthesis --
+    #        has lied, and the only defence is that something measured the output instead
+    #        of trusting it.
+    #   0 -- every stage ran, every artefact is on disk, and the note was actually
+    #        synthesised.
     if audit_errors:
         return ec.AUDIT_FINDINGS
     if not result.quality.ok:
         return ec.QUALITY_GATE_FAILED
+    if result.note.degraded:
+        for warning in result.note.notes:
+            print(f"glimpse: synthesis: {warning}", file=sys.stderr)
+        print(
+            f"glimpse: the note was produced by '{result.note.synthesizer}', not by a "
+            f"model. Set GLIMPSE_LLM_ENDPOINT and re-run for a synthesised note.",
+            file=sys.stderr,
+        )
+        return ec.USAGE
     if not result.report.ok:
         for entry in result.report.missing:
             print(

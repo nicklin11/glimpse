@@ -236,6 +236,22 @@ class FrameQuality:
     mege_enhanced: float | None = None
     reason: str = ""
 
+    @property
+    def fatal(self) -> bool:
+        """Whether this frame failing costs the run its exit 0.
+
+        A `dark_canvas` is an uninformative screen -- measured at luma_mean 35 on lecture
+        1 -- and on real recordings it is almost always the projection before the lecturer
+        gets a slide up. Rejecting it discards nothing, so it is measured, reported as
+        SOFT, and left out of the exit decision.
+
+        A `white_document` or `unknown` frame failing is different in kind: that is
+        material the pipeline could not read, and it is a real loss. Gating on all frames
+        equally made `process` unable to return 0 on nearly any recording, because nearly
+        every recording has one dark frame at the head.
+        """
+        return self.content_type != CONTENT_DARK
+
 
 @dataclass
 class Report:
@@ -251,18 +267,25 @@ class Report:
         return [f for f in self.frames if not f.passed]
 
     @property
+    def failed_fatal(self) -> list[FrameQuality]:
+        """Failures that cost the run its exit 0. See `FrameQuality.fatal`."""
+        return [f for f in self.frames if not f.passed and f.fatal]
+
+    @property
     def ok(self) -> bool:
-        return not self.failed and bool(self.frames)
+        return not self.failed_fatal and bool(self.frames)
 
     def summary(self) -> str:
         if not self.frames:
             return "no frames measured"
         values = [f.mege for f in self.frames]
         cropped = sum(1 for f in self.frames if f.crop_state == CROP_CROPPED)
+        soft = len(self.failed) - len(self.failed_fatal)
+        tail = f", {soft} dark-canvas not fatal" if soft else ""
         return (
             f"{len(self.passed)}/{len(self.frames)} frames pass "
             f"(MEGE {min(values):.0f}-{max(values):.0f}, threshold {self.threshold:.0f}, "
-            f"{cropped} cropped)"
+            f"{cropped} cropped{tail})"
         )
 
     def explain(self) -> str:
