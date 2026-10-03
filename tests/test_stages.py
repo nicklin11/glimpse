@@ -3890,10 +3890,17 @@ def fill_bundle(with_note=True, frame_count=0, manifest_rows=0, zero_byte=()):
         (bdir / ("note.md" if name == "note" else name)).write_text(
             "" if name in zero_byte else "x", encoding="utf-8"
         )
+    # Frames live in images/ as .png, and the quality gate writes enhanced .jpg copies
+    # beside them named <frame>_q.jpg -- one per frame that passed. The first version of
+    # count_frames globbed "*.jpg" in the bundle root and reported 0 frames on a bundle
+    # holding 16 correct ones; it would also have counted the derivatives had it matched.
+    images = bdir / "images"
+    images.mkdir(exist_ok=True)
     for index in range(frame_count):
-        (bdir / f"f_{index:010d}.jpg").write_bytes(b"\xff\xd8\xff")
+        (images / f"f_{index:010d}.png").write_bytes(b"\x89PNG\r\n")
+        (images / f"f_{index:010d}_q.jpg").write_bytes(b"\xff\xd8\xff")
     rows = ["pts_ms\ttime\tfile"]
-    rows += [f"{i * 1000}\t00:00:{i:02d}.00\tf_{i:010d}.jpg" for i in range(manifest_rows)]
+    rows += [f"{i * 1000}\t00:00:{i:02d}.00\tf_{i:010d}.png" for i in range(manifest_rows)]
     (bdir / "manifest.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
@@ -3917,6 +3924,19 @@ check(
     (good.frames_found, good.frames_expected) == (18, 18),
     good.summary(),
 )
+
+# A missing frame whose enhanced _q copy is still present is still a missing frame. This is
+# what a glob hides: the directory holds 18 files either way, but one of them is the
+# derivative rather than the frame.
+(bdir / "images" / "f_0000000007.png").unlink()
+orphan = run_report()
+check(
+    "a frame deleted while its enhanced copy remains is still counted as missing",
+    (orphan.frames_found, orphan.frames_expected) == (17, 18) and not orphan.ok,
+    f"{orphan.frames_found}/{orphan.frames_expected} ok={orphan.ok}",
+)
+(bdir / "images" / "f_0000000007.png").write_bytes(b"\x89PNG\r\n")
+check("and restoring it restores verification", run_report().ok, "not restored")
 check(
     "every required entry states why it is required",
     all(e["why"] for e in good.verified),

@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import audit, frames, lint, link, quality, repair, stages, synth
+from .bundle import IMAGES
 
 REPORT_NAME = "report.json"
 PROVENANCE_NAME = "report-provenance.json"
@@ -142,14 +143,29 @@ def _check(path: Path) -> tuple[bool, str]:
 def count_frames(bundle_root: Path) -> tuple[int, int]:
     """(expected from the manifest, found on disk).
 
+    The manifest is the source of truth for *which* files must exist, so each row is stat'd
+    by name rather than counted by globbing. The first version of this function globbed
+    `*.jpg` in the bundle root and was wrong twice over: frames live in `images/`, and they
+    are `.png` -- the `.jpg` files beside them are the quality gate's enhanced derivatives,
+    named `<frame>_q.jpg`, one per frame that *passed*. A glob counted 0 on a bundle that
+    held 16 correct frames, and a glob that had matched would have counted the derivatives
+    too.
+
     Expected counts data rows, not lines: a header-only manifest is the D3 failure this
     whole stage exists to catch, and counting lines would call that a success.
     """
     manifest = bundle_root / frames.MANIFEST
     if not manifest.is_file():
         return 0, 0
-    expected = len(frames.read_manifest(manifest))
-    found = sum(1 for p in bundle_root.glob("*.jpg") if p.is_file())
+    images = bundle_root / IMAGES
+    rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()[1:]]
+    names = [row[2].strip() for row in rows if len(row) >= 3 and row[2].strip()]
+    expected = len(names)
+    found = 0
+    for name in names:
+        ok, _ = _check(images / name)
+        if ok:
+            found += 1
     return expected, found
 
 
