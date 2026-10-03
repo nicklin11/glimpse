@@ -24,8 +24,7 @@ model actually wrote the note.
 | 3 | transcribe, with word-level timings | works — 0.070x realtime on 4520 s |
 | 4 | extract distinct on-screen frames | works |
 | 5 | document-bbox crop, upscale, unsharp, sharpness gate | works |
-| 6 | align frames to transcript words | works |
-| 6 | **caption frames with a vision model** | **not built** — no vision client exists |
+| 6 | align frames to transcript words, then caption them with a vision model | alignment works; the captioning call is **not built** — no vision client exists |
 | 7 | synthesise the note | works; falls back to a template without an endpoint |
 | 8 | check every formula mechanically | works |
 | 9 | audit in a separate model context | tier 1 works; tier 2 needs an endpoint |

@@ -72,6 +72,9 @@ jobs:
       - name: Dependency truth (ADR-0002 D2)
         run: python tests/test_deps.py
 
+      - name: Claim drift (#48 checks 2-5)
+        run: python tests/test_claims.py
+
       - name: Lint
         run: ruff check src tests
 
