@@ -44,7 +44,11 @@ EXTRACT_TIMEOUT = 60.0
 MANIFEST = "manifest.tsv"
 MANIFEST_HEADER = "pts_ms\ttime\tfile"
 FRAME_PREFIX = "f_"
-FRAME_SUFFIX = ".jpg"
+#: Output frames are lossless. They are the input to stage 5's measurement, and a q=2 JPEG
+#: encode biases the Laplacian variance by -1.26% (mean over 16 frames, range -1.02% to
+#: -1.53%). Small, but a gate should not carry a known signed bias. The detector pass in
+#: `detect()` stays JPEG: those frames are throwaway change-detection rasters.
+FRAME_SUFFIX = ".png"
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,6 @@ class Settings:
     hi: int = 60  # mpdecimate hi, multiplied by 64
     lo: int = 30  # mpdecimate lo, multiplied by 64
     width: int = 1600  # output frame width
-    quality: int = 2  # JPEG -q:v; lower is better
 
 
 def detect_filter(settings: Settings) -> str:
@@ -192,8 +195,9 @@ def extract_at(source: Path, pts_ms: int, out: Path, settings: Settings = Settin
             "-sn",
             "-vf",
             f"scale={settings.width}:-2:flags=lanczos",
-            "-q:v",
-            str(settings.quality),
+            # PNG cannot hold a YUV plane; the decoder must hand ffmpeg RGB to encode it.
+            "-pix_fmt",
+            "rgb24",
             str(dest),
         ],
         timeout=EXTRACT_TIMEOUT,

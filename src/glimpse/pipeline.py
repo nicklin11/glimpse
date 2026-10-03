@@ -15,18 +15,19 @@ of every run states what is still missing and which issue tracks it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, frames, probe, stt
+from . import audio, frames, probe, quality, stt
 from .bundle import Bundle
 from .workspace import WorkDir
 
 # Stage 0 is `doctor`, run by the CLI. Stages 5-12 are unbuilt (#3).
-IMPLEMENTED = 4
+IMPLEMENTED = 5
 FIRST_STAGE = 1
 REMAINING_NOTE = (
     "stages 5-12 are not built yet (tracked in #3): quality, "
@@ -59,6 +60,9 @@ class RunResult:
     artefacts: dict[str, Path]
     reports: tuple[StageReport, ...]
     bundle: Bundle
+    #: D4's verdict. `quality.ok` false means exit 4, reported by the caller.
+    quality: quality.Report
+    enhanced: list[Path]
 
     @property
     def seconds(self) -> float:
@@ -161,7 +165,7 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
     # detect pass decodes the whole container and writes only timestamps, so the
     # blur cannot reach the output; the extract pass then seeks the original.
     began = time.monotonic()
-    frames_dir = work.sub("frames")
+    frames_dir = work.dir("frames")
     manifest, produced = frames.run(Path(source), frames_dir)
     reports.append(
         StageReport(4, "frames", time.monotonic() - began, frames.summary(manifest, produced))
@@ -172,15 +176,56 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
     artefacts["manifest"] = bundle.publish("manifest", manifest)
     # Frames go to the bundle's images/ so the note can reference them by a stable
     # relative path, and the manifest travels with them.
+    #
+    # The move happens *after* stage 5. It used to happen before, which handed stage 5 a
+    # list of paths that no longer existed: all 16 frames failed with "cannot read the
+    # frame size". The unit tests could not see it because the stubbed pipeline never
+    # moves anything -- only the end-to-end run did.
+    for extra in ("detect.json",):
+        candidate = frames_dir / extra
+        if candidate.is_file():
+            artefacts[extra] = bundle.publish(extra, candidate)
+
+    # --- stage 5: quality -----------------------------------------------------
+    # D4. Runs on the frames stage 4 produced, not on the source, so the gate judges
+    # what stage 6 will actually caption. D4's exit-4 path is signalled by
+    # `quality_ok` rather than raised here: raising would skip the publishing of the
+    # enhanced frames, and a failed gate is exactly when those frames are worth
+    # looking at.
+    began = time.monotonic()
+    qs = quality.Settings()
+    bbox_source = os.environ.get("GLIMPSE_BBOX_SOURCE", "geometric")
+    quality.resolve_estimator(bbox_source)
+    qreport = quality.run(produced, work.path, settings=qs, bbox_source=bbox_source, stream=out)
+
+    # Publish the gated frames only now, so stage 5 read real files.
     for index, path in enumerate(produced):
         target = bundle.images / path.name
         shutil.move(str(path), str(target))
         bundle.record(f"frame{index}", target)
         artefacts[f"frame{index}"] = target
-    for extra in ("detect.json",):
-        candidate = frames_dir / extra
-        if candidate.is_file():
-            artefacts[extra] = bundle.publish(extra, candidate)
+    reports.append(StageReport(5, "quality", time.monotonic() - began, qreport.summary()))
+
+    qdir = work.dir("quality")
+    quality.write(qreport, qdir / quality.REPORT_NAME, qs)
+    artefacts[quality.REPORT_NAME] = bundle.publish(quality.REPORT_NAME, qdir / quality.REPORT_NAME)
+    (qdir / quality.PROVENANCE_NAME).write_text(
+        quality.provenance(qs, bbox_source) + "\n", encoding="utf-8"
+    )
+    artefacts[quality.PROVENANCE_NAME] = bundle.publish(
+        quality.PROVENANCE_NAME, qdir / quality.PROVENANCE_NAME
+    )
+
+    enhanced: list[Path] = []
+    for entry in qreport.passed:
+        candidate = work.path / "enhanced" / quality.enhanced_name(entry.name)
+        if not candidate.is_file():
+            continue
+        target = bundle.images / candidate.name
+        shutil.move(str(candidate), str(target))
+        bundle.record(f"quality:{entry.name}", target)
+        artefacts[f"quality:{entry.name}"] = target
+        enhanced.append(target)
 
     return RunResult(
         source=Path(source),
@@ -191,4 +236,6 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
         artefacts=artefacts,
         reports=tuple(reports),
         bundle=bundle,
+        quality=qreport,
+        enhanced=enhanced,
     )

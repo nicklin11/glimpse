@@ -420,6 +420,80 @@ The work dir and the bundle are separate because their lifecycles are opposite. 
 is scratch, removed on success. `audio.wav` deliberately stays there: it is 137.9 MiB,
 reproducible from the source in 6.3 s, and nothing downstream reads it.
 
+## Amendment 2026-10-03 — D4, and the gate reads the source
+
+Stage 5 shipped with two changes to D4, both forced by measurement.
+
+### The order in D4 was wrong
+
+D4 said: crop, upscale, unsharp, **then** gate on Laplacian variance. Gating after
+enhancement means scoring the sharpening this stage just applied — the gate would be a
+function of its own parameters. Change `unsharp_amount` and the verdict moves. Change the
+JPEG encode quality and it moves again.
+
+The shipped order is:
+
+```
+crop -> MEASURE (the gate) -> upscale 2x -> unsharp -> measure again (recorded, never gated)
+```
+
+Measured on lecture 1, bright document frame, every value at the same 640-wide analysis
+raster and through the same encode the stage writes:
+
+| state | variance | vs source |
+|---|---|---|
+| as extracted | 4 317 | x1.00 |
+| whole frame, 2x lanczos | 4 493 | x1.04 |
+| whole frame, 2x + unsharp 1.0 | 5 341 | x1.24 |
+| cropped, 2x + unsharp 1.0 | 5 962 | x1.38 |
+
+**A first version of this measurement said x14 and x2.9, and that was wrong.** It piped the
+enhancement to `rawvideo`, bypassing the JPEG the pipeline writes; DCT quantisation at q=2
+removes most of what the upscale creates. Measuring through a convenient proxy rather than
+through the artefact is the second time this project has produced a confidently wrong
+number that way (the first was comparing whisper.cpp responses through different envelopes).
+The x12.1 figure is the rawvideo path; x1.38 is the real one.
+
+The measure is a sound focus detector — 4 317 unblurred, 440 at `gblur=sigma=1`, 65 at
+sigma=2, 8 at sigma=4, and exactly 0.0 on a uniform field — but its value depends on the
+analysis raster width, which is why `analyse_width` is fixed configuration and recorded in
+provenance rather than inferred.
+
+### The bbox is geometric, and the VLM path is absent rather than stubbed
+
+D4 assumes the VLM returns the document bbox. There is no vision client in this codebase
+and no gateway configured, so that path cannot run and a stub returning a plausible box
+would be worse: stage 6 would caption the wrong region, invisibly.
+
+The frames do not need it. On the 32x18 luma grid the bright frames carry a document pane
+over roughly 78% of the frame with a dark UI strip down the left, and the dark frames carry
+no bright region at all. `estimate_box` takes the union of bright rows and bright columns on
+a 96-cell grid, requires 10% coverage, and returns `None` when there is nothing. `bbox_source`
+is recorded as `geometric` so a later VLM source is distinguishable in provenance.
+
+### Threshold 300, calibrated on one lecture
+
+All 16 frames as extracted: 96, 298, 1014, 1400, 1489, 1569, 1627, 1727, 1906, 1973,
+2095, 2103, 2449, 2698, 3017, 3217, 3813, 4317, 4357.
+
+300 sits above the two clear failures (96, 298), far below the lowest plausible sharp frame
+(1014), and 4.6x above the sigma=2 blur level. **One lecture is not a calibration set.**
+The distribution is recorded here so it can be re-derived on more material rather than
+rediscovered, and `quality.threshold` is configuration.
+
+### Two failure modes, reported differently
+
+`f_0000000000` fails with "no bright document region found", at sharpness 298. Its problem is
+content, not focus. Conflating that with a blur failure would send the reader to sharpen a
+frame that has nothing to crop to, so the two are distinct reasons in the report.
+
+### "With the note still written" is not achievable here
+
+D4's exit-4 path requires the note to survive a failed gate. The note is stage 7, which does
+not exist. `quality` raises exit 4 and the quality report is the artefact; the acceptance
+criterion is recorded as unsatisfiable rather than quietly met by a placeholder.
+
+Refs #9.
 ## Evidence: the error that justifies this pipeline
 
 Section 7.3 of the finished lecture 1 note contained three mutually exclusive
@@ -482,3 +556,115 @@ physics.
    never losing work.
 3. Is `mmproj` worth evaluating at all, given the frames are already sharp?
 EOF
+## Amendment 2026-10-04 — D4's gate, measured rather than asserted
+
+Stage 5 shipped a Laplacian-variance gate over a fixed 640-wide analysis raster, with the
+threshold set at 300 and a bbox heuristic that decided which frames counted. An adversarial
+review of that design produced four claims. Each was tested against the 16 extracted
+frames before being believed. Two held, one held in mechanism but not magnitude, and one
+was wrong on its own terms. The numbers below are from the written artefacts, which is the
+only place a number in this pipeline is allowed to come from.
+
+### Confirmed: the bbox heuristic was a quality gate in disguise
+
+`evaluate()` returned `passed=False` whenever `estimate_box()` found no bright region. That
+rejected two frames scoring **85 580** and **91 629** MEGE — middle of the passing
+distribution, roughly 200 000 edge pixels each — because their canvas is dark. Dark-mode
+Beamer themes, MATLAB canvases, terminals and blackboards are valid content for this
+lecture. Signal quality and layout classification are different questions and were being
+answered by the same predicate.
+
+D4's outcome is now three orthogonal measurements:
+
+- `quality_gate`: focus only, which is what D4 asks for.
+- `content_type`: `white_document` | `dark_canvas` | `unknown`.
+- `crop_state`: `cropped` | `full_frame_fallback`.
+
+A bbox that cannot be found falls back to the full frame. Nothing is rejected for lacking
+one. Lecture 1 goes from 12/16 to **14/16**, and the two remaining failures are separated
+by cause: one `EMPTY_CANVAS` (luma std 10.2, p99 45 — nothing on it), one `SOFT`.
+
+`BBoxEstimator` is a Protocol with three implementations: `GeometricEstimator`,
+`NullEstimator`, and `VLMEstimator`, which raises `NotConfiguredError` rather than
+inventing a box. A fabricated box would make stage 6 caption the wrong region with no
+visible symptom; a missing one only costs a wider crop.
+
+### Confirmed: the metric was reading content density
+
+Five frames whose *per-edge* Laplacian sharpness is constant (0.036–0.045) were selected,
+so their stroke sharpness is equal by construction. Their total Laplacian variance spans
+**7.21x**: 294.8, 1 021.0, 1 741.7, 1 927.4, 2 124.4. Pearson r(edge count, variance) =
+0.841. The old threshold separated slides by how much text was on them.
+
+Replaced with MEGE, the mean of `Gx² + Gy²` over pixels above a noise floor (τ = 30). The
+edge population divides density out, and the same five frames then spread **1.66x**. The
+residue is real: MEGE still rises with stroke *width*, because a 72 pt header and 12 px
+body text have genuinely different gradient slopes at identical focus. It is content, not
+focus, and 4.3x is what removing the confound is worth, not more.
+
+A unit test now asserts this directly: four copies of the same strokes give 4x the edge
+pixels and a MEGE ratio of 1.000.
+
+### Measured, not a bug: the JPEG artifact trap
+
+Stage 4 wrote q=2 JPEG and stage 5's second-derivative operator is an 8x8 detector, which
+is the same lattice JPEG quantises. Re-extracting every frame as lossless PNG and measuring
+both through the real analysis path gives a delta of **-1.02% to -1.53%, mean -1.26%**.
+
+The mechanism is real; the magnitude is not. The 640-wide rescale runs before the
+Laplacian and destroys most block-edge energy first. Stage 4 writes PNG anyway, because a
+known signed bias does not belong in a gate, but this is hygiene and it is recorded as such
+rather than as a rescue.
+
+### Rejected: the proposed calibration rule
+
+Blur injection on all 16 frames: MEGE falls to **half** its unblurred value at σ 0.8–1.0,
+tightly, on every frame. That is the degradation level the gate is placed at.
+
+The rule proposed for the threshold, `min(MEGE(σ=1.2))` across the sharp frames, evaluates
+to **24 025** — and all 16 frames score above it. It passes everything. A minimum is the
+wrong order statistic for a gate: it is dragged down by the worst frame you happened to
+capture.
+
+What is used instead is `decay × median(MEGE over content frames)`, with `decay = 0.43`
+from the σ=1.0 half-value point and an absolute floor so a mostly-blank run cannot normalise
+its way to "everything passes". The median, not the minimum; and the ratio rather than an
+absolute value, because MEGE depends on stroke width, contrast and resolution and is not a
+unit that transfers between lecture series. Lecture 1 yields a threshold of 39 400.
+
+### Also changed: the raster is native
+
+Scaling every crop to a fixed 640-wide raster was defended as "constant raster, so the
+threshold is comparable". The crops *are* comparable — because the threshold is now derived
+from the run rather than fixed. What the fixed raster actually did was apply 3x
+anti-aliasing to one crop and 1.5x to another: lecture 1's three crops have scale factors
+0.457, 0.480 and 0.582. Measurement now happens at 1:1, on the crop or the full frame.
+
+This costs numpy. In pure Python the pass over 1.4 M pixels is ~20 s per frame, which would
+make the quality gate slower than speech recognition.
+
+### Two bugs found underneath
+
+Worth recording separately, because both were invisible for the same reason.
+
+`WorkDir.sub()` creates the *parent* of the path it returns. `work.sub("quality")` therefore
+returned a path whose own directory did not exist, and the first write raised
+FileNotFoundError. It never fired because the earlier ordering bug — stage 4 moved the
+frames into the bundle before stage 5 read them, so every frame failed — aborted the stage
+first. Two stacked defects, the first masking the second. The bundle from the end-to-end
+run has no `quality.json` in it, which is the evidence.
+
+And the regression test written to catch the ordering bug was calling `pipeline.run` while
+`glp.run` was still bound to a stub from an earlier section. It passed vacuously for its
+whole life. Restoring the real `run` before the call exposed three more stale stubs in the
+same block (`MediaInfo` with a `container` kwarg that no longer exists, `AudioArtefact`
+with `bytes_written`, `Transcript` with `duration`). A test that cannot fail is worse than
+no test: it reports coverage it does not have.
+
+### Consequence for the remaining stages
+
+Stage 8 (deterministic lint) and stage 12 (report) must be zero-model and must be tested
+against artefacts on disk, not against stubs of themselves. Stage 9's deterministic tier
+carries the checks that do not need a model; its critic tier is a different interface from
+stage 7's synthesis, because a model reviewing its own output in the same context will
+ratify the error it is shown.

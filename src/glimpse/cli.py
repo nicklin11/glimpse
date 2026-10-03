@@ -201,6 +201,22 @@ def _process(args: argparse.Namespace) -> int:
             )
             return ec.DEPENDENCY_FAILED
         print(f"  vault      {len(copied)} files exported to {Path(vault).expanduser()}")
+    if not result.quality.ok:
+        # D4: the note would still be written, but there is no note yet -- stage 7 is
+        # unbuilt. What exists is the quality report, so it is named as the artefact.
+        print(
+            f"glimpse: quality gate failed for {len(result.quality.failed)}"
+            f"/{len(result.quality.frames)} frames; see {result.bundle.root}",
+            file=sys.stderr,
+        )
+        for line in result.quality.explain().splitlines():
+            print(f"glimpse: {line.strip()}", file=sys.stderr)
+        print(
+            "glimpse:   remediation: lower quality.decay to tighten the gate, or "
+            "re-extract with a higher source bitrate -- interpolation cannot recover "
+            "text that was never encoded",
+            file=sys.stderr,
+        )
     print(f"glimpse: {PROCESS_INCOMPLETE}")
     print(f"glimpse: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing

@@ -24,6 +24,9 @@ from . import runner, stt
 
 GATEWAY_ENV = "GLIMPSE_GATEWAY_URL"
 VAULT_ENV = "GLIMPSE_VAULT"
+LLM_ENV = "GLIMPSE_LLM_ENDPOINT"
+LLM_MODEL_ENV = "GLIMPSE_LLM_MODEL"
+LLM_KEY_ENV = "GLIMPSE_LLM_KEY"
 DEFAULT_VAULT = Path.home() / "Documents/obs_notes"
 PROBE_TIMEOUT = 10.0
 
@@ -262,6 +265,72 @@ def check_gateway() -> Check:
     )
 
 
+def check_numpy() -> Check:
+    """Stage 5's array backend. A declared dependency, so absence is a packaging fault."""
+    try:
+        import numpy
+    except ImportError as exc:
+        return Check(
+            name="numpy",
+            ok=False,
+            detail=f"not importable: {exc}",
+            remediation="install: pip install 'numpy>=1.26'",
+            code=ec.MISSING_DEPENDENCY,
+        )
+    return Check(name="numpy", ok=True, detail="importable", version=numpy.__version__)
+
+
+def check_llm() -> Check:
+    """The synthesis/audit model endpoint. Unconfigured is a state, not a fault.
+
+    Stages 6-12 exist; stages 7, 9's critic tier and 10 need this. Until it is set the
+    pipeline stops at stage 6 with exit 2 rather than writing a note nobody audited.
+    """
+    url = os.environ.get(LLM_ENV, "").strip()
+    if not url:
+        return Check(
+            name="llm",
+            ok=False,
+            detail=f"not configured (set {LLM_ENV} to enable synthesis, audit and repair)",
+            version="skipped",
+            fatal=False,
+        )
+    model = os.environ.get(LLM_MODEL_ENV, "").strip()
+    if not model:
+        return Check(
+            name="llm",
+            ok=False,
+            detail=f"{LLM_ENV} is set but {LLM_MODEL_ENV} is not",
+            remediation=f"set {LLM_MODEL_ENV} to the model id the endpoint serves",
+            code=ec.MISSING_DEPENDENCY,
+        )
+    try:
+        request = urllib.request.Request(
+            f"{url.rstrip('/')}/models", headers={"Accept": "application/json"}
+        )
+        if api_key := os.environ.get(LLM_KEY_ENV):
+            request.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT) as resp:
+            code = resp.status
+    except urllib.error.HTTPError as exc:
+        return Check(
+            name="llm",
+            ok=False,
+            detail=f"{url}/models returned HTTP {exc.code}",
+            remediation="check the endpoint path and the key",
+            code=ec.DEPENDENCY_FAILED,
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        return Check(
+            name="llm",
+            ok=False,
+            detail=f"{url} unreachable: {exc}",
+            remediation="check the endpoint is running and reachable from this host",
+            code=ec.DEPENDENCY_FAILED,
+        )
+    return Check(name="llm", ok=True, detail="reachable", path=url, version=f"{model}, HTTP {code}")
+
+
 def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     """Every check, with `required` names promoted to fatal.
 
@@ -276,9 +345,11 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     checks = [
         check_ffmpeg(),
         check_ffprobe(),
+        check_numpy(),
         check_stt(),
         check_shipboard(),
         check_gateway(),
+        check_llm(),
         check_vault(),
     ]
     if required is None:
@@ -298,7 +369,7 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
 # `shipboard` is not here: it is one backend among several, and stage 3 reaches
 # whichever is configured. Requiring the binary would reintroduce the dependency
 # this removed.
-PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "stt"})
+PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "numpy", "stt"})
 
 
 # Precedence when several checks fail at once. MISSING wins over FAILED: a
