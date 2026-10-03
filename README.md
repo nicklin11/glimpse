@@ -156,12 +156,20 @@ lecture rather than dictating a sentence:
 
 ```
 $XDG_STATE_HOME/glimpse/<lecture>/     (default: ~/.local/state/glimpse/<lecture>)
-├── transcript.json                   structured, with word timings
-├── transcript.raw.json               the endpoint's payload, untouched
-├── transcript.txt                    plain text
-├── manifest.tsv                      frame index: timestamp, path, reason
-├── detect.json                       the ffmpeg filter actually used
-└── images/                           extracted frames
+├── note.md                             the deliverable: synthesised, repaired, linked
+├── note.synth.md                       stage 7's original, kept as evidence
+├── transcript.json                     structured, with word timings
+├── transcript.raw.json                 the endpoint's payload, untouched
+├── transcript.txt                      plain text
+├── manifest.tsv                        frame index: timestamp, path, reason
+├── detect.json                         the ffmpeg filter actually used
+├── lint.json                           mechanical gate, before the audit
+├── audit.json                          findings, each with its quoted line
+├── repair.json                         what was changed and what was declined
+├── link.json                           wikilinks inserted
+├── report.json                         what stage 12 verified, and what it did not find
+├── report-provenance.json
+└── images/                             extracted frames
 ```
 
 Override with `--output-dir DIR` or `GLIMPSE_OUTPUT_DIR`. `--output-dir` names the bundle
@@ -186,15 +194,25 @@ one that lands short is an error rather than a silent success. Your bundle is le
 
 | code | meaning |
 |---|---|
-| 0 | success |
-| 1 | usage error — or a stage that is not built yet |
+| 0 | every stage ran and every artefact it claimed is on disk |
+| 1 | usage error, or the run finished and could not verify what it wrote |
 | 2 | a dependency is missing |
 | 3 | a dependency is installed and failing |
 | 4 | a quality gate rejected the output |
-| 5 | the audit found things |
+| 5 | the audit found error-tier findings in the note |
 | 130 | interrupted |
 
 The codes are the contract. `glimpse` does not report success for work it did not do.
+
+Two of these are about verification rather than production, and they are the reason exit 0
+means something:
+
+- **0 is conditional on stage 12**, which stats the filesystem. An earlier version of this
+  pipeline reported success after ffmpeg had written an empty file and exited 0 — a
+  27-minute run that extracted zero frames. An exit code is a claim by the stage that
+  would have failed; a `stat` is a measurement.
+- **5 outranks 4** when both apply, because it is the more specific statement about the
+  deliverable. Both messages print regardless of which code comes out.
 
 ## Design decisions
 

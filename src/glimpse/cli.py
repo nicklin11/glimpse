@@ -386,9 +386,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_process = sub.add_parser(
         "process",
         help="run the pipeline on a recording",
-        description="Transcribe, extract frames, synthesise, audit, link. "
-        f"Stages 0-{glp.IMPLEMENTED} are implemented; the rest are tracked "
-        "in #3, and this exits 1 until they are.",
+        description="Transcribe, extract frames, synthesise, audit, link, report. "
+        f"Stages 0-{glp.IMPLEMENTED} are all implemented. Exits 0 only when the "
+        "bundle it wrote has been verified on disk.",
     )
     p_process.add_argument("path", nargs="?", help="video or audio file")
     p_process.add_argument(
