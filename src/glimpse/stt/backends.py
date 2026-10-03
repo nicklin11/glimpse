@@ -3,15 +3,19 @@
 `TranscriptionBackend` returns **bytes**, not a `Transcript`. The bytes are parsed by
 `core.parse`, which is shared, because the payload is the same in every backend:
 
-- whisper.cpp native `POST /inference` returns a **top-level array** of segments with a
-  `words` list;
-- shipboard's `--timestamps json` returns that same array, unchanged — it is a passthrough
-  proxy, so there was never a second format to parse;
-- an OpenAI-compatible server returns an **object** with `segments`, each carrying
-  `words` in the same shape, *if* the server honours `timestamp_granularities`.
+- whisper.cpp native `POST /inference` returns a **top-level object** (`verbose_json`) with a
+  `segments` array, each segment carrying a `words` list;
+- an OpenAI-compatible server returns the same shape, *if* the server honours
+  `timestamp_granularities`.
 
 Keeping the interface at the byte level means a backend cannot quietly reshape timings on
 the way in. Normalisation happens once, in one place, and is testable on its own.
+
+Both remaining backends are HTTP endpoints. There is no subprocess backend: the one there was
+— shipboard — added nothing this code did not already do (`core.parse` unwraps
+`segments` either way) and imposed a 300 s ceiling it could not lift. See issue #49, which
+also corrects an earlier claim that the two payloads were byte-identical. They are not:
+whisper.cpp disagrees with **itself** run to run.
 
 **Word timings are the reason the interface exists.** Stages 5-7 bind frames to paragraphs
 by word span. A backend that returns segments without words does not degrade gracefully —
@@ -74,30 +78,28 @@ def _env_endpoint(name: str) -> str:
 
 
 def resolve(name: str | None = None) -> TranscriptionBackend:
-    """Pick a backend. `GLIMPSE_STT` wins; otherwise whisper.cpp native, then shipboard.
+    """Pick a backend. `GLIMPSE_STT` wins; otherwise whisper.cpp native, then OpenAI.
 
-    The default is deliberately an HTTP backend rather than a subprocess. shipboard's only
-    remaining advantage is that it needs no configuration on this host, and it answers with
-    the identical payload -- so it is the fallback, not the default.
+    Both candidates are HTTP endpoints. `auto` probes them in that order and takes the first
+    that answers, because a local whisper.cpp keeps the audio on the machine and a configured
+    OpenAI-compatible endpoint does not -- so the local one is preferred when both are up.
     """
-    from . import openai_compat, shipboard, whispercpp
+    from . import openai_compat, whispercpp
 
     chosen = name or os.environ.get(ENV_BACKEND) or "auto"
     if chosen == "auto":
-        for factory in (whispercpp.HttpWhisperCpp, shipboard.Shipboard):
+        for factory in (whispercpp.HttpWhisperCpp, openai_compat.OpenAICompat):
             backend = factory()
             if backend.available():
                 return backend
         raise runner.DependencyError(
             name="stt",
             code=2,
-            message=(
-                "no transcription backend is reachable; set GLIMPSE_STT to one of "
-                "whispercpp, openai, shipboard"
-            ),
+            message="no transcription backend is reachable; set GLIMPSE_STT to one of "
+            "whispercpp, openai",
             remediation=(
-                "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or install shipboard, "
-                "or configure an OpenAI-compatible endpoint"
+                "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or point "
+                "GLIMPSE_OPENAI_URL at an OpenAI-compatible endpoint"
             ),
         )
 
@@ -106,7 +108,6 @@ def resolve(name: str | None = None) -> TranscriptionBackend:
         "whisper.cpp": whispercpp.HttpWhisperCpp,
         "openai": openai_compat.OpenAICompat,
         "openai-compatible": openai_compat.OpenAICompat,
-        "shipboard": shipboard.Shipboard,
     }
     if chosen not in table:
         raise runner.DependencyError(

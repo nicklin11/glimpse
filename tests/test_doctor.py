@@ -37,18 +37,17 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 # --- stubs -------------------------------------------------------------------
-PRESENT = {"ffmpeg", "ffprobe", "shipboard"}
+PRESENT = {"ffmpeg", "ffprobe"}
 real_which = gld.shutil.which
 real_run = gld.subprocess.run
 
 which_set: set[str] = set(PRESENT)
 run_rc = 0
-# Keyed by executable: a single shared blob would make ffmpeg report
-# shipboard's output as its own version.
+# Keyed by executable: a single shared blob would make ffprobe report ffmpeg's version
+# as its own.
 run_stdout: dict[str, str] = {
     "ffmpeg": "ffmpeg version 7.1.1-1 Copyright (c) 2000-2024 the FFmpeg developers\n",
     "ffprobe": "ffprobe version 7.1.1-1 Copyright (c) 2007-2024\n",
-    "shipboard": "usage: shipboard [-h] [--send] [--seconds SECONDS] [--file FILE]\n",
 }
 run_stderr = ""
 
@@ -122,7 +121,7 @@ check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
 check(
     "every dependency is listed",
-    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "shipboard", "gateway", "vault")),
+    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "gateway", "vault")),
     text,
 )
 check("resolved path is reported", "/usr/bin/ffmpeg" in text, text)
@@ -260,17 +259,21 @@ out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["doctor"])
 text = out.getvalue()
-check("shipboard usage output is NOT labelled a version", "usage: shipboard" not in text, text)
-# shipboard is no longer mandatory, so it is not probed when another backend is configured.
-# Probing it anyway would fail `doctor` for an optional component on someone else's machine.
-check(
-    "an unconfigured shipboard is skipped, not probed",
-    "not the configured STT backend" in text and "/usr/bin/shipboard" not in text,
-    text,
-)
+# The shipboard check is gone entirely. This inverts what the suite asserted before #44:
+# it used to require the name to be absent from *its own check line*, which kept the check
+# alive as long as the backend was optional. Now the name must be absent from `doctor`
+# output altogether, and the STT line must disclose where the audio goes.
+check("shipboard is not a check at all any more", "shipboard" not in text, text)
 check(
     "the configured endpoint is what gets probed",
     "127.0.0.1:10302" in text,
+    text,
+)
+# #45: the two remaining backends have opposite trust properties, and the operator
+# should not have to read the README to learn which one is in use.
+check(
+    "a local endpoint says the audio stays on this machine",
+    "audio stays on this machine" in text,
     text,
 )
 

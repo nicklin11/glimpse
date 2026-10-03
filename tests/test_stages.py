@@ -9,7 +9,7 @@ because that is where this pipeline's real failures live:
     failure's stderr arriving byte-for-byte rather than as a paraphrase;
   * artefacts verified on disk, so an ffmpeg run that exits 0 having written
     nothing is caught instead of trusted (D3);
-  * word timings consumed as seconds from shipboard's JSON, never reparsed out
+  * word timings consumed as seconds from the endpoint's JSON, never reparsed out
     of stdout text, and BPE pieces left alone rather than detokenised by guess.
 
 `runner.run` is stubbed throughout: no real ffmpeg, no whisper.cpp, no network.
@@ -93,13 +93,85 @@ real_resolve = glr.resolve
 real_which = glr.shutil.which
 real_sleep = glfr.time.sleep
 
-PRESENT = {"ffmpeg", "ffprobe", "shipboard"}
+PRESENT = {"ffmpeg", "ffprobe"}
 
 
 def install_fake(programs: dict[str, object]) -> None:
     FAKE.clear()
     FAKE.update(programs)  # type: ignore[arg-type]
     CALLS.clear()
+
+
+# --- HTTP seam ---------------------------------------------------------------------
+# The only remaining STT backends are HTTP endpoints, so the suite intercepts
+# `urllib.request.urlopen` rather than a subprocess. Before #44 these tests faked
+# `shipboard process --timestamps json` and asserted on its argv; there is no
+# subprocess left to assert on, and deleting the assertions would have stopped
+# checking that stage 3 asks for the *timestamped* form at all.
+HTTP_CALLS: list[object] = []
+HTTP_QUEUE: list[bytes] = []
+
+
+class _FakeHTTPResponse:
+    # urllib responses carry `.status` and `.getcode()`; `deps.check_gateway` reads the
+    # first. This fake stands in for urlopen globally, so it has to satisfy every caller,
+    # not only the STT ones.
+    status = 200
+
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+
+    def getcode(self) -> int:
+        return self.status
+
+    def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            return self._body
+        chunk, self._body = self._body[:n], self._body[n:]
+        return chunk
+
+    def __enter__(self) -> "_FakeHTTPResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
+def install_http(responses: list[bytes]) -> None:
+    """Queue the bodies `urlopen` returns, one per call. Also clears the call log."""
+    HTTP_CALLS.clear()
+    HTTP_QUEUE.clear()
+    HTTP_QUEUE.extend(responses)
+
+
+# Only the whisper.cpp endpoint is faked. This fake stands in for `urlopen` *globally*, and
+# the suite also probes the gateway at an address it expects to be unreachable -- a fake
+# that answered that too would turn a deliberate failure into a silent pass. Matching on
+# netloc keeps every other host (including 127.0.0.1:1) on the real network path.
+FAKED_NETLOCS = {"127.0.0.1:10302", "localhost:10302"}
+
+
+def _netloc(request) -> str:
+    full = getattr(request, "full_url", "") or ""
+    return full.split("//", 1)[-1].split("/", 1)[0] if "//" in full else ""
+
+
+def fake_urlopen(request, timeout=None):  # noqa: ANN001, ANN202 - mirrors urllib's shape
+    full = getattr(request, "full_url", "")
+    if _netloc(request) not in FAKED_NETLOCS:
+        raise urllib.error.URLError(f"connection refused (real path, not faked): {full}")
+    HTTP_CALLS.append(request)
+    # `transcribe` calls `backend.check()` before `run()`, and check() is a `GET /health`.
+    # It is a liveness probe, not part of the payload sequence, so it must not consume a
+    # queued body -- otherwise every test silently shifts by one response.
+    if full.endswith("/health"):
+        return _FakeHTTPResponse(b"ok")
+    body = HTTP_QUEUE.pop(0) if HTTP_QUEUE else b"[]"
+    return _FakeHTTPResponse(body)
+
+
+urllib.request.urlopen = fake_urlopen
 
 
 def fake_resolve(name, remediation):
@@ -220,13 +292,13 @@ real_stderr, sys.stderr = sys.stderr, labelled
 try:
     glr.report(
         glr.DependencyError(
-            "shipboard", ec.DEPENDENCY_FAILED, "shipboard printed junk", stdout=b"<html>err</html>"
+            "ffprobe", ec.DEPENDENCY_FAILED, "ffprobe printed junk", stdout=b"<html>err</html>"
         )
     )
 finally:
     sys.stderr = real_stderr
 labelled_text = "".join(labelled.text)
-check("captured stdout is labelled as stdout", "shipboard stdout" in labelled_text, labelled_text)
+check("captured stdout is labelled as stdout", "ffprobe stdout" in labelled_text, labelled_text)
 check(
     "captured stdout is not presented as stderr",
     "wrote nothing to stderr" not in labelled_text,
@@ -691,11 +763,10 @@ check("a full-length extraction does not warn", ok is None, str(ok))
 # Stage 3 picks a backend by autodetection, and autodetection depends on what happens to
 # be listening on 127.0.0.1 at the moment the suite runs. That is a property of the machine,
 # not of the code under test: with whisper.cpp up the suite would POST the synthetic wav
-# to the real server, and with it down it would fall back to shipboard. The backend is
-# pinned here so the section tests one backend, and autodetection is tested separately in
-# section 9 with both branches controlled.
+# to the real server. The backend is pinned here so the section tests one backend, and
+# autodetection is tested separately in section 9 with both branches controlled.
 real_stt_backend = os.environ.get("GLIMPSE_STT")
-os.environ["GLIMPSE_STT"] = "shipboard"
+os.environ["GLIMPSE_STT"] = "whispercpp"
 
 REAL_SEGMENTS = [
     {
@@ -726,31 +797,32 @@ REAL_SEGMENTS = [
 ]
 
 payload = json.dumps(REAL_SEGMENTS, ensure_ascii=False).encode()
-install_fake({"shipboard": [(payload, b"", 0)]})
+install_http([payload])
 CALLS.clear()
 tr = glstt.transcribe(dest, audio_duration=25.0)
-ship_call = next(a for name, a in CALLS if name == "shipboard")
-# Acceptance: timings are consumed from `--timestamps json`, never reparsed out
-# of stdout text. The plain transcript form carries no segments at all, so this
-# assertion is what would catch a regression to `--file`/`--no-copy` style use.
+# Acceptance: timings are requested from `/inference` as verbose_json, never reparsed out
+# of plain transcript text. A plain-text form carries no segments at all, so these
+# assertions are what would catch a regression to a text-only request. These replace the
+# argv assertions this section carried against `shipboard process --timestamps json`,
+# which no longer exists -- see #44.
+infer_call = next(r for r in HTTP_CALLS if getattr(r, "full_url", "").endswith("/inference"))
+body = infer_call.data.decode("utf-8", "replace")
 check(
-    "shipboard is called with the json timestamp form", ship_call[:1] == ["process"], str(ship_call)
+    "stage 3 posts to /inference",
+    infer_call.full_url.endswith("/inference"),
+    infer_call.full_url,
 )
 check(
-    "shipboard is asked for --timestamps json",
-    "--timestamps" in ship_call and "json" in ship_call,
-    str(ship_call),
+    "the request asks for verbose_json",
+    'name="response_format"; filename="verbose.json"' in body or "verbose_json" in body,
+    body[:400],
 )
 check(
-    "shipboard is given the wav that was verified on disk",
-    ship_call[:2] == ["process", str(dest)],
-    str(ship_call),
+    "the request carries the wav that was verified on disk",
+    dest.name.encode() in infer_call.data,
+    dest.name,
 )
-check(
-    "the timestamp flags come last, after the path",
-    ship_call[2:] == ["--timestamps", "json"],
-    str(ship_call),
-)
+check("segments are parsed", len(tr.segments) == 2, tr.summary())
 check("segments are parsed", len(tr.segments) == 2, tr.summary())
 check("timings are seconds, not milliseconds", tr.segments[0].end == 2.0, str(tr.segments[0].end))
 check("timed words are counted", tr.timed_words == 5, str(tr.timed_words))
@@ -772,19 +844,18 @@ check(
 )
 check("no anomalies on a clean payload", tr.anomalies == (), str(tr.anomalies))
 
-install_fake({"shipboard": [(b"   \n", b"", 0)]})
+install_http([b"   \n"])
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check("empty stdout -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
-install_fake({"shipboard": [(b"not json at all", b"", 0)]})
+install_http([b"not json at all"])
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check("non-JSON stdout -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
 # A JSON object is no longer a shape error: whisper.cpp's own /inference returns
-# {task, language, duration, text, segments, ...}. Only shipboard unwraps it to a bare
-# array. Both are accepted, and the envelope is recorded as an anomaly.
-_install_fake_dict = {"shipboard": [(b'{"text": "plain"}', b"", 0)]}
-install_fake(_install_fake_dict)
+# {task, language, duration, text, segments, ...}. A bare array is the other accepted
+# shape. Both are accepted, and the envelope is recorded as an anomaly.
+install_http([b'{"text": "plain"}'])
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check(
     "an object payload with no timings -> exit 3",
@@ -797,22 +868,12 @@ check(
     getattr(exc, "message", ""),
 )
 
-install_fake({"shipboard": [(b"[]", b"", 0)]})
+install_http([b"[]"])
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check("empty segments array -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
-install_fake(
-    {
-        "shipboard": [
-            (
-                json.dumps(
-                    [{"id": 0, "text": " hi", "start": 0.0, "end": 1.0, "words": []}]
-                ).encode(),
-                b"",
-                0,
-            )
-        ]
-    }
+install_http(
+    [json.dumps([{"id": 0, "text": " hi", "start": 0.0, "end": 1.0, "words": []}]).encode()]
 )
 exc = raises(glstt.transcribe, dest, audio_duration=25.0)
 check(
@@ -852,7 +913,7 @@ messy = [
     {"id": 4, "start": 9.0, "end": 9.5, "words": []},
     "not an object",
 ]
-install_fake({"shipboard": [(json.dumps(messy).encode(), b"", 0)]})
+install_http([json.dumps(messy).encode()])
 tr = glstt.transcribe(dest, audio_duration=25.0)
 check("blank-text segments are dropped", len(tr.segments) == 3, str(len(tr.segments)))
 check("anomalies are collected, not fatal", len(tr.anomalies) >= 4, str(tr.anomalies))
@@ -879,7 +940,7 @@ for literal in (b"Infinity", b"-Infinity", b"NaN", b"1e999"):
         + literal
         + b', "words": [{"word": " x", "start": 0.0, "end": 1.0}]}]'
     )
-    install_fake({"shipboard": [(nasty, b"", 0), (nasty, b"", 0)]})
+    install_http([nasty, nasty])
     got = raises(glstt.transcribe, dest, audio_duration=25.0)
     check(
         f"a non-finite end ({literal.decode()}) does not crash the run",
@@ -910,7 +971,7 @@ for literal in (b"Infinity", b"-Infinity", b"NaN", b"1e999"):
         )
 
 # And the clamping path still has to produce a writable, valid artefact.
-install_fake({"shipboard": [(payload, b"", 0)]})
+install_http([payload])
 tr = glstt.transcribe(dest, audio_duration=25.0)
 paths = glstt.write(tr, tmp)
 check(
@@ -1094,7 +1155,7 @@ check(
 # --- 7c. a dependency failure ------------------------------------------------
 glp.run = lambda source, work, **kw: (_ for _ in ()).throw(
     glr.DependencyError(
-        "shipboard", ec.DEPENDENCY_FAILED, "shipboard exited 1", stderr=b"recording in progress\n"
+        "stt", ec.DEPENDENCY_FAILED, "the STT endpoint exited 1", stderr=b"recording in progress\n"
     )
 )
 out, err = io.StringIO(), io.StringIO()
@@ -1103,7 +1164,7 @@ with redirect_stdout(out), redirect_stderr(err):
 msg = err.getvalue()
 check("a failed stage exits 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
 check("the failure keeps its work dir", "KEPT for inspection" in msg, msg)
-check("shipboard's stderr is passed through", "recording in progress" in msg, msg)
+check("the endpoint's stderr is passed through", "recording in progress" in msg, msg)
 check(
     "a retained-after-failure dir is reported as kept",
     list(work_root.glob("glimpse-*")),
@@ -1157,10 +1218,10 @@ glp.run = fake_pipeline
 def broken(*, required=None):
     return [
         glc.Check(
-            name="shipboard",
+            name="stt",
             ok=False,
-            detail="not found on PATH",
-            remediation="pipx install shipboard",
+            detail="no transcription endpoint is reachable",
+            remediation="start whisper.cpp and set GLIMPSE_WHISPERCPP_URL",
             code=ec.MISSING_DEPENDENCY,
         )
     ]
@@ -1231,7 +1292,7 @@ check(
 strict = {c.name: c for c in gld.run_all()}
 check("doctor still sees the vault as fatal", strict["vault"].fatal, strict["vault"].detail)
 check("doctor still sees the gateway as fatal", strict["gateway"].fatal, strict["gateway"].detail)
-for name in ("ffmpeg", "ffprobe", "shipboard"):
+for name in ("ffmpeg", "ffprobe"):
     check(f"{name} is fatal for process", not gld.run_all(required=PROCESS_REQUIRES) or True)
 for chk in gld.run_all(required=PROCESS_REQUIRES):
     if chk.name in PROCESS_REQUIRES:
@@ -1534,7 +1595,7 @@ glr.run = real_run
 # arrive.
 
 # --- 9. stage 3 backends: one interface, three wire formats ----------------------
-# Section 6 pinned GLIMPSE_STT=shipboard so it tests one backend. This section covers the
+# Section 6 pinned GLIMPSE_STT=whispercpp so it tests one backend. This section covers the
 # rest: the two HTTP adapters, autodetection with both branches controlled, and the
 # word-coverage guard that every backend is held to.
 
@@ -1589,7 +1650,6 @@ def http_body(url_marker: str, obj) -> bytes:
 # -- native /inference: the protocol this host actually serves --------------------
 import glimpse.stt.backends as glsb  # noqa: E402
 import glimpse.stt.openai_compat as glso  # noqa: E402
-import glimpse.stt.shipboard as glss  # noqa: E402
 import glimpse.stt.whispercpp as glsw  # noqa: E402
 
 real_urlopen = glsw.urllib.request.urlopen
@@ -1719,12 +1779,12 @@ class _Fake:
             raise glr.DependencyError("stt", ec.DEPENDENCY_FAILED, "down", "up")
 
 
-# GLIMPSE_STT is still pinned to shipboard by section 6, so autodetection cannot be
-# exercised until it is unset. Left set, resolve() returns the shipboard branch and every
+# GLIMPSE_STT is still pinned to whispercpp by section 6, so autodetection cannot be
+# exercised until it is unset. Left set, resolve() returns the pinned branch and every
 # assertion below passes without testing anything. The fakes are installed *before* the pin
 # is removed, so resolve() cannot reach a real urlopen on the way through.
 real_wsc = glsw.HttpWhisperCpp
-real_sb = glss.Shipboard
+real_oa = glso.OpenAICompat
 pinned = os.environ.pop("GLIMPSE_STT", None)
 
 
@@ -1738,27 +1798,22 @@ class _Named:
 
 
 glsw.HttpWhisperCpp = lambda: _Named("whispercpp", True)
-glss.Shipboard = lambda: _Named("shipboard", True)
+glso.OpenAICompat = lambda: _Named("openai", True)
 check(
-    "with both available, autodetect prefers the HTTP endpoint",
+    "with both available, autodetect prefers local whisper.cpp",
     glsb.resolve().name == "whispercpp",
-    glsb.resolve().name,
-)
-check(
-    "autodetect never starts a subprocess before trying HTTP",
-    glsb.resolve().name != "shipboard",
     glsb.resolve().name,
 )
 
 glsw.HttpWhisperCpp = lambda: _Fake(True)
-glss.Shipboard = lambda: _Fake(False)
-check("autodetect prefers a reachable HTTP endpoint", glsb.resolve().ok is True)
+glso.OpenAICompat = lambda: _Fake(False)
+check("autodetect prefers a reachable whisper.cpp endpoint", glsb.resolve().ok is True)
 
 glsw.HttpWhisperCpp = lambda: _Fake(False)
-glss.Shipboard = lambda: _Fake(True)
-check("autodetect falls back to shipboard when the endpoint is down", glsb.resolve().ok is True)
+glso.OpenAICompat = lambda: _Fake(True)
+check("autodetect falls back to the OpenAI-compatible endpoint", glsb.resolve().ok is True)
 
-glss.Shipboard = lambda: _Fake(False)
+glso.OpenAICompat = lambda: _Fake(False)
 exc = raises(glsb.resolve)
 check(
     "autodetect with nothing reachable -> exit 2",
@@ -1767,13 +1822,29 @@ check(
 )
 check(
     "the no-backend message names every way out",
-    exc is not None
-    and all(k in exc.remediation.lower() for k in ("whispercpp", "shipboard", "openai-compatible")),
+    exc is not None and all(k in exc.remediation.lower() for k in ("whispercpp", "openai")),
     getattr(exc, "remediation", ""),
 )
 
+# The backend name that was removed is now rejected rather than silently resolved. This is
+# the assertion that inverts: before #44, `resolve("shipboard")` returned a backend.
+exc = raises(glsb.resolve, "shipboard")
+check(
+    "the removed backend is rejected, not resolved",
+    exc is not None and exc.code == ec.USAGE,
+    f"{getattr(exc, 'code', 'shipboard still resolves to something')}",
+)
+check(
+    "and the rejection names the two that remain",
+    exc is not None and "shipboard" in exc.message,
+    getattr(exc, "message", ""),
+)
 glsw.HttpWhisperCpp = real_wsc
-glss.Shipboard = real_sb
+glso.OpenAICompat = real_oa
+if pinned is not None:
+    os.environ["GLIMPSE_STT"] = pinned
+
+glsw.HttpWhisperCpp = real_wsc
 if pinned is not None:
     os.environ["GLIMPSE_STT"] = pinned
 
@@ -1783,7 +1854,7 @@ check("an unknown backend name -> exit 1", exc.code == ec.USAGE, f"{getattr(exc,
 
 # The interfaces are structurally identical -- that is the contract, and a typo in one
 # backend's method name would otherwise only surface at runtime.
-for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat, glss.Shipboard):
+for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat):
     check(
         f"{_cls.__name__} satisfies TranscriptionBackend",
         isinstance(_cls(), glsb.TranscriptionBackend),
@@ -1791,6 +1862,7 @@ for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat, glss.Shipboard):
 
 glsw.urllib.request.urlopen = real_urlopen
 glso.urllib.request.urlopen = real_oai_urlopen
+urllib.request.urlopen = real_urlopen
 
 
 # --- 10. the output bundle: XDG default, publication, verified export -----------

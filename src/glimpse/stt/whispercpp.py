@@ -17,7 +17,7 @@ only `{"text": ...}`; there is nothing to read timings off it.
 
 | request fields | identical 3x | segment counts |
 |---|---|---|
-| shipboard's own (`language` + `verbose_json`) | no | 11, 11, 11 |
+| `language` + `verbose_json` | no | 11, 11, 11 |
 | `temperature` + `no_timestamps` | no | 11, 11, 11 |
 | plus `threads=1` | no | 10, 11, 11 |
 | `threads=2` / `threads=4` | no | 11, 11, 11 / 11, 11, 10 |
