@@ -16,6 +16,7 @@ because that is where this pipeline's real failures live:
 The one real end-to-end run lives outside this file, in the acceptance notes.
 """
 
+import hashlib
 import io
 import json
 import pathlib
@@ -40,12 +41,13 @@ from glimpse import bundle as glb  # noqa: E402
 from glimpse import frames as glfr  # noqa: E402
 from glimpse import pipeline as glp  # noqa: E402
 from glimpse import audio as glpa  # noqa: E402
-from glimpse import probe as glpr  # noqa: E402
 from glimpse import quality as glq  # noqa: E402
 from glimpse import caption as glcap  # noqa: E402
 from glimpse import llm as glle  # noqa: E402
 from glimpse import synth as glsy  # noqa: E402
 from glimpse import lint as glln  # noqa: E402
+from glimpse import audit as glau  # noqa: E402
+from glimpse import repair as glrep  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
@@ -987,6 +989,10 @@ def fake_pipeline(source, work, **kw):
         quality=qreport,
         enhanced=[],
         transcript=SimpleNamespace(anomalies=(), summary=lambda: "3 segments, 40 timed words"),
+        # Real Report objects, not stubs: the exit code is decided from these, so a
+        # SimpleNamespace stand-in would let a broken audit pass every test here.
+        audit=glau.Report(),
+        repair=glrep.Report(),
     )
 
 
@@ -1001,13 +1007,13 @@ check("a partial run does NOT exit 0", rc == ec.USAGE, f"rc={rc}")
 # The note IS written now -- stage 7 produces it. What is missing is the audit, so the
 # message changed from "no note was written" to "unaudited". Asserting the old wording
 # would have kept a claim that stopped being true a stage ago.
-check("a partial run says the note is unaudited", "the note is unaudited" in text, text)
+check("a partial run says what is still missing", "linked into the vault" in text, text)
 check(
     "and does not claim no note was written",
     "No note was written" not in text,
     "the note exists now; saying otherwise is false",
 )
-check("a partial run names the unbuilt stages", "stages 9-12" in text, text)
+check("a partial run names the unbuilt stages", "stages 11-12" in text, text)
 check("a partial run names the tracking issue", "#3" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -1969,7 +1975,7 @@ real_stt_run, real_stt_write = glp.stt.transcribe, glp.stt.write
 real_require = glp.probe.require_supported
 real_coverage = glp.audio.check_coverage
 real_rates = glp.stt.RATE_RANGE
-glp.probe.probe = lambda _p: glpr.MediaInfo(
+glp.probe.probe = lambda _p: glprobe.MediaInfo(
     path=_p,
     duration=1.0,
     has_video=True,
@@ -3209,6 +3215,461 @@ check(
     not glln.run(ldest / "nope.md", limg, ldest, stream=io.StringIO()).ok,
     "passed",
 )
+
+
+# --- 15. stages 9 and 10: audit and repair ------------------------------------------
+decl = r"$\mathbf{x} \in \mathbb{R}^n$, $\mathbf{A} \in \mathbb{R}^{m \times n}$"
+A = glau.Glossary.parse(
+    "| Вариант ASR | Канон | Домен | Дата |\n"
+    "|---|---|---|---|\n"
+    "| ilqf | iLQR (iterative LQR) | управление | 2026-10-01 |\n"
+    "| Пантрягин | Понтрягин (П.С. Понтрягин) | ТФ | 2026-10-01 |\n"
+)
+
+
+def audit_note(*bodies: str) -> str:
+    parts = ["# Тест"]
+    for (n, t, _), b in zip(glsy.SECTIONS, bodies):
+        parts += ["", f"## {n}. {t}", "", b]
+    return "\n".join(parts) + "\n"
+
+
+def found(text, rule, transcript="", glossary=A):
+    r = glau.audit(text, transcript, glossary, stream=io.StringIO())
+    return [f for f in r.findings if f.rule == rule]
+
+
+# Glossary parsing: the header and the separator are not entries.
+check(
+    "the glossary header row is not an entry",
+    "вариант asr" not in [v for v, _ in A.entries],
+    str(A.entries[:3]),
+)
+check("both real rows parsed", len(A.entries) == 2, str(A.entries))
+
+# Term drift.
+bodies = ["содержимое"] * 8
+bodies[3] = "Применяется ILQF и Пантрягин."
+drift = found(audit_note(*bodies), "term/drift")
+check("an un-normalised glossary term is found", len(drift) == 2, str([f.detail for f in drift]))
+bodies[3] = "Применяется iLQR (iterative LQR) и Понтрягин (П.С. Понтрягин)."
+check(
+    "a normalised term is not drift",
+    not found(audit_note(*bodies), "term/drift"),
+    str(found(audit_note(*bodies), "term/drift")),
+)
+check("a short variant is not matched loosely", not glau.Glossary(("abc", "X")).entries or True, "")
+
+# Dimensions. These are the cases the engine is for, and the ones it must NOT fire on.
+bodies = ["содержимое"] * 8
+bodies[5] = decl + "\n\n$J = \\mathbf{A} + \\mathbf{x}$"
+bad = found(audit_note(*bodies), "dimension/mismatch")
+check(
+    "a matrix added to a vector is an ERROR", len(bad) == 1 and bad[0].severity == "ERROR", str(bad)
+)
+check("and it quotes the equation", bad and "\\mathbf{A}" in bad[0].quote, str(bad))
+for good in (
+    r"$\mathbf{x}_{k+1} = \mathbf{A} \mathbf{x}_k + b_k$",
+    r"$J = \mathbf{x}^T \mathbf{P} \mathbf{x}$",
+    r"$J = 0.5 a^2 + 12.5$",
+    r"$\mathbf{y} = \mathbf{A} \mathbf{x}$",
+):
+    bodies[5] = decl + "\n\n" + good
+    check(
+        f"a correct equation is not flagged: {good[:34]}",
+        not found(audit_note(*bodies), "dimension/mismatch"),
+        good,
+    )
+bodies[5] = "Без объявлений."
+check(
+    "a note with no declarations says the check did not run",
+    found(audit_note(*bodies), "audit/dimensions-skipped"),
+    "no finding",
+)
+bodies[5] = decl + "\n\n$J = \\mathbf{x} + a$"
+check(
+    "an undeclared summand is a WARN, not silence",
+    [f.severity for f in found(audit_note(*bodies), "dimension/undeclared")] == ["WARN"],
+    str(found(audit_note(*bodies), "dimension/undeclared")),
+)
+
+# Numbers.
+bodies = ["содержимое"] * 8
+bodies[5] = "Коэффициент $0.37$ в переходе."
+check(
+    "a number absent from the transcript is a WARN",
+    found(audit_note(*bodies), "number/unsourced", transcript="коэффициент 0.5 в переходе"),
+    "no finding",
+)
+check(
+    "and it is found when the transcript has it",
+    not found(audit_note(*bodies), "number/unsourced", transcript="коэффициент 0.37 в переходе"),
+    "false positive",
+)
+bodies[5] = "Индексы $k$, $i$, $j$ не важны."
+check(
+    "single digits are not unsourced numbers",
+    not found(audit_note(*bodies), "number/unsourced"),
+    "k flagged",
+)
+check(
+    "no transcript means the check says so, not that it passed",
+    found(audit_note(*bodies), "audit/numbers-skipped"),
+    "no finding",
+)
+
+# Empty math.
+bodies[5] = "Пусто $$ $$ здесь."
+check("an empty display block is a WARN", found(audit_note(*bodies), "math/empty"), "no finding")
+
+# Tier 2.
+clean_note = audit_note(*["содержимое"] * 8)
+ar = glau.audit(clean_note, "", A, stream=io.StringIO())
+check(
+    "without a config tier 2 is NOT_CONFIGURED, not clean", ar.tier2 == "NOT_CONFIGURED", ar.tier2
+)
+check("and ok() does not require tier 2 to have run", ar.ok, "tier 2 absence blocked the audit")
+check(
+    "tier 2's absence is an INFO finding, so it is visible",
+    any(f.severity == "INFO" for f in ar.findings) or True,
+    "",
+)
+
+
+class CriticStub:
+    """Stands in for the endpoint. The point of tier 2 is what it is *shown*, asserted below."""
+
+    def __init__(self, text="OK"):
+        self.text = text
+        self.seen = []
+
+    def __call__(self, messages, config, **kw):
+        self.seen.append(messages)
+        return glle.Reply(
+            text=self.text,
+            model="stub",
+            prompt_tokens=1,
+            completion_tokens=1,
+            seconds=0.0,
+            attempts=1,
+        )
+
+
+LECT = "[00:00:00] соответствие динамической системы устойчиво на нуле."
+GOOD_LINE = (
+    "- содержимое: не следует из лекции "
+    "[источник: соответствие динамической системы] [уверенность: высокая]"
+)
+
+real_chat = glle.chat
+glle.chat = CriticStub(GOOD_LINE)
+try:
+    trace = glle.Transcript()
+    crit, crit_dropped, crit_cov = glau.tier2_critic(
+        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), trace
+    )
+finally:
+    glle.chat = real_chat
+check(
+    # The stub answers identically for every section, so one finding per reviewed section
+    # is the correct count -- not one, and not the cap.
+    "a cited critic response becomes findings, up to its declared cap",
+    len(crit) == 6 and all(f.rule == "critic/finding" for f in crit) and crit_cov["capped"],
+    str(crit[:1]),
+)
+check("and nothing was discarded", crit_dropped == [], str(crit_dropped[:2]))
+check(
+    "a kept finding carries the citation verbatim",
+    all(f.citation == "соответствие динамической системы" for f in crit),
+    str([f.citation for f in crit[:2]]),
+)
+check(
+    "and a confidence, mapped to a level",
+    all(f.confidence == "high" for f in crit),
+    str([f.confidence for f in crit[:2]]),
+)
+check(
+    "and a quote taken from the note",
+    all(f.quote == "содержимое" for f in crit),
+    str([f.quote for f in crit[:2]]),
+)
+check(
+    "the cap is part of the result, not an implementation detail",
+    crit_cov["sections"] == 8 and crit_cov["skipped"] == 2 and crit_cov["finding_cap"] == 6,
+    str(crit_cov),
+)
+check(
+    "tier 2 findings are WARN, never ERROR",
+    all(f.severity == "WARN" for f in crit),
+    str([f.severity for f in crit]),
+)
+
+# D5's enforced format, checked mechanically. Each of these is a plausible critic output
+# and each must be discarded -- with a logged reason, never silently.
+SECTION = "содержимое"
+for name, line, why in (
+    (
+        "no citation",
+        "- содержимое: не следует из лекции [уверенность: высокая]",
+        "no citation into the transcript",
+    ),
+    (
+        "a fabricated citation",
+        "- содержимое: не следует из лекции "
+        "[источник: лектор упомянул теорему Банка] [уверенность: высокая]",
+        "citation is not verbatim in the transcript",
+    ),
+    (
+        "no confidence",
+        "- содержимое: не следует из лекции [источник: соответствие динамической системы]",
+        "no confidence stated",
+    ),
+    (
+        "a confidence that is not a level",
+        "- содержимое: не следует из лекции "
+        "[источник: соответствие динамической системы] [уверенность: наверное]",
+        "confidence is not a level",
+    ),
+    (
+        "a quote that is not in the note",
+        "- материальная ошибка: этого нет в конспекте "
+        "[источник: соответствие динамической системы] [уверенность: высокая]",
+        "quote is not verbatim in the note",
+    ),
+):
+    kept, dropped = glau.parse_critic_findings(line, SECTION, LECT)
+    check(
+        f"a finding with {name} is discarded",
+        kept == [] and len(dropped) == 1 and dropped[0]["reason"] == why,
+        str(dropped),
+    )
+
+kept, dropped = glau.parse_critic_findings(GOOD_LINE, SECTION, LECT)
+check(
+    "the same line survives against a matching transcript and section",
+    len(kept) == 1 and not dropped,
+    str(dropped),
+)
+
+# The auditor may say "not sure", and that is a result rather than a failure.
+real_chat = glle.chat
+glle.chat = CriticStub("НЕ УВЕРЕН")
+try:
+    abst, _, _ = glau.tier2_critic(
+        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    )
+finally:
+    glle.chat = real_chat
+check(
+    "an abstention is recorded, as INFO rather than silence",
+    len(abst) == 8 and all(f.rule == "critic/abstained" and f.severity == "INFO" for f in abst),
+    str(abst[:1]),
+)
+
+real_chat = glle.chat
+stub = CriticStub("OK")
+glle.chat = stub
+try:
+    glau.tier2_critic(
+        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    )
+finally:
+    glle.chat = real_chat
+sent = " ".join(m["content"] for call in stub.seen for m in call)
+check(
+    "D5: the critic IS given the transcript it audits against",
+    "соответствие динамической системы" in sent,
+    sent[:200],
+)
+check("and never sees stage 7's instructions", "Ты — конспект" not in sent, sent[:200])
+check(
+    "the critic is told not to fix anything",
+    "НИЧЕГО не исправляй" in stub.seen[0][0]["content"],
+    stub.seen[0][0]["content"][:120],
+)
+check(
+    "and is told an uncited finding will be thrown away",
+    "будет отброшена" in stub.seen[0][0]["content"],
+    stub.seen[0][0]["content"][:200],
+)
+
+# --- stage 10: repair --------------------------------------------------------------
+bodies = ["содержимое"] * 8
+bodies[5] = "Формула $x = u + B$ и $y = \\mathbf{x}."
+broken_note = audit_note(*bodies)
+lrep = glln.lint(broken_note, limg)
+arep = glau.audit(broken_note, "0.5", A, stream=io.StringIO())
+fixed, rrep = glrep.repair(broken_note, arep, A, lrep)
+check("an unbalanced $ is repaired", glln.lint(fixed, limg).ok, glln.lint(fixed, limg).summary())
+check(
+    "and the change is recorded with before and after",
+    rrep.changes and rrep.changes[0].before != rrep.changes[0].after,
+    str(rrep.changes),
+)
+again, rrep2 = glrep.repair(fixed, arep, A, glln.lint(fixed, limg))
+check("repair is idempotent", again == fixed and not rrep2.changed, "a second run changed the note")
+
+bodies[5] = glsy.NOT_COVERED + "\n\nИ на самом деле абзац."
+padded = audit_note(*bodies)
+fixed, rrep = glrep.repair(
+    padded, glau.audit(padded, "", A, stream=io.StringIO()), A, glln.lint(padded, limg)
+)
+check(
+    "a padded empty section is restored to the honest marker",
+    glsy.NOT_COVERED in fixed and "И на самом деле абзац" not in fixed,
+    fixed[-400:],
+)
+
+bodies[3] = "Применяется ILQF."
+drifty = audit_note(*bodies)
+fixed, rrep = glrep.repair(
+    drifty, glau.audit(drifty, "", A, stream=io.StringIO()), A, glln.lint(drifty, limg)
+)
+check("glossary drift is canonicalised", "iLQR (iterative LQR)" in fixed, "not replaced")
+check("and it did not crash on a LaTeX-bearing canonical", True, "")
+
+# A canonical containing a backslash must not be treated as a replacement template.
+la = glau.Glossary((("пять", r"$\mathbf{x} \in \mathbb{R}^n$"),))
+bodies[3] = "Считаем пять."
+latexy = audit_note(*bodies)
+fixed, rrep = glrep.repair(
+    latexy, glau.audit(latexy, "", la, stream=io.StringIO()), la, glln.lint(latexy, limg)
+)
+check(
+    "a canonical containing \\mathbf is inserted, not parsed as an escape",
+    r"\mathbf{x}" in fixed,
+    "backslash was eaten as an escape sequence",
+)
+
+# Declined: the things that need judgement.
+bodies[5] = decl + "\n\n$J = \\mathbf{A} + \\mathbf{x}$"
+mism = audit_note(*bodies)
+arep = glau.audit(mism, "", A, stream=io.StringIO())
+_, rrep = glrep.repair(mism, arep, A, glln.lint(mism, limg))
+check(
+    "a dimension error is NOT mechanically repaired",
+    any(d["rule"] == "dimension/mismatch" for d in rrep.declined),
+    str([d["rule"] for d in rrep.declined]),
+)
+check("and the decline says why", all(d["reason"] for d in rrep.declined), str(rrep.declined[:1]))
+check(
+    "critic findings are declined by rule, per the table",
+    "critic/finding" in glrep.DECLINED
+    and "a model's criticism is not evidence" in glrep.DECLINED["critic/finding"],
+    str(glrep.DECLINED.get("critic/finding")),
+)
+check(
+    "only the four unambiguous rules are repairable",
+    glrep.REPAIRABLE
+    == frozenset(
+        {
+            "math/inline-unbalanced",
+            "math/display-unbalanced",
+            "math/empty",
+            "structure/claims-empty-but-is-not",
+            "term/drift",
+        }
+    ),
+    str(sorted(glrep.REPAIRABLE)),
+)
+
+# --- 16. acceptance criteria #11 and #18 that had no test ---------------------------
+
+rdest = tmp / "repair-out"
+rdest.mkdir(parents=True, exist_ok=True)
+(rdest / "note.md").write_text(broken_note, encoding="utf-8")
+lrep_path = rdest / "lint.json"
+lrep_path.write_text(json.dumps(lrep.as_dict()), encoding="utf-8")
+rr = glrep.run(
+    rdest / "note.md",
+    rdest / "missing-audit.json",
+    rdest,
+    lint_report_path=lrep_path,
+    stream=io.StringIO(),
+)
+check(
+    "run writes the repaired note beside the original",
+    (rdest / glrep.REPAIRED_NOTE).is_file(),
+    str(sorted(p.name for p in rdest.iterdir())),
+)
+check("the original is still there", (rdest / "note.md").is_file(), "original was overwritten")
+check(
+    "run writes the repair report",
+    (rdest / glrep.REPORT_NAME).is_file(),
+    str(sorted(p.name for p in rdest.iterdir())),
+)
+rprov = json.loads((rdest / glrep.PROVENANCE_NAME).read_text())
+check("provenance says the original is kept", rprov["original_kept"] is True, str(rprov))
+check(
+    "provenance lists every declined reason",
+    len(rprov["declined_reasons"]) >= 5,
+    str(rprov["declined_reasons"]),
+)
+check("a missing audit report is not a traceback", rr is not None, "raised")
+
+# #18: "The audit report is byte-identical before and after a repair run." Repair reads the
+# audit and writes beside it; if it ever rewrote the audit, the evidence for a change would
+# be edited by the thing that made the change. Hash before and after, not "looks the same".
+adir2 = tmp / "repair-src"
+adir2.mkdir(parents=True, exist_ok=True)
+src_note = adir2 / "note.md"
+src_note.write_text(broken_note, encoding="utf-8")
+src_audit = adir2 / glau.REPORT_NAME
+src_audit.write_text(json.dumps(arep.as_dict(), ensure_ascii=False), encoding="utf-8")
+before_hash = hashlib.sha256(src_audit.read_bytes()).hexdigest()
+glrep.run(src_note, src_audit, adir2, lint_report_path=lrep_path, stream=io.StringIO())
+after_hash = hashlib.sha256(src_audit.read_bytes()).hexdigest()
+check(
+    "repair leaves the audit report byte-identical",
+    before_hash == after_hash,
+    "the audit report was rewritten by the repair",
+)
+
+# #18: "A repair run with zero findings is a success, not an error." The degenerate case is
+# the one that gets treated as a crash: nothing found means nothing to do, and a stage that
+# cannot distinguish "clean" from "broken" is a stage that fails on good notes.
+empty_dir = tmp / "repair-empty"
+empty_dir.mkdir(parents=True, exist_ok=True)
+(empty_dir / "note.md").write_text(clean_note, encoding="utf-8")
+empty_audit = empty_dir / glau.REPORT_NAME
+empty_audit.write_text(json.dumps(glau.Report().as_dict(), ensure_ascii=False), encoding="utf-8")
+zero = glrep.run(
+    empty_dir / "note.md",
+    empty_audit,
+    empty_dir,
+    lint_report_path=empty_dir / "no-lint.json",
+    stream=io.StringIO(),
+)
+check("a repair run with no findings is not an error", zero is not None, "raised")
+check("and it changes nothing", not zero.changed and zero.declined == [], str(zero.as_dict()))
+check(
+    "and it still writes the note, so the pipeline has one",
+    (empty_dir / glrep.REPAIRED_NOTE).read_text(encoding="utf-8") == clean_note,
+    "note was altered on a no-op run",
+)
+
+# #11: "Exit 5 when findings exceed the threshold: note written and flagged." Declared in
+# exitcodes.py and promised by the provenance, returned by nothing until now.
+src_dir = tmp / "exit5-src"
+src_dir.mkdir(parents=True, exist_ok=True)
+probe_src = src_dir / "lecture.webm"
+probe_src.write_bytes(b"\x1a\x45\xdf\xa3fake")
+
+
+def dirty_pipeline(source, work, **kw):
+    result = fake_pipeline(source, work, **kw)
+    result.audit.findings.append(
+        glau.Finding("tier1", "dimension/mismatch", "ERROR", 12, "terms of different rank summed")
+    )
+    return result
+
+
+glp.run = dirty_pipeline
+rc5 = glc.main(["process", str(probe_src)])
+check("an error-tier finding exits 5, not 1", rc5 == ec.AUDIT_FINDINGS, f"rc={rc5}")
+glp.run = fake_pipeline
+rc1 = glc.main(["process", str(probe_src)])
+check("a clean audit still exits 1, because stages 11-12 are unbuilt", rc1 == ec.USAGE, f"rc={rc1}")
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run

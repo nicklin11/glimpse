@@ -17,18 +17,23 @@ from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
 from .workspace import WorkDir
 
-# Subcommands and stages that are not built yet. Each names its tracking issue
-# so the failure is a pointer, not a dead end.
+# Subcommands that are not built yet. Each names its tracking issue so the failure is a
+# pointer, not a dead end. The standalone subcommand is unbuilt; the stage itself runs inside
+# `process`, so "stage 9, tracked in #11" would now be a false statement about the pipeline.
 PENDING: dict[str, str] = {
-    "audit": "stage 9, tracked in #11",
+    "audit": "the standalone `glimpse audit NOTE` entry point, tracked in #11; stage 9 "
+    "does run as part of `process`",
 }
 
-# `process` exits non-zero even on a successful run, because the note is not audited: D5
-# makes a note that has not been through stage 9 conditional, not published. A note on disk
-# that no human or machine has checked is the failure this exit code exists for.
+# `process` exits non-zero even on a run where every stage succeeded, because the note is
+# not finished: D5 makes a note that has not been linked into the vault conditional, not
+# published. A note on disk that nothing has read is the failure this exit code exists for.
+# The code itself is decided at the end of `_process`: exit 5 when the audit found errors,
+# otherwise 1. So this message must not name a code -- it would be wrong half the time.
 PROCESS_INCOMPLETE = (
     f"stages 0-{glp.IMPLEMENTED} completed; {glp.REMAINING_NOTE}. "
-    "No audit has been run, so the note is unaudited -- exit 1, not a finished product."
+    "The note is written, linted, audited and repaired, but has not been linked into the "
+    "vault or reported -- not a finished product."
 )
 
 
@@ -117,13 +122,19 @@ def _pending(name: str) -> int:
 
 
 def _process(args: argparse.Namespace) -> int:
-    """Stages 0-3: probe -> audio -> stt. Stages 4-12 are not built.
+    """Stages 1-10: probe -> audio -> stt -> frames -> quality -> caption -> synth -> lint
+    -> audit -> repair.
 
-    Exits `USAGE` (1) even when every implemented stage succeeds. Exit 0 in
-    ADR-0001 means "all artefacts written and verified", and no note exists yet,
-    so claiming success would be the exact silent-degradation failure D2 is
-    written against. This follows the precedent stage 0 set: invoking what this
-    build cannot do is a usage error.
+    Never exits 0 while stages 11-12 are unbuilt. Exit 0 in ADR-0001 means "all
+    artefacts written and verified", and a note that no human or machine has read
+    is not that, so claiming success would be the exact silent-degradation failure
+    D2 is written against. This follows the precedent stage 0 set: invoking what
+    this build cannot do is a usage error.
+
+    The non-zero code is not fixed at 1. `AUDIT_FINDINGS` (5) takes precedence when
+    the audit produced error-tier findings, because 1 would read as "the run was
+    incomplete" and hide that the note exists and is wrong. Both messages are
+    printed either way; only the code disambiguates.
     """
     if not args.path:
         print("glimpse: process needs a recording to work on.", file=sys.stderr)
@@ -166,7 +177,7 @@ def _process(args: argparse.Namespace) -> int:
         )
         return ec.USAGE
     try:
-        result = glp.run(source, work, bundle=output)
+        result = glp.run(source, work, bundle=output, glossary_path=getattr(args, "glossary", None))
     except runner.DependencyError as exc:
         work.retain(exc.message)
         runner.report(exc)
@@ -204,8 +215,8 @@ def _process(args: argparse.Namespace) -> int:
             return ec.DEPENDENCY_FAILED
         print(f"  vault      {len(copied)} files exported to {Path(vault).expanduser()}")
     if not result.quality.ok:
-        # D4: the note would still be written, but there is no note yet -- stage 7 is
-        # unbuilt. What exists is the quality report, so it is named as the artefact.
+        # D4: the note is still written; a bad frame means the crops are soft, not that
+        # the pipeline stopped. The quality report is the artefact that explains why.
         print(
             f"glimpse: quality gate failed for {len(result.quality.failed)}"
             f"/{len(result.quality.frames)} frames; see {result.bundle.root}",
@@ -219,6 +230,31 @@ def _process(args: argparse.Namespace) -> int:
             "text that was never encoded",
             file=sys.stderr,
         )
+    audit_errors = [f for f in result.audit.findings if f.severity == "ERROR"]
+    if audit_errors:
+        # D5: the note is written and FLAGGED, never withheld. Exit 5 is that flag.
+        # Naming the count and the rule is the whole point -- an exit code with no list
+        # attached is a code the reader cannot act on.
+        print(
+            f"glimpse: audit found {len(audit_errors)} error-tier findings; the note is "
+            f"written and flagged, not withheld; see {result.bundle.root}",
+            file=sys.stderr,
+        )
+        for finding in audit_errors[:10]:
+            print(
+                f"glimpse:   line {finding.line} {finding.rule}: {finding.detail}", file=sys.stderr
+            )
+        if len(audit_errors) > 10:
+            print(
+                f"glimpse:   ... and {len(audit_errors) - 10} more in audit/audit.json",
+                file=sys.stderr,
+            )
+        print(
+            "glimpse:   remediation: read the quoted line in audit/audit.json and check it "
+            "against the recording -- stage 10 repaired what was mechanical and declined "
+            "the rest, by name, in repair/repair.json",
+            file=sys.stderr,
+        )
     print(f"glimpse: {PROCESS_INCOMPLETE}")
     print(f"glimpse: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing
@@ -227,7 +263,7 @@ def _process(args: argparse.Namespace) -> int:
     if work.retained:
         for name in sorted(p.name for p in work.path.iterdir()):
             print(f"glimpse:   {work.path / name}")
-    return ec.USAGE
+    return ec.AUDIT_FINDINGS if audit_errors else ec.USAGE
 
 
 def _audit(_args: argparse.Namespace) -> int:
@@ -239,7 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="glimpse",
         description="Turn a lecture recording into a structured, audited Markdown note. "
         f"Stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} are implemented; process exits "
-        f"{ec.USAGE} until the rest are, rather than pretending.",
+        f"non-zero until the rest are ({ec.AUDIT_FINDINGS} if the audit found errors, "
+        f"otherwise {ec.USAGE}), rather than pretending.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -286,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-workdir",
         action="store_true",
         help="keep the work dir even when the run succeeds",
+    )
+    p_process.add_argument(
+        "--glossary",
+        metavar="FILE",
+        help=(
+            "ASR term glossary for stages 9 and 10, in the project's "
+            "`| variant | canonical | domain | date |` format. Without it the term-drift "
+            "rule finds nothing and the audit says so."
+        ),
     )
     p_process.set_defaults(fn=_process)
 
