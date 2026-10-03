@@ -22,7 +22,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, caption, frames, probe, quality, stages, stt
+from . import audio, caption, frames, probe, quality, stages, stt, synth
+from . import llm
 from .bundle import Bundle
 from .workspace import WorkDir
 
@@ -65,6 +66,9 @@ class RunResult:
     #: D5's coverage verdict. `caption.ok` false means the audio and the video are not
     #: describing the same lecture, which is exit 4 rather than a note with holes in it.
     caption: caption.Report
+    #: The note. `synth.degraded` is reported, not hidden: a note written by the template
+    #: synthesizer is a skeleton, and a reader has to be able to tell.
+    note: synth.Note
 
     @property
     def seconds(self) -> float:
@@ -103,7 +107,14 @@ def _estimate(audio_seconds: float) -> tuple[float, float]:
     return audio_seconds * floor, audio_seconds * slow * HEADROOM
 
 
-def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=None) -> RunResult:
+def run(
+    source: Path,
+    work: WorkDir,
+    *,
+    bundle: Bundle | None = None,
+    stream=None,
+    note_title: str | None = None,
+) -> RunResult:
     """Stages 1-4 on `source`.
 
     Intermediate artefacts land in `work`, which is scratch and is removed on success.
@@ -249,6 +260,36 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
         artefacts[extra] = bundle.publish(extra, capdir / extra)
     reports.append(StageReport(6, "caption", time.monotonic() - began, creport.summary()))
 
+    # --- stage 7: synth ------------------------------------------------------
+    # The first stage that may need a model. Two implementations of one Protocol; the
+    # template one runs with nothing configured, so an unavailable endpoint costs the note's
+    # quality rather than the note itself. Which one ran is in provenance, not in prose.
+    began = time.monotonic()
+    sdir = work.dir("synth")
+    try:
+        llm_config = llm.Config.from_env()
+    except llm.NotConfiguredError:
+        llm_config = None
+    note = synth.run(
+        artefacts["captions.json"],
+        artefacts["txt"],
+        Path(source),
+        sdir,
+        config=llm_config,
+        title=note_title,
+        stream=out,
+    )
+    for extra in (synth.NOTE_NAME, synth.REPORT_NAME, synth.PROVENANCE_NAME):
+        artefacts[extra] = bundle.publish(extra, sdir / extra)
+    reports.append(
+        StageReport(
+            7,
+            "synth",
+            time.monotonic() - began,
+            f"{note.synthesizer}, {note.markdown.count(chr(10))} lines",
+        )
+    )
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -261,4 +302,5 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
         quality=qreport,
         enhanced=enhanced,
         caption=creport,
+        note=note,
     )

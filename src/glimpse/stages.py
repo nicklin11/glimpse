@@ -12,14 +12,12 @@ formatting preference.
 
 from __future__ import annotations
 
-#: Stage 0 is `doctor`, run by the CLI. Stages 7-12 are unbuilt (#3).
-IMPLEMENTED = 6
+#: Stage 0 is `doctor`, run by the CLI. Stages 8-12 are unbuilt (#3).
+IMPLEMENTED = 7
 
 #: Stages D3 assigns to the pipeline. The count in every progress line is IMPLEMENTED, not
 #: the 12 D3 describes: a line reading "[6/12] caption" next to "[4/6] frames" tells the
 #: reader two different things about how much of this software exists.
 FIRST_STAGE = 1
 
-REMAINING_NOTE = (
-    "stages 7-12 are not built yet (tracked in #3): synth, lint, audit, repair, link, report"
-)
+REMAINING_NOTE = "stages 8-12 are not built yet (tracked in #3): lint, audit, repair, link, report"
