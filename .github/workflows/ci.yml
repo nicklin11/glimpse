@@ -1,0 +1,95 @@
+name: ci
+
+# Runs on every push and every PR. There is no branch protection requiring it yet
+# (see the note at the bottom), so it is informational until someone with admin
+# turns that on -- a check nothing requires is not a gate.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs. On a fast-moving branch the older run is not evidence of
+# anything once newer commits have landed, and paying for both invites acting on a
+# stale red.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python is ">=3.11", so 3.11 is the floor that must keep working
+        # and 3.13 is the newest the project has to survive. fail-fast is off so one
+        # version breaking does not hide a second one breaking.
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # `pip install -e .` resolves from pyproject, which is also what proves the
+      # editable install actually works. The pipx incident -- numpy added after the
+      # install and never reaching the venv -- was invisible until a command was run
+      # from the installed copy, so CI runs the installed package where it can.
+      # ffmpeg/ffprobe are genuinely required, by one narrow route: the suite
+      # synthesises real video frames as fixture input with `ffmpeg -frames:v 1`.
+      # Everything else is stubbed. The first CI run proved the distinction --
+      # `deps.check_executable` probes the real PATH, so a test asserting "a dead
+      # gateway costs the vision stages, not the run" was being answered by "ffmpeg
+      # is missing, exit 2". That assertion is now stubbed against a controlled PATH
+      # (see tests/test_stages.py), and ffmpeg is installed here for the fixtures.
+      - name: Install ffmpeg (fixture synthesis only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install the package under test
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # ruff is pinned, and the pin is the version that formatted the tree.
+      # `ruff format` changes its output between releases, so an unpinned ruff makes
+      # `format --check` fail on files nobody touched -- a check that cries wolf gets
+      # disabled. Bumping this pin is a deliberate act: bump it, then reformat the
+      # whole tree in the same commit, so the diff is a reformat and not a surprise.
+      - name: Install ruff (pinned)
+        run: pip install "ruff==0.15.20"
+
+      - name: Dependency truth (ADR-0002 D2)
+        run: python tests/test_deps.py
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Format
+        run: ruff format --check src tests
+
+      # The suite is script-based, not pytest: `check(name, cond, detail)` and a
+      # non-zero exit. It is invoked directly, and deliberately runs with no
+      # GLIMPSE_* in the environment -- PATH and HTTP are stubbed, so the suite must
+      # pass on a runner with no ffmpeg, no whisper.cpp and no gateway. A test that
+      # silently starts depending on this host stops proving anything.
+      - name: Stage suite
+        run: python tests/test_stages.py
+
+      - name: Doctor suite
+        run: python tests/test_doctor.py
+
+# Branch protection is a repository setting and cannot be set from a workflow file.
+# Until "Require status checks to pass" names `check` on main, this workflow reports
+# but does not gate -- and a red build on a PR is advisory rather than blocking.
+# Filing that as an issue rather than leaving it as a comment nobody re-reads.
