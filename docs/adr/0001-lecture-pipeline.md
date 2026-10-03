@@ -275,6 +275,65 @@ prevent. The work dir is kept on failure and its path printed: a failed
 transcribe that discards its extracted wav costs a 73-minute re-extraction to
 debug.
 
+## Amendment 2026-10-03 — stage 4 shipped, and the frame set is not reproducible without a record
+
+`frames` was not written from scratch. It is a move of `lecture-frames`
+(`~/.local/bin`, 294 lines), which was the only place the D3 blur fix existed.
+
+**The port is byte-identical to the script it replaces.** Verified by running both on
+`1_lecture_OCS.webm` and comparing: `manifest.tsv` is identical, all 16 frames compare
+equal under `cmp`, total 2 382 320 bytes on both sides. Three independent runs today
+produced the same 16 timestamps, so detection is deterministic here.
+
+**Measured stage cost.** Stage 4 is **287 s** end to end: 232 s detect (a full decode of
+the container) and ~55 s extract. That is **0.065x realtime** and it puts stage 4 within
+11% of stage 3's 257 s. The amendment above said STT "still dominates the implemented
+stages by ~40x over extraction" — true for audio, **no longer true for the pipeline**:
+
+| Stage | Wall | Rate |
+|---|---|---|
+| 1 `probe` | 0.0 s | — |
+| 2 `audio` | 6.4 s | 138 MiB wav written |
+| 3 `stt` | 257.2 s | 0.057x realtime |
+| 4 `frames` | 287.0 s | **0.065x realtime** |
+
+Stage 4 does not consume the audio at all, so it cannot be folded into stage 3's budget
+and cannot be amortised by a longer lecture any differently.
+
+**D7 requires a note that this cost is paid twice if it is not reused.** Detect is the
+whole-container decode; re-rendering frames at a different output width must not pay it
+again, so `run()` takes `reuse_manifest=True` to skip the detect pass. That is the only
+reason the manifest format was kept at all.
+
+**The stored manifest in the vault is not a golden file, and the port found out why.**
+`frames/Лекция 1. 01.10.26/manifest.tsv` lists **17** states; the same ffmpeg build
+(n9.0.2, 2026-09-22) on the same unmodified source lists **16**, with only 9 timestamps
+in common. Same binary, same input, 28 hours apart — so the difference is the *settings*,
+not the environment, and the manifest alone does not record which settings. `run()` now
+writes `detect.json` beside it: the resolved filter string, every `Settings` field, the
+ffmpeg build, and whether the manifest was reused. Without that record a later reader
+cannot tell whether the frames or the code changed, and the set cannot be reproduced.
+
+**The retry for ffmpeg's input-open failure was masking a different fault.** The ported
+script retried `Error opening input` four times unconditionally, and on this host that
+masked a **renamed parent directory**: ffmpeg reported "No such file or directory" five
+times in a row for a file that was simply at a new path, and the script's own message
+blamed ffmpeg for what was a missing input. `run()` re-checks `source.is_file()` before
+each attempt and raises **exit 1, usage** if the path is gone. Only a source that is
+verified present on every attempt still earns the retry, and its message says so.
+
+**Zero frames is a failure, not an empty success.** The ported script wrote a
+header-only manifest and exited 0. That is exactly the D3 failure mode — artefact counts
+verified on disk, never inferred from an exit code — and it is how a 27-minute extraction
+could produce nothing and still report success. `run()` raises **exit 3** on a detector
+that selects nothing, and again, one level deeper, when ffmpeg exits 0 having written no
+frame file.
+
+**Stage 4 does not honour `--max`.** The script's `--max` cap on frame count was dropped:
+it samples the *detector's* output before extraction, so a capped run still pays the
+whole 232 s decode and then discards work. Sampling belongs to stage 6 (ADR-0005), where
+the frames are read by a VLM and the cost is real money.
+
 ## Evidence: the error that justifies this pipeline
 
 Section 7.3 of the finished lecture 1 note contained three mutually exclusive

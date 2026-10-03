@@ -47,7 +47,7 @@ Implementation stage. ADR-0001 accepted; the pipeline is tracked in
 | 0 `doctor` | **done** — [`#4`](https://github.com/nicklin11/glimpse/issues/4) |
 | 1 `probe` | **done** — shipped with [`#5`](https://github.com/nicklin11/glimpse/issues/5) |
 | 2-3 `audio` + `stt` | **done** — [`#5`](https://github.com/nicklin11/glimpse/issues/5) |
-| 4 `frames` | open, [`#7`](https://github.com/nicklin11/glimpse/issues/7) |
+| 4 `frames` | **done** — ported from `lecture-frames`, [`#7`](https://github.com/nicklin11/glimpse/issues/7) |
 | 5 `quality` | open, [`#9`](https://github.com/nicklin11/glimpse/issues/9) |
 | 6 `captions` | open, [`#10`](https://github.com/nicklin11/glimpse/issues/10) |
 | 7 `synth` | open, tracked in [`#3`](https://github.com/nicklin11/glimpse/issues/3) |
@@ -57,16 +57,21 @@ Implementation stage. ADR-0001 accepted; the pipeline is tracked in
 | 11 `link` | open, [`#8`](https://github.com/nicklin11/glimpse/issues/8) |
 | 12 `report` | open, tracked in [`#3`](https://github.com/nicklin11/glimpse/issues/3) |
 
-`glimpse doctor` works. `glimpse process` runs stages 0-3 — probe, extract audio,
-transcribe — and **exits 1 until stages 4-12 exist**, because no note is written
-yet and exit 0 means "all artefacts written and verified" in the table below.
+`glimpse doctor` works. `glimpse process` runs stages 0-4 — probe, extract audio,
+transcribe, extract frames — and **exits 1 until stages 5-12 exist**, because no note is
+written yet and exit 0 means "all artefacts written and verified" in the table below.
 `glimpse audit` exits 1 with a pointer to its tracking issue.
+
+Stage 4 measures **232 s on a 73-minute lecture** (0.053x realtime), which is close to
+stage 3's 257 s — the two are now comparable in cost, and stage 4 does not use the audio
+at all. It decodes the whole container to find the distinct screen states, then seeks the
+original source for each one. On lecture 1 that is 16 frames from 4396 s of video.
 
 ### Running the tests
 
 ```sh
 python tests/test_doctor.py     # stage 0: the exit-code contract
-python tests/test_stages.py     # stages 1-3: contracts and failure modes
+python tests/test_stages.py     # stages 1-4: contracts and failure modes
 ruff check src tests && ruff format --check src tests
 ```
 
