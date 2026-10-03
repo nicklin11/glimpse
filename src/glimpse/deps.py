@@ -137,12 +137,16 @@ def check_ffprobe() -> Check:
 def check_stt() -> Check:
     """D2 (amended): STT is delegated to an *endpoint*, not to a utility.
 
-    `shutil.which("shipboard")` answers "is the binary on PATH" and nothing else. It
-    cannot tell "no STT configured" from "STT configured and its backend is down" -- and
-    `process` used to discover the second only in stage 3, after 6 s of audio extraction.
-    So the configured backend is asked instead, and the backend's own health check is the
-    probe. `doctor` never spends a lecture-length request on this: `check()` is a loopback
-    GET, not a transcription.
+    Asking "is some binary on PATH" cannot tell "no STT configured" from "STT configured and
+    its backend is down" -- and `process` used to discover the second only in stage 3, after
+    6 s of audio extraction. So the configured backend is asked instead, and the backend's own
+    health check is the probe. `doctor` never spends a lecture-length request on this:
+    `check()` is a loopback GET, not a transcription.
+
+    It also reports **where the audio is going**. The two remaining backends have opposite
+    trust properties -- a local whisper.cpp keeps the lecture on this machine, an
+    OpenAI-compatible endpoint does not -- and an operator should not have to read the README
+    to learn that their recording left the host.
     """
     engine = stt.backend()
     info = engine.info()
@@ -157,30 +161,13 @@ def check_stt() -> Check:
             remediation=exc.remediation,
         )
     detail = f"{info.name} at {info.target} reachable — {info.detail}"
+    if info.name in ("openai", "openai-compatible"):
+        detail += "; NOTE: audio and transcripts leave this machine"
+    else:
+        detail += "; audio stays on this machine"
     for note in info.notes:
         detail += f"; {note}"
     return Check(name="stt", ok=True, detail=detail)
-
-
-def check_shipboard() -> Check:
-    """shipboard, only when it is the configured backend. Not mandatory any more."""
-    if stt.backend().name != "shipboard":
-        return Check(
-            name="shipboard",
-            ok=True,
-            fatal=False,
-            detail="not the configured STT backend; not checked",
-        )
-    check = check_executable(
-        "shipboard",
-        ["--help"],
-        "install: pipx install shipboard   (local checkout: pipx install -e ~/Coding/shipboard)",
-        report="ok",
-    )
-    # Never fatal on its own: `check_stt` probes the configured backend and carries the
-    # fatal verdict. Making this fatal too would fail `doctor` twice for one cause.
-    check.fatal = False
-    return check
 
 
 def check_vault() -> Check:
@@ -347,7 +334,6 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
         check_ffprobe(),
         check_numpy(),
         check_stt(),
-        check_shipboard(),
         check_gateway(),
         check_llm(),
         check_vault(),
@@ -366,9 +352,8 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
 
 
 # What `glimpse process` stages 0-3 actually invoke.
-# `shipboard` is not here: it is one backend among several, and stage 3 reaches
-# whichever is configured. Requiring the binary would reintroduce the dependency
-# this removed.
+# No STT binary is required: stage 3 reaches whichever endpoint is configured, and the
+# check above probes that endpoint rather than looking for a program on PATH.
 PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "numpy", "stt"})
 
 

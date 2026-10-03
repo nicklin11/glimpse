@@ -86,19 +86,24 @@ build rather than an incidental detail.
 
 Stage 3 delegates to an **endpoint**. Three backends ship:
 
-| backend | selected by | speaks |
-|---|---|---|
-| `whispercpp` | autodetected | whisper.cpp native `POST /inference` |
-| `openai` | autodetected, or `GLIMPSE_STT=openai` | OpenAI-compatible `/v1/audio/transcriptions` |
-| [`shipboard`](https://github.com/nicklin11/shipboard) | autodetected | `shipboard process --timestamps json`, by the same author, MIT |
+| backend | selected by | speaks | where the audio goes |
+|---|---|---|---|
+| `whispercpp` | autodetected, preferred | whisper.cpp native `POST /inference` | **stays on this machine** |
+| `openai` | `GLIMPSE_STT=openai` | OpenAI-compatible `/v1/audio/transcriptions` | **leaves this machine** |
 
-`GLIMPSE_STT=auto` (the default) probes an HTTP endpoint first and falls back to
-`shipboard`. Whatever actually ran is recorded in the transcript, so a silent fallback shows
-up in the output rather than surfacing later as a mystery.
+`GLIMPSE_STT=auto` (the default) prefers a local whisper.cpp and falls back to the
+OpenAI-compatible endpoint. That order is deliberate: with both configured, the local one
+keeps the recording on the host. Whatever actually ran is recorded in the transcript, and
+`glimpse doctor` states it — `audio stays on this machine` or `audio and transcripts leave
+this machine` — so the choice is never something you have to infer from a config file.
+
+There is no subprocess backend. A third-party proxy was removed in #44: it added no
+normalisation this code did not already do, and it imposed a 300-second ceiling that killed
+requests for lectures longer than about 65 minutes. See the 2026-10-04 amendment of ADR-0001.
 
 | variable | purpose |
 |---|---|
-| `GLIMPSE_STT` | `auto`, `whispercpp`, `openai` or `shipboard` |
+| `GLIMPSE_STT` | `auto`, `whispercpp` or `openai` |
 | `GLIMPSE_WHISPERCPP_URL` | default `http://127.0.0.1:10302` |
 | `GLIMPSE_WHISPERCPP_LANGUAGE` | pin a language; unset means autodetect |
 | `GLIMPSE_OPENAI_KEY`, `GLIMPSE_OPENAI_MODEL` | for a hosted endpoint |
@@ -156,32 +161,23 @@ between runs. Frame extraction, by contrast, is deterministic.
 Proper nouns are the category that suffers most, and in a technical lecture those are the
 course terms a note is built on. A glossary and the audit stage exist for that reason.
 
-### shipboard
+### The container may not be running
 
-[github.com/nicklin11/shipboard](https://github.com/nicklin11/shipboard) — MIT, by the
-same author. On-demand local speech-to-text for Linux desktops: a whisper.cpp server that
-sleeps when idle, freeing ~1.5 GiB of VRAM, and wakes on the first request, plus a
-compositor-agnostic dictation daemon.
-
-`glimpse` uses it as an optional backend and does not require it. If you already run
-shipboard for dictation, `glimpse process` will use the same container and the same GPU:
+whisper.cpp is normally started by something else — on this host the `whisper-local`
+container, stopped after five minutes of silence by an idle timer. A direct request to
+`127.0.0.1:10302` may be refused if nothing has woken it:
 
 ```
-pipx install shipboard
-shipboard backend up
+docker start whisper-local
 ```
 
-Two things shipboard provides that are worth knowing when transcribing a 73-minute
-lecture rather than dictating a sentence:
+`glimpse doctor` tells you whether the endpoint answers before stage 3 spends six seconds
+extracting audio to find out.
 
-- **The container may not be running.** The wake proxy on port 10301 starts it on demand
-  and the idle-stop timer stops it after five minutes of silence, so a direct request to
-  `127.0.0.1:10302` may be refused. Point `GLIMPSE_WHISPERCPP_URL` at the proxy if that
-  is how you run it.
-- **`--timestamps json` is not a format flag, it is the only path with timings.** The
-  plain `shipboard process` output is plain text; the JSON form is what carries per-word
-  `start`/`end`. `glimpse` requests that form and fails loudly if the word timings are
-  absent.
+If the container you use goes through a wake proxy that applies a request timeout, point
+`GLIMPSE_WHISPERCPP_URL` at the container directly rather than the proxy. A 300-second
+timeout is below what a 75-minute lecture needs, and a proxy that stops the container
+mid-request turns a long transcription into an error with no output.
 
 ## Output
 
@@ -277,8 +273,10 @@ decisions and, more usefully, the measurements that overturned earlier ones:
 
 - whisper.cpp on this host does **not** serve the OpenAI-compatible `/v1/*` routes — an
   OpenAI-only backend cannot run there, so both wire formats are implemented;
-- `shipboard` normalises the response envelope, returning a bare array where `/inference`
-  returns an object;
+- transcription is **not reproducible run to run**: two runs of the same endpoint on the same
+  audio disagree on how the transcript is split into segments (14 vs 15 on a 45 s clip), while
+  the text itself matched word for word. Measured in #49; a claim that two code paths returned
+  byte-identical payloads was falsified by it, because whisper.cpp disagrees with *itself*;
 - transcripts cannot be reproduced run to run.
 
 Each changed the design, and each is written down with the evidence that changed it.

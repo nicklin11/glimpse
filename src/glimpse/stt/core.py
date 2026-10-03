@@ -1,9 +1,8 @@
 """Stage 3 core: the normalised transcript types, the parser, and the writers.
 
-D2: STT is delegated, never reimplemented. `shipboard process PATH --timestamps
-json` posts the wav to whisper.cpp and prints the raw `segments` array to stdout.
-Two properties of that payload drove the design, both measured on this host
-rather than assumed:
+D2: STT is delegated, never reimplemented. The wav is posted to a whisper.cpp endpoint
+and the raw `segments` payload comes back over HTTP. Two properties of that payload
+drove the design, both measured on this host rather than assumed:
 
   * the default `response_format=json` returns **only** `{"text": ...}`. Segments
     exist solely under `verbose_json`, so there is nothing to read off the plain
@@ -25,7 +24,7 @@ is built from segment `text`, which whisper.cpp already detokenised.
 Three artefacts are written, because three different consumers want different
 things and collapsing them loses data we do not yet understand:
 
-  * `transcript.raw.json` -- the payload exactly as shipboard printed it
+  * `transcript.raw.json` -- the payload exactly as the endpoint returned it
     (`tokens`, `t_dtw`, `avg_logprob` included), so nothing is discarded;
   * `transcript.json`     -- normalised: text stripped, timings coerced, plus
     run-level metadata. This is what later stages read;
@@ -42,9 +41,7 @@ from pathlib import Path
 from .. import exitcodes as ec
 from .. import runner
 
-REMEDIATION = (
-    "install: pipx install shipboard   (local checkout: pipx install -e ~/Coding/shipboard)"
-)
+REMEDIATION = "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or set GLIMPSE_STT to an endpoint"
 
 # Measured on this host, CPU whisper.cpp:
 #   25 s clip   ->   4.9 s wall  (0.20x realtime; server warm-up dominates here)
@@ -160,8 +157,8 @@ def parse(raw: bytes, *, source: str) -> tuple[tuple[Segment, ...], tuple[str, .
 
     # Two envelopes exist and the difference is not cosmetic. Measured against the live
     # server: whisper.cpp `POST /inference` returns an **object**
-    # ({task, language, duration, text, segments, ...}), while shipboard returns a **bare
-    # array** -- it unwraps `["segments"]` itself. The segment contents are identical
+    # ({task, language, duration, text, segments, ...}); a bare **array** is what some
+    # servers and proxies return instead. The segment contents are the same
     # (`words` with word/start/end/t_dtw/probability, float seconds); only the wrapper
     # differs. Guessing one shape would have failed against the other.
     envelope = "array"
@@ -182,8 +179,8 @@ def parse(raw: bytes, *, source: str) -> tuple[tuple[Segment, ...], tuple[str, .
             message=f"expected segments as a JSON array or an object, got {type(payload).__name__}",
             stdout=_truncated(raw),
             remediation=(
-                "whisper.cpp verbose_json returns {..., 'segments': [...]}; "
-                "shipboard returns that array directly; check the backend build"
+                "whisper.cpp verbose_json returns {..., 'segments': [...]}, or a bare "
+                "[...]; check the backend build"
             ),
         )
 

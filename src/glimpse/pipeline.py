@@ -5,7 +5,7 @@ because its output is a rendered report rather than a pipeline artefact, and
 stages 5-12 are not built yet.
 
 **Progress is reported as stage lines, and the unbuilt stages are named.** D7's
-reason for stage-level progress is that shipboard issues one blocking HTTP
+reason for stage-level progress is that the STT backend issues one blocking HTTP
 request with no streaming, and a bar that reads 90% during a 23-minute transcribe
 and then sits still is a lie about where the time went. The same argument applies
 to the stages that do not exist yet: a run that stops after stage 3 and reports
@@ -185,7 +185,7 @@ def run(
 
     # --- stage 3: stt ---------------------------------------------------------
     began = time.monotonic()
-    # D7: shipboard issues one blocking HTTP request with no streaming, so there
+    # D7: the STT backend issues one blocking HTTP request with no streaming, so there
     # is nothing to report between here and the result line. Stating the
     # expected cost *before* starting is the only honest option; a bar that sits
     # silent through the dominant stage is the lie D7 is written against.

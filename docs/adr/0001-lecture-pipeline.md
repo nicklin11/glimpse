@@ -732,3 +732,85 @@ The synthesis ran in template mode and the audit's tier 2 did not run, because
 audit.** Tier 1 ran four deterministic rules against a template note; the 21-finding baseline
 was measured against a hand-written note. Comparing the two sets would compare a template
 against prose, which is not a regression check in any direction.
+
+---
+
+## 2026-10-04 — D2 amended: one less backend, and the reason was not the one claimed
+
+The subprocess backend is removed. Stage 3 now reaches whisper.cpp native `/inference` or
+an OpenAI-compatible endpoint, and nothing sits between the pipeline and the transcriber.
+
+**D2 is not rewritten.** The text above records what was decided, and a reader needs to see
+what was believed at the time. This amendment states what changed and on what evidence.
+
+### The justification that turned out to be false
+
+The case for keeping the subprocess backend, and the first case for removing it, was that it
+returns a payload *byte-identical* to `/inference` — a claim carried in the backend's own
+docstring and repeated into issue #43.
+
+The measurement required before deleting it says otherwise. Same 45 s of lecture 1 audio,
+each backend run twice, payloads parsed through `core.parse` and hashed:
+
+```
+whispercpp#1   segments=14  sha=3e4a8a15ce634d54
+whispercpp#2   segments=15  sha=8b0eeb93767727e6
+shipboard#1    segments=15  sha=131dfd739fe90bb2
+shipboard#2    segments=15  sha=59f61cb0881b5978
+
+within whispercpp, run1 == run2 : False
+within shipboard,   run1 == run2 : False
+```
+
+**The endpoint disagrees with itself between two runs seconds apart.** Within-backend
+variance is at least as large as cross-backend variance, so the difference cannot be
+attributed to the backend at all. No run pair on this host has ever produced identical
+bytes, including the backend against itself.
+
+What survives is narrower, and is already stated correctly in `core.parse`: the subprocess
+backend returned a **bare array** where `/inference` returns the whole `verbose_json`
+object, and `parse()` unwraps either. That unwrap is its entire contribution.
+
+### Why removal still holds
+
+Not on byte identity. On two grounds that were measured:
+
+1. **It broke the pipeline twice, and both failures were its own.** The wake proxy hardcodes
+   `HTTPConnection(timeout=300)`, not configurable by environment, so a 4520 s lecture
+   returned `503 {"error":'timed out'}`. And `whisper_idle_stop.sh` stops the container after
+   300 s of a marker the proxy refreshes only in its wake path — its comment claims "before and
+   during", and the "during" does not exist — so the container was killed mid-request
+   (`Exited (137)`, `OOMKilled=false`). Because whisper.cpp takes a whole lecture in one
+   request, that ceiling bounds lecture length at roughly 65 minutes on this host.
+2. **It added a program that did nothing.** One unwrap, already performed.
+
+### The number in D2 that this revises
+
+The `257.2 s` stage-3 figure above was measured on the shorter `.webm` (4396 s) and fitted
+under a 300 s ceiling it did not have to clear. It is a measurement that passed a threshold,
+not evidence that transcription scales to lecture length. The 4520 s run measured **315.4 s**,
+and it is now measured without a proxy timeout in the path.
+
+### What is still not established
+
+**Transcription is not reproducible on this host.** Two identical requests disagree on
+segment partitioning, while the text matched word for word over the 45 s clip. Consequences:
+
+- The pipeline's own materials already record that this endpoint "is not reproducible run to
+  run" (measured: 25 s clip, three runs, `10, 11, 11` segments). This amendment does not
+  contradict that — it confirms it and states the size of the effect.
+- Issue #32 asks for a paid endpoint evaluated on reproducibility, figures, terminology and
+  cost. Reproducibility is now a **measured weakness of the incumbent**, not an untested
+  attribute of the alternative. That changes what the comparison must establish.
+- Whether the two removed/kept code paths differ over a full 4520 s lecture was **not**
+  measured, only over 45 s. #44 required a full-length comparison with numeric-token
+  specificity before deleting, and that was not run. The removal rests on the two grounds
+  above, which stand without it — but the unmeasured question is recorded here rather than
+  quietly dropped.
+
+### What `doctor` now discloses
+
+Two backends remain, with opposite trust properties: a local whisper.cpp keeps the recording
+on the machine; an OpenAI-compatible endpoint sends both audio and transcripts off it. The
+`stt` check prints which one is active and states which of the two is in force. Previously the
+trust boundary was inferable only by reading this ADR.

@@ -2,13 +2,13 @@
 
 D2 (amended 2026-10-03): STT is delegated, never reimplemented, and it is delegated to
 *an endpoint*, not to a particular utility. `TranscriptionBackend` is the boundary;
-`shipboard` is one implementation of it and no longer mandatory.
+whisper.cpp native and an OpenAI-compatible server are the two implementations.
 
 Everything below the backend is unchanged and shared:
 
 - the parser is the same for every backend, because the payload is the same. whisper.cpp
-  native `/inference` returns a bare array; shipboard returns that array untouched; an
-  OpenAI-compatible server returns an object that `openai_compat` unwraps first;
+  native `/inference` returns an object carrying `segments`; some servers return the bare
+  array instead, and `openai_compat` unwraps either;
 - `start`/`end` are **seconds as floats**, not milliseconds, in every one of them;
 - per-word `word` fields are **BPE subword pieces** (`" Ин"`, `"ст"`, `"ит"`), carried
   verbatim and never reassembled — that needs whisper.cpp's exact vocabulary, and a wrong
