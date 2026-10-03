@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from . import exitcodes as ec
+from . import bundle as glb
 from . import pipeline as glp
 from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
@@ -145,7 +146,25 @@ def _process(args: argparse.Namespace) -> int:
         )
         return ec.USAGE
     try:
-        result = glp.run(Path(args.path).expanduser(), work)
+        source = Path(args.path).expanduser()
+    except (OSError, RuntimeError) as exc:
+        print(f"glimpse: cannot expand the input path: {exc}", file=sys.stderr)
+        return ec.USAGE
+    try:
+        output = glb.Bundle.open(
+            source,
+            output_dir=getattr(args, "output_dir", None),
+            overwrite=getattr(args, "overwrite", False),
+        )
+    except OSError as exc:
+        print(f"glimpse: cannot use the output directory: {exc}", file=sys.stderr)
+        print(
+            "glimpse:   remediation: --output-dir must name a writable location",
+            file=sys.stderr,
+        )
+        return ec.USAGE
+    try:
+        result = glp.run(source, work, bundle=output)
     except runner.DependencyError as exc:
         work.retain(exc.message)
         runner.report(exc)
@@ -169,6 +188,19 @@ def _process(args: argparse.Namespace) -> int:
     print(f"  source     {result.source}")
     print(f"  transcript {result.transcript.summary()}")
     print(f"  stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} done in {result.seconds:.1f}s")
+    print(f"  output     {result.bundle.root}  ({result.bundle.summary()})")
+    vault = getattr(args, "vault_path", None)
+    if vault:
+        try:
+            copied = result.bundle.export_to_vault(Path(vault).expanduser())
+        except OSError as exc:
+            print(f"glimpse: vault export failed: {exc}", file=sys.stderr)
+            print(
+                "glimpse:   remediation: the vault is an export target; the bundle is intact",
+                file=sys.stderr,
+            )
+            return ec.DEPENDENCY_FAILED
+        print(f"  vault      {len(copied)} files exported to {Path(vault).expanduser()}")
     print(f"glimpse: {PROCESS_INCOMPLETE}")
     print(f"glimpse: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing
@@ -212,6 +244,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--workdir",
         metavar="DIR",
         help="parent directory for the managed work dir (default: $TMPDIR, or $GLIMPSE_WORKDIR)",
+    )
+    p_process.add_argument(
+        "--output-dir",
+        metavar="DIR",
+        help=(
+            "where to write the output bundle (default: "
+            "$XDG_STATE_HOME/glimpse/<lecture>, or ./output/<lecture> if unset)"
+        ),
+    )
+    p_process.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing output bundle instead of writing into it",
+    )
+    p_process.add_argument(
+        "--vault-path",
+        metavar="DIR",
+        help="copy the finished bundle into this vault; never a pipeline blocker",
     )
     p_process.add_argument(
         "--keep-workdir",

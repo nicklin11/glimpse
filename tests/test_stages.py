@@ -18,6 +18,7 @@ The one real end-to-end run lives outside this file, in the acceptance notes.
 
 import io
 import json
+import pathlib
 import os
 import shutil
 import sys
@@ -33,6 +34,7 @@ from glimpse import audio as gla  # noqa: E402
 from glimpse import cli as glc  # noqa: E402
 from glimpse import deps as gld  # noqa: E402
 from glimpse import exitcodes as ec  # noqa: E402
+from glimpse import bundle as glb  # noqa: E402
 from glimpse import frames as glfr  # noqa: E402
 from glimpse import pipeline as glp  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
@@ -950,10 +952,15 @@ ARTEFACTS = ("audio.wav", "transcript.txt", "transcript.json", "transcript.raw.j
 def fake_pipeline(source, work, **kw):
     for name in ARTEFACTS:
         (work.path / name).write_bytes(b"x")
+    bundle = kw.get("bundle")
+    artefacts = {n: work.path / n for n in ARTEFACTS}
+    if bundle is not None:
+        artefacts = {n: bundle.publish(n, p) for n, p in artefacts.items()}
     return SimpleNamespace(
         source=source,
-        artefacts={n: work.path / n for n in ARTEFACTS},
+        artefacts=artefacts,
         seconds=1.5,
+        bundle=bundle,
         transcript=SimpleNamespace(anomalies=(), summary=lambda: "3 segments, 40 timed words"),
     )
 
@@ -985,15 +992,30 @@ leftovers = list(work_root.glob("glimpse-*"))
 check("the work dir itself is removed on success", not leftovers, str(leftovers))
 
 # --- 7b. --keep-workdir, which is the positive control -----------------------
+outdir = tmp / "bundle"
+
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src), "--keep-workdir"])
+    rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 text = out.getvalue()
 check("--keep-workdir reports that it kept the dir", "KEPT for inspection" in text, text)
-for name in ARTEFACTS:
-    check(f"--keep-workdir lists {name}", name in text, text)
+# The deliverables are published into the bundle as they are produced, so they are NOT in
+# the work dir any more -- that separation is the point of the bundle. What the retained
+# work dir still holds is scratch, chiefly the 137.9 MiB audio.wav. Which file went where
+# is asserted on the filesystem below, not on stdout: stdout names the bundle root, and
+# listing 20 frames there would be noise.
 kept = list(work_root.glob("glimpse-*"))
 check("--keep-workdir leaves exactly one work dir", len(kept) == 1, str(kept))
+check(
+    "the retained work dir holds scratch, not deliverables",
+    kept and not any((kept[0] / n).exists() for n in ARTEFACTS),
+    str(sorted(p.name for p in kept[0].iterdir())) if kept else "",
+)
+check(
+    "the bundle holds every deliverable",
+    all((outdir / n).is_file() for n in ARTEFACTS),
+    str(sorted(p.name for p in outdir.iterdir())) if outdir.is_dir() else "",
+)
 
 # --- 7c. a dependency failure ------------------------------------------------
 glp.run = lambda source, work, **kw: (_ for _ in ()).throw(
@@ -1109,7 +1131,7 @@ glc.run_all = isolated_run_all
 before = len(list(work_root.glob("glimpse-*")))
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src), "--keep-workdir"])
+    rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 after = len(list(work_root.glob("glimpse-*")))
 check("a dead gateway does NOT block stages 0-3", rc == ec.USAGE, f"rc={rc}")
 check(
@@ -1689,6 +1711,189 @@ for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat, glss.Shipboard):
 
 glsw.urllib.request.urlopen = real_urlopen
 glso.urllib.request.urlopen = real_oai_urlopen
+
+
+# --- 10. the output bundle: XDG default, publication, verified export -----------
+# The default matters more than it looks. `./output/<lecture>` puts a 137.9 MiB wav and a
+# 3.7 MB transcript wherever the user happened to be standing -- which is the repo
+# pollution D9 was written against, reintroduced one directory level down.
+_real_state = os.environ.pop("XDG_STATE_HOME", None)
+_real_outdir = os.environ.pop("GLIMPSE_OUTPUT_DIR", None)
+xdg = tmp / "xdg"
+os.environ["XDG_STATE_HOME"] = str(xdg)
+
+check(
+    "the default root is XDG_STATE_HOME/glimpse",
+    glb.state_root() == xdg / "glimpse",
+    str(glb.state_root()),
+)
+b_default = glb.Bundle.open(src)
+check(
+    "the bundle is named after the source stem",
+    b_default.root == (xdg / "glimpse" / "lecture").resolve(),
+    str(b_default.root),
+)
+check("the bundle directory is created", b_default.root.is_dir())
+
+# Cyrillic is kept, because the lectures here are named in Russian and transliterating
+# them would produce a directory whose name does not match its contents.
+check(
+    "a Cyrillic name survives intact",
+    glb.slugify("Оптимальные СУ") == "Оптимальные-СУ",
+    glb.slugify("Оптимальные СУ"),
+)
+check("path separators are neutralised", "/" not in glb.slugify("a/b\nc"))
+
+# An explicit --output-dir IS the bundle root. Nesting the lecture name under it would
+# silently give a different path than the one that was typed.
+explicit = tmp / "explicit"
+b_explicit = glb.Bundle.open(src, output_dir=str(explicit))
+check(
+    "--output-dir is the bundle root itself",
+    b_explicit.root == explicit.resolve(),
+    str(b_explicit.root),
+)
+check(
+    "the explicit dir does not gain a lecture subdir",
+    not (explicit / src.stem).exists(),
+    str(sorted(q.name for q in explicit.iterdir())),
+)
+
+# GLIMPSE_OUTPUT_DIR is the middle precedence step.
+os.environ["GLIMPSE_OUTPUT_DIR"] = str(tmp / "fromenv")
+b_env = glb.Bundle.open(src)
+check(
+    "GLIMPSE_OUTPUT_DIR is used when no flag is given",
+    b_env.root == (tmp / "fromenv").resolve(),
+    str(b_env.root),
+)
+check(
+    "the flag beats the environment",
+    glb.Bundle.open(src, output_dir=str(explicit)).root == explicit.resolve(),
+)
+del os.environ["GLIMPSE_OUTPUT_DIR"]
+
+# publish moves the deliverable out of scratch, and refuses to lie about it.
+scratch = tmp / "scratch"
+scratch.mkdir()
+(src_dir := scratch / "transcript.json").write_bytes(b'{"a":1}')
+published = b_explicit.publish("transcript", src_dir)
+check(
+    "publish moves the file into the bundle",
+    published == explicit / "transcript.json",
+    str(published),
+)
+check("publish removes it from scratch", not src_dir.exists())
+check("publish records it", b_explicit.artefacts.get("transcript") == published)
+
+# A missing artefact must not be reported as published.
+ghost = scratch / "ghost.json"
+check("publish of a missing file is a no-op", b_explicit.publish("ghost", ghost) == ghost)
+check("a failed publish is not recorded", "ghost" not in b_explicit.artefacts)
+
+# overwrite replaces rather than merging into a stale bundle.
+check(
+    "overwrite=True replaced the directory",
+    glb.Bundle.open(src, output_dir=str(explicit), overwrite=True).created,
+)
+check(
+    "a fresh bundle reports itself as created",
+    glb.Bundle.open(src, output_dir=str(explicit)).created is False,
+)
+
+# The vault export is a copy, verified per file, and never consumes the bundle.
+b_export = glb.Bundle.open(src, output_dir=str(tmp / "toexport"))
+(tmp / "toexport" / "note.md").write_text("# lecture\n")
+(tmp / "toexport" / "images").mkdir()
+(tmp / "toexport" / "images" / "f_0001.jpg").write_bytes(b"jpeg-bytes")
+b_export.record("note", tmp / "toexport" / "note.md")
+b_export.record("frame0", tmp / "toexport" / "images" / "f_0001.jpg")
+vault = tmp / "vault"
+copied = b_export.export_to_vault(vault)
+check("the export copied every artefact", len(copied) == 2, str(len(copied)))
+check(
+    "the note landed at the vault root",
+    (vault / "note.md").is_file(),
+    str(sorted(q.name for q in vault.iterdir())),
+)
+check("frames land under images/", (vault / "images" / "f_0001.jpg").is_file(), str(copied))
+check(
+    "the export did not consume the bundle",
+    (tmp / "toexport" / "note.md").is_file()
+    and (tmp / "toexport" / "images" / "f_0001.jpg").is_file(),
+)
+
+# Two fault paths the happy path never reaches. Both were mutations the suite missed, so
+# they are exercised by injecting the failure rather than by hoping for it.
+b_copy = glb.Bundle.open(src, output_dir=str(tmp / "copyfault"))
+victim = tmp / "copyfault_src.txt"
+victim.write_bytes(b"payload that must not vanish")
+real_move = glb.shutil.move
+
+
+def refuse_move(*_a, **_kw):
+    raise OSError(18, "Invalid cross-device link")
+
+
+glb.shutil.move = refuse_move
+try:
+    moved = b_copy.publish("doc", victim)
+finally:
+    glb.shutil.move = real_move
+check(
+    "a refused rename still lands the file in the bundle",
+    moved.read_bytes() == b"payload that must not vanish",
+    str(moved),
+)
+check(
+    "a refused rename does not silently discard the source",
+    victim.exists(),
+    "source deleted despite the copy path",
+)
+
+b_short = glb.Bundle.open(src, output_dir=str(tmp / "shortwrite"))
+src_note = tmp / "shortwrite_note.md"
+src_note.write_text("# a note that is long enough to truncate\n" * 8)
+b_short.record("note", src_note)
+real_copy2 = glb.shutil.copy2
+
+
+def truncate_copy(src, dst, **kwargs):
+    real_copy2(src, dst, **kwargs)
+    pathlib.Path(dst).write_bytes(pathlib.Path(dst).read_bytes()[:10])  # noqa: F821
+
+
+vault_trunc = tmp / "vault_trunc"
+glb.shutil.copy2 = truncate_copy
+try:
+    exc = raises(b_short.export_to_vault, vault_trunc)
+finally:
+    glb.shutil.copy2 = real_copy2
+check(
+    "a truncated export is refused rather than reported as done",
+    exc is not None,
+    "no exception raised for a short copy",
+)
+check(
+    "the refusal says what failed to verify",
+    exc is not None and "did not verify" in str(exc),
+    getattr(exc, "message", repr(exc)),
+)
+check(
+    "the bundle survives a failed export",
+    src_note.read_text().startswith("# a note"),
+    "bundle consumed by a failed export",
+)
+
+# The bundle summary is measured, not asserted in prose.
+check("the summary counts artefacts", "2 artefacts" in b_export.summary(), b_export.summary())
+check("an empty bundle says so", glb.Bundle(root=tmp / "empty").summary() == "bundle empty")
+
+del os.environ["XDG_STATE_HOME"]
+if _real_state is not None:
+    os.environ["XDG_STATE_HOME"] = _real_state
+if _real_outdir is not None:
+    os.environ["GLIMPSE_OUTPUT_DIR"] = _real_outdir
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run

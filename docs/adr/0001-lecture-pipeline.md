@@ -334,6 +334,92 @@ it samples the *detector's* output before extraction, so a capped run still pays
 whole 232 s decode and then discards work. Sampling belongs to stage 6 (ADR-0005), where
 the frames are read by a VLM and the cost is real money.
 
+## Amendment 2026-10-03 — D2 delegated to an endpoint, D9 to a local bundle
+
+Two decisions changed because the code was measured rather than reasoned about.
+
+### D2 — STT is delegated to an *endpoint*, not to a utility
+
+`TranscriptionBackend` is the boundary: `check()` answers "can you transcribe", `run()`
+returns the raw payload, and nothing above the backend parses anything. shipboard is one
+implementation and is **no longer mandatory**; `doctor` probes whichever backend is
+configured.
+
+**The premise this replaced was wrong on this host.** whisper.cpp does not serve the
+OpenAI-compatible routes:
+
+```
+GET  /health                    -> 200
+GET  /v1/models                 -> 404
+POST /v1/audio/transcriptions   -> 404
+POST /inference                 -> 200
+```
+
+An OpenAI-only backend cannot run here, so both wire formats exist: the native
+`/inference`, and an OpenAI-compatible adapter for hosted endpoints.
+
+**shipboard does normalise the envelope.** `/inference` returns an object
+(`{task, language, duration, text, segments, ...}`); shipboard returns a bare array. The
+segment contents are identical — same `words` keys, same float seconds — but a parser
+written for either shape alone would have failed on the other. `core.parse` accepts both
+and records the envelope as an anomaly, so a payload that changes shape is visible rather
+than silent.
+
+**D2's verbatim-diagnostics guarantee is preserved, not dropped.** shipboard is a
+subprocess and had stderr; an HTTP backend has none. The intent — never swallow a backend's
+diagnostics — is carried over as the verbatim response body plus the transport-level
+message, and HTTP status failures attach the response body as `stderr`. Losing the guarantee
+silently would have turned a backend failure into an empty transcript with exit 0.
+
+**The endpoint is not reproducible.** Measured, 25 s clip, three runs per configuration:
+
+| request fields | identical 3x | segment counts |
+|---|---|---|
+| shipboard's own | no | 11, 11, 11 |
+| `temperature` + `no_timestamps` | no | 11, 11, 11 |
+| `threads=1` | no | 10, 11, 11 |
+| `threads=2` / `threads=4` | no | 11, 11, 11 / 11, 11, 10 |
+| after a fresh container restart | no | 11, 10, 11 |
+
+Differences are punctuation and a segment that appears or does not, on **identical
+timings**. Ruled out: thread count down to 1, language on or off, temperature on or off,
+container state. Cause not identified. This is why two runs over the same 4520 s audio
+produced 1677 and then 1520 segments.
+
+Consequences, both of which change what "verified" means here:
+
+- `transcript.json` is **not** a reproducible artefact. D3's rule — verify on disk, never
+  infer from an exit code — still holds, but "the same run" is not a stable reference.
+- Frame-to-paragraph binding uses word spans, and the timings *were* stable across
+  non-identical runs, so stages 5-7 are unaffected. Only the wording moves.
+
+Stage 4 is the opposite: `frames` output is deterministic, three runs gave the same 16
+timestamps. A regression check can still be exact on the frame half.
+
+### D9 — the vault is an export target, not the artefact root
+
+Deliverables go to a **bundle**: `--output-dir`, else `$XDG_STATE_HOME/glimpse/<lecture>`.
+The vault, when given, is copied into.
+
+**Not `./output/<lecture>`.** D9 exists because artefacts written into a working directory
+end up in whatever repository the user is standing in. A CWD-relative default reintroduces
+that one level down — a 137.9 MiB wav and a 3.7 MB transcript in a git checkout. XDG
+state is per-user, per-purpose, and the conventional home for run output that should
+survive.
+
+Cyrillic directory names are preserved rather than transliterated. The lectures here are
+`Оптимальные СУ`; rendering that as `Optimal Control Systems` would give a directory whose
+name does not match its contents.
+
+**One writer, one verification.** `export_to_vault` copies and then compares each
+destination against its source. Two write paths with different semantics is how a tool
+ends up with half a note in the vault; a copy that lands short raises rather than being
+reported as done, and the bundle — the single writer — is left intact.
+
+The work dir and the bundle are separate because their lifecycles are opposite. The work dir
+is scratch, removed on success. `audio.wav` deliberately stays there: it is 137.9 MiB,
+reproducible from the source in 6.3 s, and nothing downstream reads it.
+
 ## Evidence: the error that justifies this pipeline
 
 Section 7.3 of the finished lecture 1 note contained three mutually exclusive
