@@ -1254,8 +1254,30 @@ def isolated_run_all(*, required=None):
     Deliberately the real implementation: an earlier version of this test used a
     stub that reimplemented the required/not-required decision, so it passed
     unchanged when that decision was reverted.
+
+    Real *logic*, controlled *environment*. `deps` probes the actual PATH, so
+    without the fakes below this section only passes on a machine that happens to
+    have ffmpeg installed, and the assertion it is actually making -- "a dead
+    gateway costs the vision stages, not the run" -- gets answered by "ffmpeg is
+    missing, exit 2" instead. CI caught precisely that: the runner has no ffmpeg,
+    and this test came back rc=2 on all three Python versions.
     """
     return gld.run_all(required=required)
+
+
+real_deps_run = gld._run
+real_deps_which = gld.shutil.which
+
+
+def fake_deps_run(argv):
+    exe = argv[0].rsplit("/", 1)[-1] if argv else ""
+    if exe in ("ffmpeg", "ffprobe"):
+        return subprocess.CompletedProcess(argv, 0, f"{exe} version 7.1.1-1\n", "")
+    return real_deps_run(argv)
+
+
+gld._run = fake_deps_run
+gld.shutil.which = lambda n: f"/usr/bin/{n}" if n in ("ffmpeg", "ffprobe") else real_deps_which(n)
 
 
 saved_vault = os.environ.get(gld.VAULT_ENV)

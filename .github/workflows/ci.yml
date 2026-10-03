@@ -44,6 +44,18 @@ jobs:
       # editable install actually works. The pipx incident -- numpy added after the
       # install and never reaching the venv -- was invisible until a command was run
       # from the installed copy, so CI runs the installed package where it can.
+      # ffmpeg/ffprobe are genuinely required, by one narrow route: the suite
+      # synthesises real video frames as fixture input with `ffmpeg -frames:v 1`.
+      # Everything else is stubbed. The first CI run proved the distinction --
+      # `deps.check_executable` probes the real PATH, so a test asserting "a dead
+      # gateway costs the vision stages, not the run" was being answered by "ffmpeg
+      # is missing, exit 2". That assertion is now stubbed against a controlled PATH
+      # (see tests/test_stages.py), and ffmpeg is installed here for the fixtures.
+      - name: Install ffmpeg (fixture synthesis only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install the package under test
         run: |
           python -m pip install --upgrade pip
