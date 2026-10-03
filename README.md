@@ -190,6 +190,31 @@ glimpse process lecture.webm --vault-path ~/Documents/obs_notes/course/lecture-1
 The vault is a **copy target**, not the output root. Every file is verified after copying;
 one that lands short is an error rather than a silent success. Your bundle is left intact.
 
+## What one lecture costs
+
+Measured end to end on `1_lecture_OCS.mp4` (AV1 1080p, 4520 s) on this host:
+
+| Stage | Wall |
+|---|---|
+| 1 `probe` | 0.1 s |
+| 2 `audio` | 3.5 s |
+| 3 `stt` | 315.4 s (0.070x realtime) |
+| 4 `frames` | 319.2 s |
+| 5-12 | **7.7 s combined** |
+| **total** | **645.9 s** |
+
+98.8% of the wall clock is two stages that report nothing until they finish. Everything the
+pipeline does to the note — quality gating, alignment, synthesis, lint, audit, repair,
+linking, verification — is 1.2%.
+
+Model cost on this run: **zero**, because no endpoint was configured. Synthesis fell back to
+a template and the audit's tier 2 did not run. With a vision endpoint at the measured gateway
+price the visual budget is ~$0.01 per lecture (ADR-0005: 16 distinct screen states, against
+~131 880 decoded frames).
+
+Both figures are host-specific and one is a measurement that cleared a threshold rather than
+evidence of scale — see the 2026-10-04 amendment in ADR-0001.
+
 ## Exit codes
 
 | code | meaning |

@@ -668,3 +668,67 @@ against artefacts on disk, not against stubs of themselves. Stage 9's determinis
 carries the checks that do not need a model; its critic tier is a different interface from
 stage 7's synthesis, because a model reviewing its own output in the same context will
 ratify the error it is shown.
+
+## Amendment 2026-10-04 — stages 11 and 12 landed, and the first real 12-stage run
+
+The MVP is 12 stages. The run below is the first one to execute all of them against
+`1_lecture_OCS.mp4` (AV1 1920x1080, AAC 48 kHz, **4520.1 s**) and it changed two things.
+
+### The infrastructure, not the pipeline, is what fails on a long lecture
+
+Two attempts died at stage 3. Neither was a glimpse defect, and both are in shipboard:
+
+- `whisper_wake_proxy.py:152` sets `HTTPConnection(..., timeout=300)`, hardcoded and not
+  configurable by environment. A request whose backend work exceeds 300 s returns
+  `503 {"error":'timed out'}`.
+- `whisper_idle_stop.sh:21` stops the container after 300 s of an un-refreshed marker, and
+  the proxy refreshes that marker only in its wake path — **not** during the forward, despite
+  the comment in the idle-stop script asserting that it does "before and during". The result
+  is `docker stop --time 5` mid-request: the client sees `Remote end closed connection
+  without response` and the container is left at `Exited (137)` with `OOMKilled=false`.
+
+whisper.cpp handles a whole lecture in **one** request, so the 300 s boundary is a hard
+ceiling on lecture length for this host — roughly 65 minutes. The 257.2 s figure recorded
+earlier came from the 4396 s `.webm` and fitted underneath it. **That number was a
+measurement that happened to clear a threshold; it was not evidence that the pipeline scales
+to lecture length, and reading it as such is the error.**
+
+### Measured stage costs (D7's weights)
+
+| Stage | Wall | Note |
+|---|---|---|
+| 1 `probe` | 0.1 s | |
+| 2 `audio` | 3.5 s | 137.9 MiB wav |
+| 3 `stt` | **315.4 s** | 4901 segments, 21837 timed words — **0.070x realtime** |
+| 4 `frames` | **319.2 s** | 16 frames, 5.2 MiB, median gap 8 s |
+| 5-12 | **7.7 s** total | quality, caption, synth, lint, audit, repair, link, report |
+| | **645.9 s** | end to end |
+
+The two-pass frame design and STT are within 4 s of each other, and together are **98.8%** of
+the run. Everything the pipeline does to the *note* — quality gating, alignment, synthesis,
+lint, audit, repair, linking, verification — is 1.2%. D7's claim that a per-segment progress
+bar is unavailable is unchanged and now has a second reason: 99% of the wall time is in two
+stages that report nothing until they finish.
+
+Stage 3 is slower per unit audio than the recorded 0.057x, on longer audio and through a
+container that was already warm. The short-clip trap recorded earlier still stands.
+
+### Stage 12 caught a bug in itself, on its first real input
+
+It reported `frames 0/16` on a bundle holding all 16 correct frames. `count_frames` globbed
+`*.jpg` in the bundle root; frames are published into `images/` and are `.png`, while the
+`.jpg` files beside them are the quality gate's enhanced `<frame>_q.jpg` derivatives — 15 of
+them for 16 frames. A glob that had matched would have counted 31.
+
+**A verification stage that has only ever run against a directory it built itself is not a
+verification stage.** The manifest already names every file that must exist, so each row is
+now stat'd by name; that also makes a frame whose derivative survived a detectable loss,
+because the directory holds 18 files either way.
+
+### What this run does not establish
+
+The synthesis ran in template mode and the audit's tier 2 did not run, because
+`GLIMPSE_LLM_ENDPOINT` is unset. **The 0 findings this run reports are not evidence about the
+audit.** Tier 1 ran four deterministic rules against a template note; the 21-finding baseline
+was measured against a hand-written note. Comparing the two sets would compare a template
+against prose, which is not a regression check in any direction.
