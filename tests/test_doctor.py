@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -63,11 +64,41 @@ def fake_run(argv, **kwargs):
     return subprocess.CompletedProcess(argv, run_rc, out, run_stderr)
 
 
+import glimpse.stt as gld_stt  # noqa: E402
+import glimpse.stt.whispercpp as glwsc  # noqa: E402
+
 gld.shutil.which = fake_which
 gld.subprocess.run = fake_run
 
-# the gateway must never be probed against the real network in this test
+# The gateway must never be probed against the real network in this test, and neither
+# must the STT endpoint. Before this pin, `doctor` reached whatever was listening on
+# 127.0.0.1:10302, so the suite's verdict depended on container state.
 os.environ.pop(gld.GATEWAY_ENV, None)
+real_stt_backend = os.environ.pop(gld_stt.ENV_BACKEND, None)
+os.environ[gld_stt.ENV_BACKEND] = "whispercpp"
+real_stt_urlopen = glwsc.urllib.request.urlopen
+
+stt_reachable = True
+
+
+def fake_stt_urlopen(request, timeout=None):
+    if not stt_reachable:
+        raise urllib.error.URLError(OSError(111, "Connection refused"))
+    return _HealthResponse()
+
+
+class _HealthResponse:
+    def read(self, _n=-1):
+        return b"ok"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+glwsc.urllib.request.urlopen = fake_stt_urlopen
 tmp = Path(tempfile.mkdtemp())
 os.environ[gld.VAULT_ENV] = str(tmp)
 
@@ -75,6 +106,11 @@ os.environ[gld.VAULT_ENV] = str(tmp)
 def restore():
     gld.shutil.which = real_which
     gld.subprocess.run = real_run
+    glwsc.urllib.request.urlopen = real_stt_urlopen
+    if real_stt_backend is None:
+        os.environ.pop(gld_stt.ENV_BACKEND, None)
+    else:
+        os.environ[gld_stt.ENV_BACKEND] = real_stt_backend
 
 
 # --- 1. everything present -> 0, with path and version listed -----------------
@@ -86,24 +122,46 @@ check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
 check(
     "every dependency is listed",
-    all(n in text for n in ("ffmpeg", "ffprobe", "shipboard", "gateway", "vault")),
+    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "shipboard", "gateway", "vault")),
     text,
 )
 check("resolved path is reported", "/usr/bin/ffmpeg" in text, text)
 check("version is reported", "ffmpeg version 7.1.1-1" in text, text)
 check("unconfigured gateway is skipped, not failed", "[skip]" in text, text)
 
-# --- 2. missing dependency -> 2, named, with remediation ----------------------
-which_set = {"ffmpeg", "ffprobe"}  # shipboard gone
+# --- 2. the STT endpoint is unreachable -> 3, named, with remediation ---------
+# This replaced the old "shipboard is not on PATH -> exit 2" case. A PATH check could not
+# detect an endpoint that is configured and down, which is the failure that actually costs
+# a 6 s audio extraction before stage 3 reports it.
+stt_reachable = False
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["doctor"])
 msg = err.getvalue()
-check("missing dep -> exit 2", rc == ec.MISSING_DEPENDENCY, f"rc={rc}")
-check("missing dep is named", "shipboard" in msg, msg)
-check("missing dep carries a remediation line", "remediation:" in msg, msg)
-check("remediation names the install command", "pipx install" in msg, msg)
-check("present deps still reported as ok", "ok" in out.getvalue())
+check("unreachable STT endpoint -> exit 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
+check("the failing check is named", "stt" in msg, msg)
+# The detail line (with the target URL) is rendered on stdout by _render; stderr
+# carries the name and the remediation.
+check("the unreachable target is named", "127.0.0.1" in out.getvalue(), out.getvalue())
+check("the remediation names the env var", "GLIMPSE_WHISPERCPP_URL" in msg, msg)
+check("shipboard is no longer the reason", "pipx install shipboard" not in msg, msg)
+check(
+    "present deps still reported as ok",
+    "[ok  ] ffmpeg" in out.getvalue() and "[ok  ] ffprobe" in out.getvalue(),
+    out.getvalue(),
+)
+
+# A binary genuinely missing still earns exit 2, distinct from a broken endpoint.
+which_set = {"ffmpeg"}  # ffprobe gone, shipboard is not consulted any more
+stt_reachable = True
+out, err = io.StringIO(), io.StringIO()
+with redirect_stdout(out), redirect_stderr(err):
+    rc = glc.main(["doctor"])
+msg = err.getvalue()
+check("missing binary -> exit 2", rc == ec.MISSING_DEPENDENCY, f"rc={rc}")
+check("missing binary is named", "ffprobe" in msg, msg)
+check("its remediation names the package", "pacman -S ffmpeg" in msg, msg)
+which_set = set(PRESENT)
 
 # --- 3. present but failing -> 3, stderr VERBATIM ----------------------------
 which_set = set(PRESENT)
@@ -203,9 +261,16 @@ with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["doctor"])
 text = out.getvalue()
 check("shipboard usage output is NOT labelled a version", "usage: shipboard" not in text, text)
+# shipboard is no longer mandatory, so it is not probed when another backend is configured.
+# Probing it anyway would fail `doctor` for an optional component on someone else's machine.
 check(
-    "shipboard still reports ok + path",
-    "[ok  ] shipboard" in text and "/usr/bin/shipboard" in text,
+    "an unconfigured shipboard is skipped, not probed",
+    "not the configured STT backend" in text and "/usr/bin/shipboard" not in text,
+    text,
+)
+check(
+    "the configured endpoint is what gets probed",
+    "127.0.0.1:10302" in text,
     text,
 )
 

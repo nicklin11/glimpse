@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import exitcodes as ec
+from . import runner, stt
 
 GATEWAY_ENV = "GLIMPSE_GATEWAY_URL"
 VAULT_ENV = "GLIMPSE_VAULT"
@@ -130,19 +131,53 @@ def check_ffprobe() -> Check:
     return check_executable("ffprobe", ["-version"], "install: pacman -S ffmpeg")
 
 
-def check_shipboard() -> Check:
-    """D2: STT is delegated, never reimplemented. whisper.cpp stays CPU-only.
+def check_stt() -> Check:
+    """D2 (amended): STT is delegated to an *endpoint*, not to a utility.
 
-    Probed with `--help` rather than a real transcription: doctor must not burn
-    a lecture-length request to answer "is this installed". shipboard exposes no
-    --version flag, so its usage output is not reported as a version.
+    `shutil.which("shipboard")` answers "is the binary on PATH" and nothing else. It
+    cannot tell "no STT configured" from "STT configured and its backend is down" -- and
+    `process` used to discover the second only in stage 3, after 6 s of audio extraction.
+    So the configured backend is asked instead, and the backend's own health check is the
+    probe. `doctor` never spends a lecture-length request on this: `check()` is a loopback
+    GET, not a transcription.
     """
-    return check_executable(
+    engine = stt.backend()
+    info = engine.info()
+    try:
+        engine.check()
+    except runner.DependencyError as exc:
+        return Check(
+            name="stt",
+            ok=False,
+            code=exc.code,
+            detail=f"{info.name} at {info.target} is not usable: {exc.message}",
+            remediation=exc.remediation,
+        )
+    detail = f"{info.name} at {info.target} reachable — {info.detail}"
+    for note in info.notes:
+        detail += f"; {note}"
+    return Check(name="stt", ok=True, detail=detail)
+
+
+def check_shipboard() -> Check:
+    """shipboard, only when it is the configured backend. Not mandatory any more."""
+    if stt.backend().name != "shipboard":
+        return Check(
+            name="shipboard",
+            ok=True,
+            fatal=False,
+            detail="not the configured STT backend; not checked",
+        )
+    check = check_executable(
         "shipboard",
         ["--help"],
         "install: pipx install shipboard   (local checkout: pipx install -e ~/Coding/shipboard)",
         report="ok",
     )
+    # Never fatal on its own: `check_stt` probes the configured backend and carries the
+    # fatal verdict. Making this fatal too would fail `doctor` twice for one cause.
+    check.fatal = False
+    return check
 
 
 def check_vault() -> Check:
@@ -231,8 +266,8 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     """Every check, with `required` names promoted to fatal.
 
     `required` exists because "the dependency is broken" and "this run needs
-    that dependency" are different questions. `glimpse process` stages 0-3 use
-    ffmpeg, ffprobe and shipboard and write nothing outside the managed work
+    that dependency" are different questions. `glimpse process` stages 0-4 use
+    ffmpeg, ffprobe and an STT endpoint, and write nothing outside the managed work
     dir, so refusing to transcribe because the *vault* is missing -- a directory
     stage 12 will need in a later milestone -- is the wrong answer, and so is
     refusing because the stage-5 vision gateway is offline. Without this the
@@ -241,6 +276,7 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     checks = [
         check_ffmpeg(),
         check_ffprobe(),
+        check_stt(),
         check_shipboard(),
         check_gateway(),
         check_vault(),
@@ -259,7 +295,10 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
 
 
 # What `glimpse process` stages 0-3 actually invoke.
-PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "shipboard"})
+# `shipboard` is not here: it is one backend among several, and stage 3 reaches
+# whichever is configured. Requiring the binary would reintroduce the dependency
+# this removed.
+PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "stt"})
 
 
 # Precedence when several checks fail at once. MISSING wins over FAILED: a
