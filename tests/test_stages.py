@@ -47,6 +47,7 @@ from glimpse import llm as glle  # noqa: E402
 from glimpse import synth as glsy  # noqa: E402
 from glimpse import lint as glln  # noqa: E402
 from glimpse import audit as glau  # noqa: E402
+from glimpse import link as gllk  # noqa: E402
 from glimpse import repair as glrep  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
@@ -1013,8 +1014,8 @@ check(
     "No note was written" not in text,
     "the note exists now; saying otherwise is false",
 )
-check("a partial run names the unbuilt stages", "stages 11-12" in text, text)
-check("a partial run names the tracking issue", "#3" in text, text)
+check("a partial run names the unbuilt stage", "stage 12" in text, text)
+check("a partial run names the tracking issue", "#19" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
 # and is not one. Asserted per-artefact: the bare word "transcript" also occurs
@@ -3669,7 +3670,166 @@ rc5 = glc.main(["process", str(probe_src)])
 check("an error-tier finding exits 5, not 1", rc5 == ec.AUDIT_FINDINGS, f"rc={rc5}")
 glp.run = fake_pipeline
 rc1 = glc.main(["process", str(probe_src)])
-check("a clean audit still exits 1, because stages 11-12 are unbuilt", rc1 == ec.USAGE, f"rc={rc1}")
+check("a clean audit still exits 1, because stage 12 is unbuilt", rc1 == ec.USAGE, f"rc={rc1}")
+
+# --- 17. stage 11: link --------------------------------------------------------------
+# Ported from ~/.local/bin/mscs-termlink. The two load-bearing properties are idempotence
+# and never linking inside math; both are asserted here against a real terms dir built in
+# tmp, not a stub, because the behaviour is a property of the frontmatter parser.
+tvault = tmp / "vault"
+tterms = tvault / "mscs" / "_terms"
+tterms.mkdir(parents=True, exist_ok=True)
+(tterms / "MPC.md").write_text(
+    "---\ntype: term\ndomain: управление\naliases:\n  - МПЦ\n  - mpc\n---\n\n# MPC\n",
+    encoding="utf-8",
+)
+(tterms / "LQR.md").write_text(
+    "---\ntype: term\ndomain: управление\naliases:\n  - LКR\nforms:\n  - линейно-квадратичный\n---\n\n# LQR\n",
+    encoding="utf-8",
+)
+(tterms / "not-a-term.md").write_text("---\ntype: note\n---\n\n# Не термин\n", encoding="utf-8")
+
+terms_loaded = gllk.load_terms(tterms)
+check(
+    "only notes with type: term are loaded",
+    sorted(t.canonical for t in terms_loaded) == ["LQR", "MPC"],
+    str([t.canonical for t in terms_loaded]),
+)
+check(
+    "aliases and forms are both searchable",
+    any("МПЦ" in t.patterns for t in terms_loaded)
+    and any("линейно-квадратичный" in t.patterns for t in terms_loaded),
+    str([t.patterns for t in terms_loaded]),
+)
+check(
+    "the canonical itself is a pattern",
+    all(t.canonical in t.patterns for t in terms_loaded),
+    str([t.patterns for t in terms_loaded]),
+)
+
+probe = (
+    "МПЦ применяется. Формула $x = MPC$ и $$\n\\mathcal{L} = MPC\n$$ и `MPC` в коде.\n"
+    "Ссылка [[LQR]] уже есть. И mpc строчными.\n"
+)
+linked, counts = gllk.link_text(probe, terms_loaded)
+check(
+    "an ASR variant is linked to its canonical",
+    "[[МПЦ|MPC]]" in linked,
+    linked,
+)
+check(
+    "a match that IS the canonical gets no pipe",
+    "[[MPC]]" in linked or "MPC" in linked,
+    linked,
+)
+protected = (
+    gllk.MULTILINE.findall(linked)
+    + gllk.INLINE_MATH.findall(linked)
+    + gllk.INLINE_CODE.findall(linked)
+)
+check("protected regions were found to inspect", len(protected) >= 3, str(protected))
+check(
+    "NO link is ever inserted inside math or code",
+    not any("[[" in region for region in protected),
+    str(protected),
+)
+check("an existing wikilink is left alone", "[[LQR]]" in linked and "[[LQR|" not in linked, linked)
+again, counts2 = gllk.link_text(linked, terms_loaded)
+check("link is idempotent: byte-identical second run", again == linked, again)
+check("and the second run inserts nothing", sum(counts2.values()) == 0, str(counts2))
+
+# The port fixed this: the original excluded by a module global, so --terms-dir changed
+# where terms load from but not what the sweep skips.
+excl = tvault / "mscs" / "Лекция 1.md"
+excl.write_text("MPC", encoding="utf-8")
+check("a lecture note is a target", excl in gllk.collect_targets([], tterms, tvault))
+check(
+    "a term note is NOT a target",
+    tterms / "MPC.md" not in gllk.collect_targets([], tterms, tvault),
+    "term notes would be linked to themselves",
+)
+
+# --- configuration, not constants ---------------------------------------------------
+check(
+    "an explicit terms dir wins",
+    gllk.resolve_terms_dir(tterms, None) == tterms,
+    str(gllk.resolve_terms_dir(tterms, None)),
+)
+check(
+    "the vault is the fallback",
+    gllk.resolve_terms_dir(None, tvault) == tterms,
+    str(gllk.resolve_terms_dir(None, tvault)),
+)
+real_terms_env = os.environ.get(gllk.TERMS_ENV)
+os.environ[gllk.TERMS_ENV] = str(tterms)
+try:
+    check(
+        "the env var is consulted before the vault",
+        gllk.resolve_terms_dir(None, None) == tterms,
+        str(gllk.resolve_terms_dir(None, None)),
+    )
+finally:
+    if real_terms_env is None:
+        os.environ.pop(gllk.TERMS_ENV, None)
+    else:
+        os.environ[gllk.TERMS_ENV] = real_terms_env
+check(
+    "no terms dir resolves to None, not to a silent empty run",
+    gllk.resolve_terms_dir(tmp / "no-such-terms", None) is None,
+    "a missing directory must not read as 'zero terms found'",
+)
+
+# --- the stage entry point ----------------------------------------------------------
+ldir = tmp / "link-out"
+ldir.mkdir(parents=True, exist_ok=True)
+(ldir / "note.md").write_text(probe, encoding="utf-8")
+lrep = gllk.run(ldir / "note.md", ldir, terms_dir=tterms, stream=io.StringIO())
+check(
+    "run writes the linked note",
+    (ldir / gllk.LINKED_NOTE).is_file(),
+    str(sorted(p.name for p in ldir.iterdir())),
+)
+check(
+    "and the input note is still there",
+    (ldir / "note.md").read_text(encoding="utf-8") == probe,
+    "stage 11 rewrote its own input",
+)
+lprov = json.loads((ldir / gllk.PROVENANCE_NAME).read_text())
+check("provenance names the port source", "mscs-termlink" in lprov["ported_from"], str(lprov))
+check(
+    "provenance lists every protected region",
+    len(lprov["never_links_inside"]) >= 8,
+    str(lprov["never_links_inside"]),
+)
+
+# No terms configured: the note must still be written, and the stage must say why.
+ndir = tmp / "link-unconfigured"
+ndir.mkdir(parents=True, exist_ok=True)
+(ndir / "note.md").write_text(probe, encoding="utf-8")
+buf = io.StringIO()
+nrep = gllk.run(ndir / "note.md", ndir, terms_dir=None, stream=buf)
+check(
+    "an unconfigured stage writes the note unchanged rather than failing",
+    (ndir / gllk.LINKED_NOTE).read_text(encoding="utf-8") == probe,
+    "the note was lost",
+)
+check("and it says so", "not configured" in buf.getvalue(), buf.getvalue())
+check(
+    "and it does not report 'nothing to link'",
+    "nothing to link" not in nrep.summary(),
+    nrep.summary(),
+)
+
+# --- the CLI keeps dry-run as the default -------------------------------------------
+cbuf = io.StringIO()
+with redirect_stdout(cbuf):
+    rc_dry = glc.main(["term", "link", "--vault-path", str(tvault), str(excl)])
+check("term link runs", rc_dry == ec.OK, f"rc={rc_dry}")
+check(
+    "dry-run says what it would do and leaves the file alone",
+    "dry run" in cbuf.getvalue() and excl.read_text(encoding="utf-8") == "MPC",
+    cbuf.getvalue(),
+)
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run
