@@ -59,7 +59,7 @@ Stage 3 delegates to an **endpoint**. Three backends ship:
 |---|---|---|
 | `whispercpp` | autodetected | whisper.cpp native `POST /inference` |
 | `openai` | autodetected, or `GLIMPSE_STT=openai` | OpenAI-compatible `/v1/audio/transcriptions` |
-| `shipboard` | autodetected | a subprocess wrapper |
+| [`shipboard`](https://github.com/nicklin11/shipboard) | autodetected | `shipboard process --timestamps json`, by the same author, MIT |
 
 `GLIMPSE_STT=auto` (the default) probes an HTTP endpoint first and falls back to
 `shipboard`. Whatever actually ran is recorded in the transcript, so a silent fallback shows
@@ -108,11 +108,49 @@ and treating that as "unreachable" would break on a build that transcribes perfe
 
 Two runs over the same audio produce different text. Measured on a 25 s clip, three runs
 per configuration: identical 3/3 was false for every parameter set tried, including
-`threads=1` and after a container restart. The differences are punctuation and a segment
-that appears or does not. The *timings* stay stable.
+`threads=1` and after a container restart.
+
+How much this costs is smaller than it sounds. Five runs of the same 120 s excerpt:
+
+- word-level agreement against a baseline: **94.7% – 99.4%**
+- numeric/symbol token sequence: **identical**
+- differences are singular/plural, dropped function words, and proper nouns
+
+The *timings* are stable, which is what stages 5-7 actually consume. Segment counts move
+(50-55 across five runs of the same excerpt) without the words moving much.
 
 Two runs over one 73-minute lecture gave 1677 and 1520 segments. Do not diff transcripts
 between runs. Frame extraction, by contrast, is deterministic.
+
+Proper nouns are the category that suffers most, and in a technical lecture those are the
+course terms a note is built on. A glossary and the audit stage exist for that reason.
+
+### shipboard
+
+[github.com/nicklin11/shipboard](https://github.com/nicklin11/shipboard) — MIT, by the
+same author. On-demand local speech-to-text for Linux desktops: a whisper.cpp server that
+sleeps when idle, freeing ~1.5 GiB of VRAM, and wakes on the first request, plus a
+compositor-agnostic dictation daemon.
+
+`glimpse` uses it as an optional backend and does not require it. If you already run
+shipboard for dictation, `glimpse process` will use the same container and the same GPU:
+
+```
+pipx install shipboard
+shipboard backend up
+```
+
+Two things shipboard provides that are worth knowing when transcribing a 73-minute
+lecture rather than dictating a sentence:
+
+- **The container may not be running.** The wake proxy on port 10301 starts it on demand
+  and the idle-stop timer stops it after five minutes of silence, so a direct request to
+  `127.0.0.1:10302` may be refused. Point `GLIMPSE_WHISPERCPP_URL` at the proxy if that
+  is how you run it.
+- **`--timestamps json` is not a format flag, it is the only path with timings.** The
+  plain `shipboard process` output is plain text; the JSON form is what carries per-word
+  `start`/`end`. `glimpse` requests that form and fails loudly if the word timings are
+  absent.
 
 ## Output
 
