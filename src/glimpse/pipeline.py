@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, caption, frames, lint, probe, quality, stages, stt, synth
+from . import audio, audit, caption, frames, lint, probe, quality, repair, stages, stt, synth
 from . import llm
 from .bundle import Bundle
 from .workspace import WorkDir
@@ -71,6 +71,11 @@ class RunResult:
     note: synth.Note
     #: D5's deterministic gate on the note. `lint.ok` false is exit 4.
     lint: lint.Report
+    #: D5's audit. `audit.ok` false is exit 5: the note is written and annotated, never
+    #: discarded. An audit that could not run says so; it never reads as one that passed.
+    audit: audit.Report
+    #: What stage 10 could fix, and what it declined to.
+    repair: repair.Report
 
     @property
     def seconds(self) -> float:
@@ -116,6 +121,7 @@ def run(
     bundle: Bundle | None = None,
     stream=None,
     note_title: str | None = None,
+    glossary_path: str | None = None,
 ) -> RunResult:
     """Stages 1-4 on `source`.
 
@@ -302,6 +308,40 @@ def run(
         artefacts[extra] = bundle.publish(extra, ldir / extra)
     reports.append(StageReport(8, "lint", time.monotonic() - began, lreport.summary()))
 
+    # --- stage 9: audit --------------------------------------------------------
+    # Tier 1 is deterministic and carries the load. Tier 2 is a zero-shot critic that sees
+    # the note and nothing else -- a model reviewing its own output in the same context
+    # ratifies the error it is shown.
+    began = time.monotonic()
+    adir = work.dir("audit")
+    areport = audit.run(
+        artefacts[synth.NOTE_NAME],
+        artefacts["txt"],
+        adir,
+        glossary_path=Path(glossary_path) if glossary_path else None,
+        config=llm_config,
+        stream=out,
+    )
+    for extra in audit.ALL_ARTEFACTS:
+        if (adir / extra).is_file():
+            artefacts[f"audit/{extra}"] = bundle.publish(f"audit/{extra}", adir / extra)
+    reports.append(StageReport(9, "audit", time.monotonic() - began, areport.summary()))
+
+    # --- stage 10: repair -----------------------------------------------------
+    began = time.monotonic()
+    rdir = work.dir("repair")
+    rreport = repair.run(
+        artefacts[synth.NOTE_NAME],
+        adir / audit.REPORT_NAME,
+        rdir,
+        glossary_path=Path(glossary_path) if glossary_path else None,
+        lint_report_path=artefacts[lint.REPORT_NAME],
+        stream=out,
+    )
+    for extra in (repair.REPAIRED_NOTE, repair.REPORT_NAME, repair.PROVENANCE_NAME):
+        artefacts[f"repair/{extra}"] = bundle.publish(f"repair/{extra}", rdir / extra)
+    reports.append(StageReport(10, "repair", time.monotonic() - began, rreport.summary()))
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -316,4 +356,6 @@ def run(
         caption=creport,
         note=note,
         lint=lreport,
+        audit=areport,
+        repair=rreport,
     )
