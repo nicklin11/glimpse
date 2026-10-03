@@ -41,6 +41,7 @@ from glimpse import pipeline as glp  # noqa: E402
 from glimpse import audio as glpa  # noqa: E402
 from glimpse import probe as glpr  # noqa: E402
 from glimpse import quality as glq  # noqa: E402
+from glimpse import caption as glcap  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
@@ -994,7 +995,7 @@ with redirect_stdout(out), redirect_stderr(err):
 text = out.getvalue()
 check("a partial run does NOT exit 0", rc == ec.USAGE, f"rc={rc}")
 check("a partial run says no note was written", "No note was written" in text, text)
-check("a partial run names the unbuilt stages", "stages 5-12" in text, text)
+check("a partial run names the unbuilt stages", "stages 7-12" in text, text)
 check("a partial run names the tracking issue", "#3" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -1980,7 +1981,29 @@ glp.stt.transcribe = lambda wav, *, audio_duration: glst.Transcript(
     segments=(),
     backend="spy",
 )
-glp.stt.write = lambda tr, dest: {"transcript.json": Path(dest) / "t.json"}
+# Keyed "json", not "transcript.json": `stt.write` returns short keys and stage 6 reads
+# `paths["json"]`. A stub with the wrong keys is how the first end-to-end run of this stage
+# died on a KeyError that no test could see.
+glp.stt.write = lambda tr, dest: {
+    "raw": Path(dest) / "t.raw.json",
+    "json": Path(dest) / "t.json",
+    "txt": Path(dest) / "t.txt",
+}
+order_transcript = tmp / "order_transcript.json"
+order_transcript.write_text(
+    json.dumps(
+        {
+            "audio_duration": 1.0,
+            "segments": [{"index": 0, "start": 0.0, "end": 1.0, "text": "hello", "words": []}],
+        }
+    ),
+    encoding="utf-8",
+)
+glp.stt.write = lambda tr, dest: {
+    "raw": Path(dest) / "t.raw.json",
+    "json": order_transcript,
+    "txt": Path(dest) / "t.txt",
+}
 work_probe = tmp / "order_work"
 work_probe.mkdir(parents=True, exist_ok=True)
 try:
@@ -2470,6 +2493,288 @@ check(
     "provenance names the metric and the raster policy",
     provenance["metric"] == "MEGE" and "native" in provenance["raster"],
     str(provenance),
+)
+
+
+# --- 12. stage 6 caption: deterministic alignment, no model ------------------------
+cs = glcap.Settings()
+ctmp = tmp / "caption"
+ctmp.mkdir(parents=True, exist_ok=True)
+cimg = ctmp / "images"
+cimg.mkdir(parents=True, exist_ok=True)
+
+
+def seg(index, start, end, text, words=None):
+    return {
+        "index": index,
+        "start": start,
+        "end": end,
+        "text": text,
+        "words": words or [],
+    }
+
+
+def word(start, text=" w"):
+    return {"text": text, "start": start, "end": start + 0.1, "probability": 0.9}
+
+
+# Three frames at 0, 100 s and 200 s; segments that straddle each boundary.
+transcript_payload = {
+    "audio_duration": 300.0,
+    "segments": [
+        seg(0, 0.0, 60.0, "alpha", [word(0.0), word(30.0)]),
+        # Straddles the 100 s frame boundary: starts before it, ends after.
+        seg(1, 90.0, 150.0, "beta", [word(90.0), word(100.5), word(140.0)]),
+        seg(2, 150.0, 260.0, "gamma", [word(150.0), word(255.0)]),
+    ],
+}
+ctrans = ctmp / "transcript.json"
+ctrans.write_text(json.dumps(transcript_payload), encoding="utf-8")
+cmanifest = ctmp / "manifest.tsv"
+cmanifest.write_text(
+    "pts_ms\ttime\tfile\n0\t00:00:00\tf_0000000000.png\n"
+    "100000\t00:01:40\tf_0000100000.png\n200000\t00:03:20\tf_0000200000.png\n",
+    encoding="utf-8",
+)
+
+cquality = ctmp / "quality.json"
+cquality.write_text(
+    json.dumps(
+        {
+            "threshold": 100.0,
+            "frames": [
+                {
+                    "name": "f_0000000000.png",
+                    "quality_gate": "PASS",
+                    "content_type": "white_document",
+                    "crop_state": "cropped",
+                },
+                {
+                    "name": "f_0000100000.png",
+                    "quality_gate": "PASS",
+                    "content_type": "white_document",
+                    "crop_state": "cropped",
+                },
+                {
+                    "name": "f_0000200000.png",
+                    "quality_gate": "FAIL",
+                    "content_type": "dark_canvas",
+                    "crop_state": "full_frame_fallback",
+                },
+            ],
+        }
+    ),
+    encoding="utf-8",
+)
+
+capp = glcap.align(cmanifest, ctrans, cquality, cimg)
+check("three frames aligned", len(capp.alignments) == 3, str(len(capp.alignments)))
+check(
+    "the manifest header is not read as a frame",
+    [a.frame for a in capp.alignments][0] == "f_0000000000.png",
+    str([a.frame for a in capp.alignments]),
+)
+
+# THE REGRESSION. The window was [pts_{i-1}, pts_i): a frame extracted at 100 s was given
+# everything spoken before 100 s, which belongs to the previous frame. A frame with pts = T
+# was on screen FROM T.
+by_name = {a.frame: a for a in capp.alignments}
+check(
+    "frame windows are [pts_i, pts_{i+1})",
+    [by_name[f].on_screen_ms for f in sorted(by_name)]
+    == [(0, 100000), (100000, 200000), (200000, 300000)],
+    str([by_name[f].on_screen_ms for f in sorted(by_name)]),
+)
+# Segment 1 straddles 100 s, and segment 2 ([150, 260]) also reaches into [100, 200): both
+# belong to this frame. Segment 0 ([0, 60]) is entirely in the previous frame's window.
+check(
+    "a frame takes every segment overlapping its own window",
+    by_name["f_0000100000.png"].segment_indices == [1, 2],
+    str(by_name["f_0000100000.png"].segment_indices),
+)
+check(
+    "and not the one that straddles the previous frame's",
+    0 not in by_name["f_0000100000.png"].segment_indices,
+    str(by_name["f_0000100000.png"].segment_indices),
+)
+check(
+    "windows are contiguous and cover the lecture without gaps",
+    all(
+        by_name[k].on_screen_ms[1] == by_name[next_k].on_screen_ms[0]
+        for k, next_k in zip(sorted(by_name)[:2], sorted(by_name)[1:])
+    ),
+    str([by_name[f].on_screen_ms for f in sorted(by_name)]),
+)
+
+# The word boundary, not the segment boundary. Only straddle had a word inside the window.
+check(
+    "the straddling frame's first word is timed to the frame, not the segment",
+    abs(by_name["f_0000100000.png"].first_word_ms - 100.5) < 1e-6,
+    str(by_name["f_0000100000.png"].first_word_ms),
+)
+# The third frame is GATED_OUT, so it is never aligned and carries no boundary. Asserting
+# "all three" would have been asserting the absence of the gate.
+check(
+    "every aligned frame gets a word boundary, not only the first",
+    [a.first_word_ms for a in capp.considered] == [0.0, 100.5],
+    str([(a.frame, a.first_word_ms, a.caption_status) for a in capp.alignments]),
+)
+
+check(
+    "a frame stage 5 rejected is carried as GATED_OUT, not aligned",
+    by_name["f_0000200000.png"].caption_status == "GATED_OUT",
+    by_name["f_0000200000.png"].caption_status,
+)
+check(
+    "the gate verdict travels with the alignment",
+    by_name["f_0000200000.png"].quality_gate == "FAIL"
+    and by_name["f_0000200000.png"].crop_state == "full_frame_fallback",
+    str(by_name["f_0000200000.png"]),
+)
+
+# Captioning is absent, and says so. A null caption and a missing caption field must not
+# look the same to stage 7.
+check(
+    "caption is None and its status says why",
+    by_name["f_0000000000.png"].caption is None
+    and by_name["f_0000000000.png"].caption_status == "NOT_CONFIGURED",
+    str(by_name["f_0000000000.png"]),
+)
+
+# Coverage is the gate. A frame with no transcript behind it is reported, and too many of
+# them means the audio and video disagree.
+empty_transcript = ctmp / "silent.json"
+empty_transcript.write_text(json.dumps({"audio_duration": 300.0, "segments": []}), encoding="utf-8")
+# Segments only inside [0, 100 s): frame 0 is covered, frame 1 is not, frame 2 is gated
+# out. With no quality report all three are candidates, so the share is 1 of 3 = 0.33 --
+# deliberately either side of the 0.30 default.
+partial_transcript = ctmp / "partial.json"
+partial_transcript.write_text(
+    json.dumps({"audio_duration": 300.0, "segments": [seg(0, 0.0, 90.0, "only early")] * 1}),
+    encoding="utf-8",
+)
+silent = glcap.align(cmanifest, empty_transcript, cquality, cimg)
+check(
+    "a frame with no transcript is uncovered",
+    len(silent.uncovered) == 2,
+    str(len(silent.uncovered)),
+)
+# A gated-out frame is not a candidate, so it does not count against A/V sync. Letting a
+# blur failure show up as a muxing failure would send the reader to the wrong subsystem.
+check(
+    "a gated-out frame is not counted against coverage",
+    len(silent.considered) == 2 and len(silent.uncovered) == 2 and silent.uncovered_share == 1.0,
+    f"considered={len(silent.considered)} uncovered={len(silent.uncovered)} share={silent.uncovered_share}",
+)
+check(
+    "every considered frame uncovered fails the gate",
+    not silent.ok,
+    f"share={silent.uncovered_share}",
+)
+check(
+    "and clearing it is a one-line setting change, not a code path",
+    glcap.align(
+        cmanifest, empty_transcript, cquality, cimg, glcap.Settings(uncovered_share_limit=1.0)
+    ).ok,
+    "a 1.0 share under a 1.0 limit must clear",
+)
+
+# Segments only inside [0, 100 s): frame 0 covered, frame 1 not, frame 2 gated out. With no
+# quality report all three are candidates, so the share is 1 of 3 = 0.33 -- deliberately on
+# both sides of the 0.30 default, which is what makes the boundary worth asserting.
+partial_transcript = ctmp / "partial.json"
+partial_transcript.write_text(
+    json.dumps(
+        {
+            "audio_duration": 300.0,
+            # Covers frame 0's window only. Frame 1 [100, 200) falls in the gap and frame 2
+            # [200, 300) is covered by the second segment, so exactly one of three misses.
+            "segments": [seg(0, 0.0, 90.0, "only early"), seg(1, 210.0, 280.0, "only late")],
+        }
+    ),
+    encoding="utf-8",
+)
+for limit, expected in ((0.30, False), (0.40, True)):
+    got = glcap.align(
+        cmanifest,
+        partial_transcript,
+        ctmp / "missing-quality.json",
+        cimg,
+        glcap.Settings(uncovered_share_limit=limit),
+    )
+    check(
+        f"1 of 3 uncovered {'clears' if expected else 'fails'} a {limit} limit",
+        got.ok is expected and abs(got.uncovered_share - 1 / 3) < 0.01,
+        f"share={got.uncovered_share} ok={got.ok} limit={limit}",
+    )
+check("no frames is not ok", not glcap.align(ctmp / "none.tsv", ctrans, cquality, cimg).ok)
+
+# Malformed input is skipped, not fatal.
+broken = ctmp / "broken.json"
+broken.write_text(
+    json.dumps(
+        {
+            "audio_duration": 300.0,
+            "segments": [
+                seg(0, 0.0, 10.0, "fine"),
+                {"index": "x", "start": "y", "end": None, "text": "bad types"},
+                {"index": 2, "start": 50.0, "end": 40.0, "text": "reversed"},
+            ],
+        }
+    ),
+    encoding="utf-8",
+)
+kept = glcap.read_segments(broken)
+check(
+    "unparseable and reversed segments are dropped rather than guessed at",
+    [s.index for s in kept] == [0],
+    str([(s.index, s.start, s.end) for s in kept]),
+)
+check(
+    "a missing transcript is empty, not a traceback",
+    glcap.read_segments(ctmp / "does-not-exist.json") == [],
+    "raised",
+)
+check(
+    "a missing manifest is empty, not a traceback",
+    glcap.read_manifest(ctmp / "nope.tsv") == [],
+    "raised",
+)
+
+# The artefact.
+cdest = ctmp / "out"
+crun = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
+check(
+    "run() writes the report",
+    (cdest / glcap.REPORT_NAME).is_file(),
+    str(sorted(p.name for p in cdest.iterdir())),
+)
+check(
+    "run() writes provenance",
+    (cdest / glcap.PROVENANCE_NAME).is_file(),
+    str(sorted(p.name for p in cdest.iterdir())),
+)
+cpayload = json.loads((cdest / glcap.REPORT_NAME).read_text(encoding="utf-8"))
+check(
+    "provenance says this stage needs no model",
+    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is False,
+    (cdest / glcap.PROVENANCE_NAME).read_text(),
+)
+check(
+    "provenance names the caption gap rather than hiding it",
+    "NOT_CONFIGURED" in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"],
+    (cdest / glcap.PROVENANCE_NAME).read_text(),
+)
+check(
+    "every alignment round-trips through the artefact",
+    [a["frame"] for a in cpayload["alignments"]] == [a.frame for a in crun.alignments]
+    and cpayload["alignments"][0]["on_screen_ms"] == list(crun.alignments[0].on_screen_ms),
+    str(cpayload["alignments"][0]),
+)
+check(
+    "the report carries the coverage the gate used",
+    "uncovered_share" in cpayload["provenance"],
+    str(cpayload["provenance"]),
 )
 
 glc.run_all = real_run_all

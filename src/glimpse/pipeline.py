@@ -22,17 +22,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, frames, probe, quality, stt
+from . import audio, caption, frames, probe, quality, stages, stt
 from .bundle import Bundle
 from .workspace import WorkDir
 
-# Stage 0 is `doctor`, run by the CLI. Stages 5-12 are unbuilt (#3).
-IMPLEMENTED = 5
-FIRST_STAGE = 1
-REMAINING_NOTE = (
-    "stages 5-12 are not built yet (tracked in #3): quality, "
-    "captions, synth, lint, audit, repair, link, report"
-)
+# Re-exported, not defined here. `quality` and `caption` write progress lines that need the
+# same count, and they cannot import this module to ask -- `pipeline` imports them, so the
+# dependency would be a cycle. `stages` holds it instead.
+IMPLEMENTED = stages.IMPLEMENTED
+FIRST_STAGE = stages.FIRST_STAGE
+REMAINING_NOTE = stages.REMAINING_NOTE
 
 # Multiplier on the upper bound of the stage-3 estimate. An interval that can
 # collapse to a single number reads as a precision claim nobody has measured.
@@ -63,6 +62,9 @@ class RunResult:
     #: D4's verdict. `quality.ok` false means exit 4, reported by the caller.
     quality: quality.Report
     enhanced: list[Path]
+    #: D5's coverage verdict. `caption.ok` false means the audio and the video are not
+    #: describing the same lecture, which is exit 4 rather than a note with holes in it.
+    caption: caption.Report
 
     @property
     def seconds(self) -> float:
@@ -227,6 +229,26 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
         artefacts[f"quality:{entry.name}"] = target
         enhanced.append(target)
 
+    # --- stage 6: caption -----------------------------------------------------
+    # Deterministic. Runs on the frames stage 5 passed and the transcript stage 3 wrote;
+    # there is no model in this stage, by design, so the alignment can be checked against
+    # the artefact rather than believed.
+    began = time.monotonic()
+    capdir = work.dir("caption")
+    creport = caption.run(
+        # The bundle's copies, not the work dir's. `publish` moved both, so the work-dir
+        # paths are dangling -- the same move-then-read ordering bug stage 5 had.
+        artefacts["manifest"],
+        paths["json"],
+        qdir / quality.REPORT_NAME,
+        bundle.images,
+        capdir,
+        stream=out,
+    )
+    for extra in (caption.REPORT_NAME, caption.PROVENANCE_NAME):
+        artefacts[extra] = bundle.publish(extra, capdir / extra)
+    reports.append(StageReport(6, "caption", time.monotonic() - began, creport.summary()))
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -238,4 +260,5 @@ def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=Non
         bundle=bundle,
         quality=qreport,
         enhanced=enhanced,
+        caption=creport,
     )
