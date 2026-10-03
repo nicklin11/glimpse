@@ -29,6 +29,16 @@ QUALITY_GATE_FAILED = 4
 # 5 — the audit found errors above threshold. The note is written and FLAGGED.
 AUDIT_FINDINGS = 5
 
+# 130 — interrupted (Ctrl-C), the shell convention of 128 + SIGINT(2). Not a
+# pipeline failure: the work dir is retained and its path printed, because an
+# aborted 73-minute transcribe is exactly the run worth inspecting. Declared
+# here so the table below stays the single source of truth.
+INTERRUPTED = 130
+
+# An *uncaught* internal error (a bug in glimpse itself) deliberately has no code
+# here: it propagates as a traceback, which is louder than any summary line, and
+# Python exits it with 1. Recorded so the absence is a decision rather than a gap.
+
 DESCRIPTIONS: dict[int, str] = {
     OK: "success",
     USAGE: "usage error",
@@ -36,4 +46,5 @@ DESCRIPTIONS: dict[int, str] = {
     DEPENDENCY_FAILED: "dependency failed (stderr reproduced verbatim)",
     QUALITY_GATE_FAILED: "quality gate failed; note written, report says why",
     AUDIT_FINDINGS: "audit found errors above threshold; note written and flagged",
+    INTERRUPTED: "interrupted by the user; work dir kept",
 }

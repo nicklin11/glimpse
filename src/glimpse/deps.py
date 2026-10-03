@@ -47,9 +47,7 @@ class Check:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT, check=False
-    )
+    return subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT, check=False)
 
 
 def check_executable(
@@ -111,9 +109,7 @@ def check_executable(
         )
 
     if report != "version":
-        return Check(
-            name=name, ok=True, detail="ok", path=exe, version="ok"
-        )
+        return Check(name=name, ok=True, detail="ok", path=exe, version="ok")
 
     raw = proc.stdout.strip()
     first = raw.splitlines()[0].strip() if raw else ""
@@ -127,15 +123,11 @@ def check_executable(
 
 
 def check_ffmpeg() -> Check:
-    return check_executable(
-        "ffmpeg", ["-version"], "install: pacman -S ffmpeg"
-    )
+    return check_executable("ffmpeg", ["-version"], "install: pacman -S ffmpeg")
 
 
 def check_ffprobe() -> Check:
-    return check_executable(
-        "ffprobe", ["-version"], "install: pacman -S ffmpeg"
-    )
+    return check_executable("ffprobe", ["-version"], "install: pacman -S ffmpeg")
 
 
 def check_shipboard() -> Check:
@@ -235,14 +227,39 @@ def check_gateway() -> Check:
     )
 
 
-def run_all() -> list[Check]:
-    return [
+def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
+    """Every check, with `required` names promoted to fatal.
+
+    `required` exists because "the dependency is broken" and "this run needs
+    that dependency" are different questions. `glimpse process` stages 0-3 use
+    ffmpeg, ffprobe and shipboard and write nothing outside the managed work
+    dir, so refusing to transcribe because the *vault* is missing -- a directory
+    stage 12 will need in a later milestone -- is the wrong answer, and so is
+    refusing because the stage-5 vision gateway is offline. Without this the
+    preflight gate is broader than the run it guards.
+    """
+    checks = [
         check_ffmpeg(),
         check_ffprobe(),
         check_shipboard(),
         check_gateway(),
         check_vault(),
     ]
+    if required is None:
+        return checks
+    wanted = frozenset(required)
+    for check in checks:
+        if check.name in wanted:
+            check.fatal = True
+        elif not check.ok:
+            # Reported, but not a reason to refuse: print it with the rest so a
+            # degraded environment is visible without being fatal.
+            check.fatal = False
+    return checks
+
+
+# What `glimpse process` stages 0-3 actually invoke.
+PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "shipboard"})
 
 
 # Precedence when several checks fail at once. MISSING wins over FAILED: a

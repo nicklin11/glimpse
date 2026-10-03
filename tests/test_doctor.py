@@ -11,6 +11,7 @@ ad-hoc reporting. So the thing under test is mostly the distinction between:
 PATH and subprocess are stubbed; nothing here touches the real network or the
 real binaries.
 """
+
 import io
 import os
 import subprocess
@@ -83,9 +84,11 @@ with redirect_stdout(out), redirect_stderr(err):
 text = out.getvalue()
 check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
-check("every dependency is listed",
-      all(n in text for n in ("ffmpeg", "ffprobe", "shipboard", "gateway", "vault")),
-      text)
+check(
+    "every dependency is listed",
+    all(n in text for n in ("ffmpeg", "ffprobe", "shipboard", "gateway", "vault")),
+    text,
+)
 check("resolved path is reported", "/usr/bin/ffmpeg" in text, text)
 check("version is reported", "ffmpeg version 7.1.1-1" in text, text)
 check("unconfigured gateway is skipped, not failed", "[skip]" in text, text)
@@ -118,13 +121,18 @@ with redirect_stdout(out), redirect_stderr(err):
 msg = err.getvalue()
 check("present-but-failing -> exit 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
 check("failure names the dependency", "ffmpeg" in msg, msg)
-check("stderr reproduced verbatim (full first line)",
-      "ffmpeg: error while loading shared libraries: libavutil.so.60: "
-      "cannot open shared object file" in msg, msg)
-check("stderr reproduced verbatim (indented line, quotes intact)",
-      "  extra indented line: '{\"a\": 1}'" in msg, msg)
-check("a present-but-broken dep is NOT reported as missing",
-      "remediation: pacman" not in msg, msg)
+check(
+    "stderr reproduced verbatim (full first line)",
+    "ffmpeg: error while loading shared libraries: libavutil.so.60: "
+    "cannot open shared object file" in msg,
+    msg,
+)
+check(
+    "stderr reproduced verbatim (indented line, quotes intact)",
+    "  extra indented line: '{\"a\": 1}'" in msg,
+    msg,
+)
+check("a present-but-broken dep is NOT reported as missing", "remediation: pacman" not in msg, msg)
 run_rc = 0
 run_stderr = ""
 
@@ -142,14 +150,18 @@ run_stderr = ""
 # --- 5. vault: missing path, not a dir, unwritable ---------------------------
 which_set = set(PRESENT)
 os.environ[gld.VAULT_ENV] = str(tmp / "nope")
-check("absent vault -> 2",
-      gld.check_vault().code == ec.MISSING_DEPENDENCY, gld.check_vault().detail)
+check(
+    "absent vault -> 2", gld.check_vault().code == ec.MISSING_DEPENDENCY, gld.check_vault().detail
+)
 
 a_file = tmp / "a-file"
 a_file.write_text("x")
 os.environ[gld.VAULT_ENV] = str(a_file)
-check("vault that is a file -> 2",
-      gld.check_vault().code == ec.MISSING_DEPENDENCY, gld.check_vault().detail)
+check(
+    "vault that is a file -> 2",
+    gld.check_vault().code == ec.MISSING_DEPENDENCY,
+    gld.check_vault().detail,
+)
 
 # unwritable: chmod 500 leaves the dir non-writable for a non-root user
 locked = tmp / "locked"
@@ -165,8 +177,8 @@ locked.chmod(0o700)
 os.environ[gld.VAULT_ENV] = str(tmp)
 
 # the write probe must not leave litter behind
-check("vault probe cleans up after itself",
-      not (tmp / ".glimpse-write-probe").exists())
+check("vault probe cleans up after itself", not (tmp / ".glimpse-write-probe").exists())
+
 
 # --- 6. gateway: configured but unreachable -> 3, no real network in tests ----
 def boom_urlopen(url, timeout=None):
@@ -190,33 +202,45 @@ out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["doctor"])
 text = out.getvalue()
-check("shipboard usage output is NOT labelled a version",
-      "usage: shipboard" not in text, text)
-check("shipboard still reports ok + path",
-      "[ok  ] shipboard" in text and "/usr/bin/shipboard" in text, text)
+check("shipboard usage output is NOT labelled a version", "usage: shipboard" not in text, text)
+check(
+    "shipboard still reports ok + path",
+    "[ok  ] shipboard" in text and "/usr/bin/shipboard" in text,
+    text,
+)
 
 # ffmpeg DOES have a real version line, so it must still be reported
-check("a real version command is still reported",
-      "ffmpeg version 7.1.1-1" in text, text)
-check("ffprobe version reported separately",
-      "ffprobe version 7.1.1-1" in text, text)
+check("a real version command is still reported", "ffmpeg version 7.1.1-1" in text, text)
+check("ffprobe version reported separately", "ffprobe version 7.1.1-1" in text, text)
 
 # --- 8. unimplemented subcommands point at their issue, not a dead end -------
-for cmd, issue in (("process", "#3"), ("audit", "#11")):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        rc = glc.main([cmd])
-    check(f"`{cmd}` -> exit 1", rc == ec.USAGE, f"rc={rc}")
-    check(f"`{cmd}` names its tracking issue", issue in err.getvalue(), err.getvalue())
-    check(f"`{cmd}` suggests doctor", "doctor" in err.getvalue(), err.getvalue())
+out, err = io.StringIO(), io.StringIO()
+with redirect_stdout(out), redirect_stderr(err):
+    rc = glc.main(["audit"])
+check("`audit` -> exit 1", rc == ec.USAGE, f"rc={rc}")
+check("`audit` names its tracking issue", "#11" in err.getvalue(), err.getvalue())
+check("`audit` suggests doctor", "doctor" in err.getvalue(), err.getvalue())
 
-# unknown subcommand is a usage error
+# `process` IS implemented, but only for stages 0-3. With no path it is still a
+# usage error, and it must print the form rather than a dead end.
+out, err = io.StringIO(), io.StringIO()
+with redirect_stdout(out), redirect_stderr(err):
+    rc = glc.main(["process"])
+check("`process` with no path -> exit 1", rc == ec.USAGE, f"rc={rc}")
+check(
+    "`process` with no path prints the form",
+    "glimpse process PATH" in err.getvalue(),
+    err.getvalue(),
+)
+
+# unknown subcommand is a usage error, and must not surface as argparse's own 2,
+# which is MISSING_DEPENDENCY in the ADR table
 try:
     with redirect_stderr(io.StringIO()):
-        glc.main(["nonsense"])
-    check("unknown subcommand rejected", False, "accepted")
+        rc = glc.main(["nonsense"])
+    check("unknown subcommand -> exit 1, not 2", rc == ec.USAGE, f"rc={rc}")
 except SystemExit as exc:
-    check("unknown subcommand rejected", exc.code != 0, f"code={exc.code}")
+    check("unknown subcommand -> exit 1, not 2", False, f"argparse exited {exc.code} uncaught")
 
 restore()
 
