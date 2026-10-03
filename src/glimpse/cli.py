@@ -219,8 +219,9 @@ def _audit(_args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="glimpse",
-        description="One command turns a lecture recording into a readable, "
-        "independently audited Markdown note.",
+        description="Turn a lecture recording into a structured, audited Markdown note. "
+        f"Stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} are implemented; process exits "
+        f"{ec.USAGE} until the rest are, rather than pretending.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
