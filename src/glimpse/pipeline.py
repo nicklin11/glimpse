@@ -15,12 +15,14 @@ of every run states what is still missing and which issue tracks it.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import audio, frames, probe, stt
+from .bundle import Bundle
 from .workspace import WorkDir
 
 # Stage 0 is `doctor`, run by the CLI. Stages 5-12 are unbuilt (#3).
@@ -56,6 +58,7 @@ class RunResult:
     frames: list[Path]
     artefacts: dict[str, Path]
     reports: tuple[StageReport, ...]
+    bundle: Bundle
 
     @property
     def seconds(self) -> float:
@@ -94,14 +97,20 @@ def _estimate(audio_seconds: float) -> tuple[float, float]:
     return audio_seconds * floor, audio_seconds * slow * HEADROOM
 
 
-def run(source: Path, work: WorkDir, *, stream=None) -> RunResult:
-    """Stages 1-3 on `source`, writing artefacts into `work`.
+def run(source: Path, work: WorkDir, *, bundle: Bundle | None = None, stream=None) -> RunResult:
+    """Stages 1-4 on `source`.
+
+    Intermediate artefacts land in `work`, which is scratch and is removed on success.
+    Anything worth keeping is published into `bundle` as it is produced, so deleting the
+    work dir can never take a deliverable with it -- and so the reverse cannot happen
+    either, a deliverable written while the scratch dir is left behind.
 
     Raises runner.DependencyError for a missing or failed dependency, and
     runner.DependencyError with code 1 for an input the pipeline cannot use.
     Both are reported by the caller, which owns exit codes and rendering.
     """
     out = stream if stream is not None else sys.stdout
+    bundle = bundle if bundle is not None else Bundle.open(source, overwrite=False)
     reports: list[StageReport] = []
 
     # --- stage 1: probe -------------------------------------------------------
@@ -136,6 +145,9 @@ def run(source: Path, work: WorkDir, *, stream=None) -> RunResult:
     out.flush()
     transcript = stt.transcribe(wav, audio_duration=artefact.duration)
     paths = stt.write(transcript, work.path)
+    if bundle is not None:
+        for key, path in paths.items():
+            paths[key] = bundle.publish(key, path)
     reports.append(StageReport(3, "stt", time.monotonic() - began, transcript.summary()))
     out.write(reports[-1].line() + "\n")
 
@@ -157,15 +169,26 @@ def run(source: Path, work: WorkDir, *, stream=None) -> RunResult:
     out.write(reports[-1].line() + "\n")
 
     artefacts = dict(paths)
-    artefacts["manifest"] = manifest
-    artefacts.update({f"frame{i}": p for i, p in enumerate(produced)})
+    artefacts["manifest"] = bundle.publish("manifest", manifest)
+    # Frames go to the bundle's images/ so the note can reference them by a stable
+    # relative path, and the manifest travels with them.
+    for index, path in enumerate(produced):
+        target = bundle.images / path.name
+        shutil.move(str(path), str(target))
+        bundle.record(f"frame{index}", target)
+        artefacts[f"frame{index}"] = target
+    for extra in ("detect.json",):
+        candidate = frames_dir / extra
+        if candidate.is_file():
+            artefacts[extra] = bundle.publish(extra, candidate)
 
     return RunResult(
         source=Path(source),
         info=info,
         audio=artefact,
         transcript=transcript,
-        frames=produced,
+        frames=[artefacts[f"frame{i}"] for i in range(len(produced))],
         artefacts=artefacts,
         reports=tuple(reports),
+        bundle=bundle,
     )
