@@ -23,10 +23,12 @@ PENDING: dict[str, str] = {
     "audit": "stage 9, tracked in #11",
 }
 
-# `process` is implemented for stages 0-4 only. It still exits non-zero when
-# those stages succeed, because no note was produced -- see _process.
+# `process` exits non-zero even on a successful run, because the note is not audited: D5
+# makes a note that has not been through stage 9 conditional, not published. A note on disk
+# that no human or machine has checked is the failure this exit code exists for.
 PROCESS_INCOMPLETE = (
-    f"stages 0-{glp.IMPLEMENTED} completed; {glp.REMAINING_NOTE}. No note was written."
+    f"stages 0-{glp.IMPLEMENTED} completed; {glp.REMAINING_NOTE}. "
+    "No audit has been run, so the note is unaudited -- exit 1, not a finished product."
 )
 
 

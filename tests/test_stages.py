@@ -19,6 +19,7 @@ The one real end-to-end run lives outside this file, in the acceptance notes.
 import io
 import json
 import pathlib
+import re
 import os
 import shutil
 import subprocess
@@ -42,6 +43,8 @@ from glimpse import audio as glpa  # noqa: E402
 from glimpse import probe as glpr  # noqa: E402
 from glimpse import quality as glq  # noqa: E402
 from glimpse import caption as glcap  # noqa: E402
+from glimpse import llm as glle  # noqa: E402
+from glimpse import synth as glsy  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
@@ -994,8 +997,16 @@ with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["process", str(src)])
 text = out.getvalue()
 check("a partial run does NOT exit 0", rc == ec.USAGE, f"rc={rc}")
-check("a partial run says no note was written", "No note was written" in text, text)
-check("a partial run names the unbuilt stages", "stages 7-12" in text, text)
+# The note IS written now -- stage 7 produces it. What is missing is the audit, so the
+# message changed from "no note was written" to "unaudited". Asserting the old wording
+# would have kept a claim that stopped being true a stage ago.
+check("a partial run says the note is unaudited", "the note is unaudited" in text, text)
+check(
+    "and does not claim no note was written",
+    "No note was written" not in text,
+    "the note exists now; saying otherwise is false",
+)
+check("a partial run names the unbuilt stages", "stages 8-12" in text, text)
 check("a partial run names the tracking issue", "#3" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -2776,6 +2787,233 @@ check(
     "uncovered_share" in cpayload["provenance"],
     str(cpayload["provenance"]),
 )
+
+
+# --- 13. stage 7 synth: structure, degradation, model independence ------------------
+class FakeSynth:
+    """A synthesizer that is not a model, so the assembly can be asserted exactly."""
+
+    name = "fake"
+
+    def __init__(self, body="текст раздела", fail_on=(), toc_on=()):
+        self.body = body
+        self.fail_on = set(fail_on)
+        self.toc_on = set(toc_on)
+        self.seen = []
+
+    def section(self, section, transcript):
+        self.seen.append(section.number)
+        if section.number in self.fail_on:
+            raise glle.EndpointError("endpoint said no")
+        if section.number in self.toc_on:
+            return "# Содержание\n\n- раздел 1\n- раздел 2"
+        return f"{self.body} для фрагмента {section.number} ({len(transcript)} симв.)"
+
+
+sdir = tmp / "synth"
+sdir.mkdir(parents=True, exist_ok=True)
+scaps = sdir / "captions.json"
+scaps.write_text(
+    json.dumps(
+        {
+            "alignments": [
+                {
+                    "frame": f"f_{i:010d}.png",
+                    "text": f"слова фрагмента {i}",
+                    "word_count": 10 * i,
+                    "caption_status": "NOT_CONFIGURED",
+                    "on_screen_ms": [i * 60000, (i + 1) * 60000],
+                }
+                for i in range(6)
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+stxt = sdir / "transcript.txt"
+stxt.write_text("полный текст лекции", encoding="utf-8")
+src_path = tmp / "lecture.webm"
+src_path.write_bytes(b"\x1a\x45\xdf\xa3")
+
+cuts = glsy.build_sections(json.loads(scaps.read_text())["alignments"], limit=4)
+check(
+    "sections are cut on frame boundaries, capped at the limit",
+    len(cuts) == 3 and [s.number for s in cuts] == [1, 2, 3],
+    str([(s.number, len(s.frames)) for s in cuts]),
+)
+check(
+    "each section carries its frames and timing",
+    cuts[1].frames == ("f_0000000002.png", "f_0000000003.png")
+    and cuts[1].start_ms == 120000
+    and cuts[1].end_ms == 240000,
+    str(cuts[1]),
+)
+check(
+    "gated-out frames are not cut into sections",
+    glsy.build_sections([{"frame": "a", "caption_status": "GATED_OUT", "text": "x"}]) == [],
+    "a gated frame produced a section",
+)
+check("no alignments is no sections", glsy.build_sections([]) == [], "produced sections")
+
+# The eight headings are the model's to write nothing about.
+note = glsy.synthesise(json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth())
+check(
+    "all eight sections are present",
+    [s["number"] for s in note.sections] == list(range(1, 9)),
+    str([s["number"] for s in note.sections]),
+)
+check(
+    "in D5's order, with D5's titles",
+    re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)
+    == [(str(n), t) for n, t, _ in glsy.SECTIONS],
+    str(re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)),
+)
+check(
+    "no section heading comes from the synthesizer",
+    "# Фрагмент" not in note.markdown,
+    "a synthesized heading leaked into the note",
+)
+# Six frames cut one per slice, so six of D5's eight sections have material and two cannot.
+# Filling more would be inventing content, which is the thing this pipeline exists not to do.
+check("only sections with source material are filled", note.filled == 6, str(note.filled))
+check(
+    "and the unfilled ones are marked, not omitted",
+    all(not note.sections[n]["present"] for n in (6, 7))
+    and note.markdown.count("в лекции не затрагивается") == 2,
+    str(note.sections[6:]),
+)
+check("a note missing sections is degraded", note.degraded, "an incomplete note claimed complete")
+
+# Failure isolation: one dead section must not lose the seven that worked. D5.
+partial = glsy.synthesise(
+    json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth(fail_on={4})
+)
+check(
+    "one failed section does not lose the other five that had material",
+    partial.filled == 5 and partial.sections[3]["present"] is False,
+    f"filled={partial.filled} sections={[(x['number'], x['present']) for x in partial.sections]}",
+)
+check("and the note is still written", "## 4." in partial.markdown, "section 4 missing")
+check(
+    "a failed section says 'not covered', it does not vanish",
+    "в лекции не затрагивается" in partial.markdown,
+    "no placeholder",
+)
+check(
+    "the failure is reported, not swallowed", partial.degraded and partial.notes, str(partial.notes)
+)
+
+toc = glsy.synthesise(
+    json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth(toc_on={2})
+)
+check("a returned table of contents is discarded", "- раздел 1" not in toc.markdown, "ToC leaked")
+check("and the warning says so", any("table of contents" in w for w in toc.notes), str(toc.notes))
+
+# Heading demotion. The model reshapes the document; `assemble` must win.
+check(
+    "a synthesized h1 is demoted, not left to compete with D5's headings",
+    glsy.normalise("# Фрагмент\n\nтекст") == "### Фрагмент\n\nтекст",
+    glsy.normalise("# Фрагмент\n\nтекст"),
+)
+check(
+    "an h2 is a legitimate subsection and stays",
+    "## Подраздел" in glsy.normalise("## Подраздел"),
+    "h2 was touched",
+)
+
+# The template synthesizer is the oracle: it must run with nothing configured and must not
+# invent content.
+tnote = glsy.synthesise(
+    json.loads(scaps.read_text())["alignments"],
+    "текст",
+    src_path,
+    glsy.TemplateSynthesizer(src_path, "текст", cuts),
+)
+check("the template needs no model", tnote.synthesizer == "template", tnote.synthesizer)
+check(
+    "the template says it is a skeleton, not a note",
+    "Это каркас, а не конспект" in tnote.markdown,
+    "no disclaimer",
+)
+check("and it is reported as degraded", tnote.degraded, "a skeleton is not a finished note")
+check(
+    "two synthesizers, one protocol",
+    isinstance(glsy.TemplateSynthesizer(src_path, "", []), glsy.Synthesizer),
+    "template is not a Synthesizer",
+)
+check(
+    "and the fake is too",
+    isinstance(FakeSynth(), glsy.Synthesizer),
+    "duck-typed stub is not a Synthesizer",
+)
+
+# Unconfigured endpoint is a state, not a crash.
+try:
+    glle.Config.from_env()
+    raise AssertionError("expected NotConfiguredError")
+except glle.NotConfiguredError as exc:
+    check(
+        "an unconfigured endpoint raises before any network call",
+        "GLIMPSE_LLM_ENDPOINT" in str(exc),
+        str(exc),
+    )
+
+saved_llm_env = {k: os.environ.get(k) for k in (glle.ENDPOINT_ENV, glle.MODEL_ENV, glle.KEY_ENV)}
+os.environ[glle.ENDPOINT_ENV] = "http://h/v1"
+os.environ[glle.MODEL_ENV] = "m"
+os.environ[glle.KEY_ENV] = "secret"
+cfg = glle.Config.from_env()
+for _k, _v in saved_llm_env.items():
+    os.environ.pop(_k, None) if _v is None else os.environ.__setitem__(_k, _v)
+check(
+    "config comes from the environment",
+    cfg.endpoint == "http://h/v1" and cfg.model == "m",
+    str(cfg),
+)
+check(
+    "the key is never in the redacted form",
+    "secret" not in json.dumps(cfg.redacted()),
+    cfg.redacted(),
+)
+check("but its presence is recorded", cfg.redacted()["api_key"] is True, str(cfg.redacted()))
+
+# The artefacts.
+dest = tmp / "synth-out"
+sn = glsy.run(scaps, stxt, src_path, dest, config=None, stream=io.StringIO())
+check(
+    "run writes the note",
+    (dest / glsy.NOTE_NAME).is_file(),
+    str(sorted(p.name for p in dest.iterdir())),
+)
+check(
+    "run writes the report",
+    (dest / glsy.REPORT_NAME).is_file(),
+    str(sorted(p.name for p in dest.iterdir())),
+)
+check(
+    "run writes provenance",
+    (dest / glsy.PROVENANCE_NAME).is_file(),
+    str(sorted(p.name for p in dest.iterdir())),
+)
+prov = json.loads((dest / glsy.PROVENANCE_NAME).read_text())
+check("provenance records which synthesizer ran", prov["synthesizer"] == "template", str(prov))
+check(
+    "provenance states the stage does not require a model",
+    prov["requires_model"] is False,
+    str(prov),
+)
+check(
+    "provenance explains why there are two implementations",
+    "oracle" in prov["why_two_implementations"],
+    str(prov),
+)
+srep = json.loads((dest / glsy.REPORT_NAME).read_text())
+check(
+    "the report records the synthesizer and the size",
+    srep["synthesizer"] == "template" and srep["bytes"] > 0,
+    str(srep),
+)
+check("and that the note is degraded", srep["degraded"] is True, str(srep))
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run
