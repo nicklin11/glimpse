@@ -264,7 +264,17 @@ def assemble(note_title: str, bodies: dict[int, str], sections: list[Section]) -
     heading would renumber the note, and stage 8's structural lint would then be checking a
     document that changed shape to satisfy it.
     """
+    # The provenance footer goes directly under the title, not at the end. Appended last it
+    # would land inside the final section's body -- and stage 8's
+    # `claims-empty-but-is-not` rule then reads the footer as that section's content, which
+    # is a false positive caused by where the text sits, not by what it says.
     parts = [f"# {note_title}", ""]
+    if sections:
+        parts.append(
+            "> Собрано из выравненных кадров и стенограммы. Тайминги — `captions.json`, "
+            "решения качества — `quality.json`, структура синтеза — `synth.json`."
+        )
+        parts.append("")
     for number, title, brief in SECTIONS:
         body = bodies.get(number, "").strip()
         parts.append(f"## {number}. {title}")
@@ -273,14 +283,6 @@ def assemble(note_title: str, bodies: dict[int, str], sections: list[Section]) -
             parts.append(NOT_COVERED)
         else:
             parts.append(body)
-        parts.append("")
-    if sections:
-        parts.append("---")
-        parts.append("")
-        parts.append(
-            "Источник: конспект собран из выравненных кадров и стенограммы; "
-            "тайминги в `captions.json`, решения качества — в `quality.json`."
-        )
         parts.append("")
     return "\n".join(parts)
 

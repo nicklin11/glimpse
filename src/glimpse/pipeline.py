@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, caption, frames, probe, quality, stages, stt, synth
+from . import audio, caption, frames, lint, probe, quality, stages, stt, synth
 from . import llm
 from .bundle import Bundle
 from .workspace import WorkDir
@@ -69,6 +69,8 @@ class RunResult:
     #: The note. `synth.degraded` is reported, not hidden: a note written by the template
     #: synthesizer is a skeleton, and a reader has to be able to tell.
     note: synth.Note
+    #: D5's deterministic gate on the note. `lint.ok` false is exit 4.
+    lint: lint.Report
 
     @property
     def seconds(self) -> float:
@@ -290,6 +292,16 @@ def run(
         )
     )
 
+    # --- stage 8: lint --------------------------------------------------------
+    # Deterministic, and every rule is a delimiter count or a string match. A model asked
+    # whether `$...$` is balanced is strictly worse than a counter, so nothing here is one.
+    began = time.monotonic()
+    ldir = work.dir("lint")
+    lreport = lint.run(artefacts[synth.NOTE_NAME], bundle.images, ldir, stream=out)
+    for extra in (lint.REPORT_NAME, lint.PROVENANCE_NAME):
+        artefacts[extra] = bundle.publish(extra, ldir / extra)
+    reports.append(StageReport(8, "lint", time.monotonic() - began, lreport.summary()))
+
     return RunResult(
         source=Path(source),
         info=info,
@@ -303,4 +315,5 @@ def run(
         enhanced=enhanced,
         caption=creport,
         note=note,
+        lint=lreport,
     )

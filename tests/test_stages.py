@@ -45,6 +45,7 @@ from glimpse import quality as glq  # noqa: E402
 from glimpse import caption as glcap  # noqa: E402
 from glimpse import llm as glle  # noqa: E402
 from glimpse import synth as glsy  # noqa: E402
+from glimpse import lint as glln  # noqa: E402
 from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
@@ -1006,7 +1007,7 @@ check(
     "No note was written" not in text,
     "the note exists now; saying otherwise is false",
 )
-check("a partial run names the unbuilt stages", "stages 8-12" in text, text)
+check("a partial run names the unbuilt stages", "stages 9-12" in text, text)
 check("a partial run names the tracking issue", "#3" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -3014,6 +3015,200 @@ check(
     str(srep),
 )
 check("and that the note is degraded", srep["degraded"] is True, str(srep))
+
+
+# --- 14. stage 8 lint: the mechanical floor under the model's prose ----------------
+limg = tmp / "lint-images"
+limg.mkdir(parents=True, exist_ok=True)
+(limg / "f_0000000000.png").write_bytes(b"\x89PNG")
+(limg / "f_0000000001.png").write_bytes(b"\x89PNG")
+
+
+def note(*bodies: str) -> str:
+    """A well-formed note, so each test can break exactly one thing."""
+    parts = ["# Тест"]
+    for (number, title, _), body in zip(glsy.SECTIONS, bodies):
+        parts += ["", f"## {number}. {title}", "", body]
+    return "\n".join(parts) + "\n"
+
+
+clean = note(*["содержимое раздела"] * 8)
+r = glln.lint(clean, limg)
+check("a well-formed note lints clean", r.ok and not r.findings, r.summary() + str(r.findings))
+check("every rule ran", r.checked == 9, str(r.checked))
+check("an empty note is not ok", not glln.lint("", limg).ok, "empty passed")
+
+
+def rules(text, rule):
+    """Findings of one rule. Reading findings by rule is how each test names exactly the
+    defect it introduced, instead of asserting on a whole report."""
+    return [f for f in glln.lint(text, limg).findings if f.rule == rule]
+
+
+# Structure.
+drop = clean.replace("## 5. Теоретический конспект и методы\n\nсодержимое раздела\n", "")
+check("a missing section is an error", rules(drop, "structure/missing-section"), "no finding")
+renamed = clean.replace("## 6. Математический фундамент", "## 6. Формулы")
+check("a renamed section is an error", rules(renamed, "structure/renamed-section"), "no finding")
+extra = clean.replace("## 8. Вопросы для самопроверки", "## 9. Вопросы для самопроверки")
+check(
+    "a section D5 does not define is an error",
+    rules(extra, "structure/unknown-section"),
+    "no finding",
+)
+swapped = (
+    clean.replace("## 5. Теоретический конспект и методы", "## 5. @@TMP@@")
+    .replace("## 6. Математический фундамент", "## 5. Теоретический конспект и методы")
+    .replace("## 5. @@TMP@@", "## 6. Математический фундамент")
+)
+check("out-of-order sections are an error", rules(swapped, "structure/order"), "no finding")
+
+# The rule that catches a model padding the document to look complete.
+padded = note(
+    *["в лекции не затрагивается"] * 7
+    + ["в лекции не затрагивается\n\nА на самом деле три абзаца."]
+)
+check(
+    "a section that declares itself empty and then is not, is an error",
+    rules(padded, "structure/claims-empty-but-is-not"),
+    str(glln.lint(padded, limg).findings),
+)
+check(
+    "a genuinely empty section is fine",
+    not rules(note(*["в лекции не затрагивается"] * 8), "structure/claims-empty-but-is-not"),
+    "a real empty section was flagged",
+)
+
+# Mathematics. An unclosed `$` turns the rest of the note into math -- the most damaging
+# thing a synthesis model does to a technical note, and trivially detectable.
+bodies = ["содержимое"] * 8
+bodies[5] = "Формула $x = u + B$ и определение $\\mathbf{x} \\in \\mathbb{R}^n$."
+check(
+    "balanced inline math is clean",
+    not rules(note(*bodies), "math/inline-unbalanced"),
+    str(rules(note(*bodies), "math/inline-unbalanced")),
+)
+# Three `$`, not four. An even count is not an unclosed delimiter, it is a closed one --
+# a fixture with a balanced count tests nothing, which is what the first attempt at this
+# assertion did.
+bodies[5] = "Формула $x = u + B$ и $y = \\mathbf{x}."
+broken = note(*bodies)
+found = rules(broken, "math/inline-unbalanced")
+check("an unclosed $ is an error", found, "no finding")
+check(
+    "and the finding names the offending line",
+    len(found) == 1 and found[0].line == broken[: broken.index("$x = u")].count("\n") + 1,
+    str(found),
+)
+bodies[5] = "Блочная $$x = u$$ и $y$."
+check(
+    "balanced display math is clean",
+    not rules(note(*bodies), "math/inline-unbalanced"),
+    str(rules(note(*bodies), "math/inline-unbalanced")),
+)
+bodies[5] = "Блочная $$x = u и $y$."
+check("an unclosed $$ is an error", rules(note(*bodies), "math/display-unbalanced"), "no finding")
+bodies[5] = "Матрица $\\mathbf{A} \\in \\mathbb{R}^{m \\times n}$ корректна."
+check(
+    "balanced braces in exponents are clean",
+    not rules(note(*bodies), "math/brace-unbalanced"),
+    str(rules(note(*bodies), "math/brace-unbalanced")),
+)
+bodies[5] = "Матрица $\\mathbf{A} \\in \\mathbb{R}^{m \\times n$ сломана."
+check(
+    "an unbalanced brace is an error", rules(note(*bodies), "math/brace-unbalanced"), "no finding"
+)
+bodies[5] = "Цена стоит 5$ и больше."
+check(
+    "a single literal $ is still flagged",
+    rules(note(*bodies), "math/inline-unbalanced"),
+    "escaped currency was ignored",
+)
+
+# The interaction the term linker cannot see.
+bodies[5] = "Состояние $x = \\mathbf{x} \\in [[состояние]]$ изолировано."
+check(
+    "a wikilink inside math is an error",
+    rules(note(*bodies), "link/inside-math"),
+    str(rules(note(*bodies), "link/inside-math")),
+)
+bodies[5] = "См. [[состояние]] вне математики."
+check(
+    "a wikilink outside math is fine",
+    not rules(note(*bodies), "link/inside-math"),
+    "false positive",
+)
+
+# Filler.
+bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
+check("filler is a warning, not an error", rules(note(*bodies), "style/filler"), "no finding")
+check(
+    "filler does not block the note", glln.lint(note(*bodies), limg).ok, "filler blocked the gate"
+)
+bodies[4] = "Нулевое начальное условие и нулевая производная корректны."
+check(
+    "«ну» inside «нулевой» is not filler",
+    not rules(note(*bodies), "style/filler"),
+    "substring match fired",
+)
+
+# Assets.
+bodies[6] = "См. ![[f_0000000000.png]]."
+check(
+    "an existing image reference is fine",
+    not rules(note(*bodies), "asset/missing"),
+    "false positive",
+)
+bodies[6] = "См. ![[f_9999999999.png]]."
+check("a missing image reference is an error", rules(note(*bodies), "asset/missing"), "no finding")
+
+# Code fences are not the user's code to lint.
+fenced = clean.replace(
+    "содержимое раздела",
+    "```python\ncost = 5  # $100 and unbalanced {\n```",
+    1,
+)
+check(
+    "code fences are excluded from every check",
+    not glln.lint(fenced, limg).findings,
+    str(glln.lint(fenced, limg).findings),
+)
+
+# Mojibake.
+bodies[3] = "Ð¡ÑÐ¸ÑÑÑ‚ÐµÐ¼Ð° Ð² Ð²Ð¸Ð´ÐµÐ¾."
+check("mis-decoded text is an error", rules(note(*bodies), "text/mojibake"), "no finding")
+
+# Artefacts.
+ldest = tmp / "lint-out"
+lnote = ldest / "note.md"
+ldest.mkdir(parents=True, exist_ok=True)
+lnote.write_text(clean, encoding="utf-8")
+lrep = glln.run(lnote, limg, ldest, stream=io.StringIO())
+check(
+    "run writes the report",
+    (ldest / glln.REPORT_NAME).is_file(),
+    str(sorted(p.name for p in ldest.iterdir())),
+)
+check(
+    "run writes provenance",
+    (ldest / glln.PROVENANCE_NAME).is_file(),
+    str(sorted(p.name for p in ldest.iterdir())),
+)
+lprov = json.loads((ldest / glln.PROVENANCE_NAME).read_text())
+check("provenance says no model is involved", lprov["requires_model"] is False, str(lprov))
+check("provenance names every rule it ran", len(lprov["rules"]) == 12, str(lprov["rules"]))
+check("provenance says what blocks the gate", lprov["blocking"] == "ERROR", str(lprov))
+lrep = json.loads((ldest / glln.REPORT_NAME).read_text())
+check(
+    "the report separates errors from warnings",
+    lrep["errors"] == 0 and lrep["warnings"] == 0,
+    str(lrep),
+)
+check(
+    "run() on a missing note is a finding, not a traceback",
+    not glln.run(ldest / "nope.md", limg, ldest, stream=io.StringIO()).ok,
+    "passed",
+)
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run
