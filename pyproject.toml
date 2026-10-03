@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "One-command lecture pipeline: video/audio -> audited Obsidian note"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+# numpy: stage 5 measures MEGE at the frame's native resolution. In pure Python that is a
+# ~20 s per-frame pass over 1.4 M pixels, which would make the quality gate slower than
+# speech recognition. Measured alternative: downscaling first is what made crops
+# incomparable, so the dependency buys the fix.
+dependencies = ["numpy>=1.26"]
 
 [project.scripts]
 glimpse = "glimpse.cli:main"

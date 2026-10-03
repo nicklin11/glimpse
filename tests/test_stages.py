@@ -21,6 +21,7 @@ import json
 import pathlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -37,6 +38,10 @@ from glimpse import exitcodes as ec  # noqa: E402
 from glimpse import bundle as glb  # noqa: E402
 from glimpse import frames as glfr  # noqa: E402
 from glimpse import pipeline as glp  # noqa: E402
+from glimpse import audio as glpa  # noqa: E402
+from glimpse import probe as glpr  # noqa: E402
+from glimpse import quality as glq  # noqa: E402
+from glimpse import stt as glst  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
 from glimpse import stt as glstt  # noqa: E402
@@ -70,6 +75,11 @@ def raises(fn, *args, **kwargs):
 FAKE: dict[str, list[tuple[bytes, bytes, int]]] = {}
 CALLS: list[tuple[str, list[str]]] = []
 real_run = glr.run
+# Captured before anything is monkeypatched: by the time this file reaches the
+# pipeline-ordering test, glp.run is the stub above, and testing against the stub would
+# pass vacuously -- exactly the class of bug the test exists to catch.
+REAL_PIPELINE_RUN = glp.run
+REAL_QUALITY_RUN = glp.quality.run
 real_resolve = glr.resolve
 real_which = glr.shutil.which
 real_sleep = glfr.time.sleep
@@ -956,11 +966,21 @@ def fake_pipeline(source, work, **kw):
     artefacts = {n: work.path / n for n in ARTEFACTS}
     if bundle is not None:
         artefacts = {n: bundle.publish(n, p) for n, p in artefacts.items()}
+    qreport = SimpleNamespace(
+        frames=[],
+        passed=[],
+        failed=[],
+        ok=True,
+        summary=lambda: "0/0 frames pass",
+        explain=lambda: "",
+    )
     return SimpleNamespace(
         source=source,
         artefacts=artefacts,
         seconds=1.5,
         bundle=bundle,
+        quality=qreport,
+        enhanced=[],
         transcript=SimpleNamespace(anomalies=(), summary=lambda: "3 segments, 40 timed words"),
     )
 
@@ -1277,7 +1297,7 @@ check("stage 4 writes a manifest", manifest.is_file(), str(manifest))
 check("stage 4 produced every frame", len(produced) == len(frame_times), str(len(produced)))
 check(
     "frame filenames are the timestamp in ms",
-    [p.name for p in produced] == [f"f_{t:010d}.jpg" for t in frame_times],
+    [p.name for p in produced] == [f"f_{t:010d}.png" for t in frame_times],
     str([p.name for p in produced]),
 )
 
@@ -1400,7 +1420,7 @@ check("an unrelated ffmpeg error is not retried", len(CALLS) == 1, f"{len(CALLS)
 # A stale frame from a previous run must not survive into the new manifest.
 install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
 glr.run = ffmpeg_writes(frame_times)
-stale = frame_out / "f_9999999999.jpg"
+stale = frame_out / "f_9999999999.png"
 stale.write_bytes(b"old")
 glfr.run(src, frame_out)
 check("stale frames are cleared", not stale.exists(), str(stale))
@@ -1894,6 +1914,563 @@ if _real_state is not None:
     os.environ["XDG_STATE_HOME"] = _real_state
 if _real_outdir is not None:
     os.environ["GLIMPSE_OUTPUT_DIR"] = _real_outdir
+
+
+# --- 10b. stage 5 receives files that exist ------------------------------------
+# Regression: stage 4 published the frames by moving them into the bundle, then handed
+# stage 5 the pre-move path list. Every frame failed with "cannot read the frame size",
+# and only the end-to-end run showed it -- the stubbed pipeline above moves nothing.
+real_run, real_publish = REAL_PIPELINE_RUN, glb.Bundle.publish
+seen: dict = {}
+# Restore the real pipeline before the call below. Section 7 leaves glp.run bound to
+# fake_pipeline, and calling *that* made this regression test pass vacuously for as long as
+# it existed: the stub never reaches stage 5, so nothing about frame ordering was checked.
+# A test that cannot fail is worse than no test, because it reports coverage it does not have.
+glp.run = real_run
+
+
+def fake_frames_run(source, frames_dir):
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    made = []
+    for i in range(2):
+        path = Path(frames_dir) / f"f_{i}.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
+        made.append(path)
+    (Path(frames_dir) / "manifest.tsv").write_text("t\tstate\n0\tA\n")
+    return Path(frames_dir) / "manifest.tsv", made
+
+
+def spy_quality_run(frames, work_dir, *, settings=None, bbox_source="geometric", stream=None):
+    seen["paths"] = list(frames)
+    seen["missing"] = [f.name for f in frames if not Path(f).is_file()]
+    return glq.Report(frames=[])
+
+
+# Only the I/O stages are stubbed. pipeline.run itself runs for real, because the ordering
+# bug lived in pipeline.run's body -- stubbing pipeline.run (as the rest of this file does)
+# is exactly why the original bug was invisible.
+glp.frames.run = fake_frames_run
+glp.quality.run = spy_quality_run
+real_probe_run, real_audio_run = glp.probe.probe, glp.audio.extract
+real_stt_run, real_stt_write = glp.stt.transcribe, glp.stt.write
+real_require = glp.probe.require_supported
+real_coverage = glp.audio.check_coverage
+real_rates = glp.stt.RATE_RANGE
+glp.probe.probe = lambda _p: glpr.MediaInfo(
+    path=_p,
+    duration=1.0,
+    has_video=True,
+    has_audio=True,
+    video_codec="vp8",
+    width=16,
+    height=16,
+    audio_codec="opus",
+    sample_rate=48000,
+    channels=2,
+)
+glp.probe.require_supported = lambda _i: None
+glp.audio.extract = lambda _p, wav: (
+    wav.write_bytes(b"RIFF"),
+    glpa.AudioArtefact(path=wav, duration=1.0, sample_rate=16000, channels=1, size_bytes=4),
+)[1]
+glp.audio.check_coverage = lambda _i, _a: ""
+glp.stt.transcribe = lambda wav, *, audio_duration: glst.Transcript(
+    wav=wav,
+    audio_duration=audio_duration,
+    segments=(),
+    backend="spy",
+)
+glp.stt.write = lambda tr, dest: {"transcript.json": Path(dest) / "t.json"}
+work_probe = tmp / "order_work"
+work_probe.mkdir(parents=True, exist_ok=True)
+try:
+    _r = glp.run(
+        src,
+        glw.WorkDir(parent=work_probe),
+        bundle=glb.Bundle.open(src, output_dir=str(tmp / "order_bundle")),
+    )
+    check("the real pipeline.run reached the end", True)
+except BaseException as _exc:
+    import traceback
+
+    traceback.print_exc()
+    check("the real pipeline.run reached the end", False, repr(_exc))
+finally:
+    glp.run, glp.frames.run, glp.quality.run = real_run, glfr.run, REAL_QUALITY_RUN
+    glp.probe.probe, glp.audio.extract = real_probe_run, real_audio_run
+    glp.stt.transcribe, glp.stt.write = real_stt_run, real_stt_write
+    glp.probe.require_supported, glp.audio.check_coverage = real_require, real_coverage
+    glp.stt.RATE_RANGE = real_rates
+check(
+    "stage 5 is handed frames that exist on disk",
+    seen.get("missing") == [],
+    f"missing at stage 5: {seen.get('missing')}",
+)
+check("stage 5 was actually invoked", len(seen.get("paths", [])) == 2, str(seen.get("paths")))
+check(
+    "the frames still reach the bundle afterwards",
+    len(list((tmp / "order_bundle" / "images").glob("*.png"))) == 2,
+    str(sorted(q.name for q in (tmp / "order_bundle" / "images").glob("*"))),
+)
+
+# --- 11. stage 5 quality: MEGE, the full-frame fallback, and a derived gate ------------
+qs = glq.Settings()
+qtmp = tmp / "quality"
+qtmp.mkdir(parents=True, exist_ok=True)
+
+
+def qframe(name, colour, size="640x360", vf=None):
+    path = qtmp / name
+    args = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c={colour}:s={size}"]
+    if vf:
+        args += ["-vf", vf]
+    subprocess.run(args + ["-frames:v", "1", str(path)], check=True)
+    return path
+
+
+def observe(path, settings=qs, source="geometric"):
+    return glq.observe(path, settings, glq.resolve_estimator(source))
+
+
+def verdict(path, threshold, settings=qs, out=None, source="geometric"):
+    obs = observe(path, settings, source)
+    dest = out or (qtmp / "q_out")
+    dest.mkdir(parents=True, exist_ok=True)
+    return glq.evaluate(obs, dest, settings, threshold)
+
+
+# Ground truth: the measure must be 0 on a field with no structure, or the threshold
+# is measuring noise rather than sharpness.
+uniform = qframe("uniform.png", "gray")
+check(
+    "a uniform field has zero MEGE",
+    glq.sobel_mege(glq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)[0] == 0.0,
+    str(glq.sobel_mege(glq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)),
+)
+
+subprocess.run(
+    [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=640x360:rate=1:duration=1",
+        "-frames:v",
+        "1",
+        str(qtmp / "detail.png"),
+    ],
+    check=True,
+)
+detail_mege = observe(qtmp / "detail.png").mege
+check("a detailed frame scores above the uniform field", detail_mege > 0.0, str(detail_mege))
+
+
+# Independent oracle for MEGE. Written as a double loop over 2D indices with clamped
+# indexing, rather than the padded numpy slicing the implementation uses, so an indexing
+# or sign error in one cannot be reproduced by copying the other.
+def oracle_mege(raster, w, h, tau):
+    g = [[raster[y * w + x] for x in range(w)] for y in range(h)]
+
+    def at(yy, xx):
+        return g[min(max(yy, 0), h - 1)][min(max(xx, 0), w - 1)]
+
+    vals = []
+    for y in range(h):
+        for x in range(w):
+            gx = (at(y - 1, x + 1) + 2 * at(y, x + 1) + at(y + 1, x + 1)) - (
+                at(y - 1, x - 1) + 2 * at(y, x - 1) + at(y + 1, x - 1)
+            )
+            gy = (at(y + 1, x - 1) + 2 * at(y + 1, x) + at(y + 1, x + 1)) - (
+                at(y - 1, x - 1) + 2 * at(y - 1, x) + at(y - 1, x + 1)
+            )
+            mag = gx * gx + gy * gy
+            if mag >= tau:
+                vals.append(mag)
+    return (sum(vals) / len(vals), len(vals)) if vals else (0.0, 0)
+
+
+w3, h3 = 7, 5
+ramp = bytes(((x * 37 + y * 53) % 256) for y in range(h3) for x in range(w3))
+mine = glq.sobel_mege(ramp, w3, h3, qs.tau)[0]
+theirs = oracle_mege(ramp, w3, h3, qs.tau)[0]
+check(
+    "MEGE matches an independent reference implementation",
+    abs(mine - theirs) < 1e-9,
+    f"got={mine} reference={theirs}",
+)
+check(
+    "an all-zero raster has no edge pixels at all",
+    glq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau) == (0.0, 0),
+    str(glq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau)),
+)
+check(
+    "a raster too small to have an interior measures zero",
+    glq.sobel_mege(bytes(4), 2, 2, qs.tau) == (0.0, 0),
+    str(glq.sobel_mege(bytes(4), 2, 2, qs.tau)),
+)
+
+# The property the replacement metric was adopted for: replicate the same strokes and the
+# value must not move. This is the 7.21x failure of Laplacian variance, expressed as a test.
+one_stroke = qframe(
+    "one_stroke.png",
+    "black",
+    vf="drawbox=x=100:y=100:w=60:h=40:color=white:t=fill",
+)
+many_strokes = qframe(
+    "many_strokes.png",
+    "black",
+    vf=(
+        "drawbox=x=100:y=100:w=60:h=40:color=white:t=fill,"
+        "drawbox=x=300:y=100:w=60:h=40:color=white:t=fill,"
+        "drawbox=x=100:y=220:w=60:h=40:color=white:t=fill,"
+        "drawbox=x=300:y=220:w=60:h=40:color=white:t=fill"
+    ),
+)
+one_obs = observe(one_stroke)
+many_obs = observe(many_strokes)
+check(
+    "four times the strokes gives roughly four times the edge pixels",
+    many_obs.edges > one_obs.edges * 3,
+    f"one={one_obs.edges} many={many_obs.edges}",
+)
+check(
+    "MEGE is flat under a 4x change in content density",
+    abs(many_obs.mege / one_obs.mege - 1.0) < 0.05,
+    f"one={one_obs.mege:.0f} many={many_obs.mege:.0f} ratio={many_obs.mege / one_obs.mege:.3f}",
+)
+
+# Blur must lower the measure, or the gate cannot detect an unusable source at all.
+subprocess.run(
+    [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(qtmp / "detail.png"),
+        "-vf",
+        "gblur=sigma=2",
+        "-frames:v",
+        "1",
+        str(qtmp / "blurred.png"),
+    ],
+    check=True,
+)
+check(
+    "blur lowers the measure",
+    observe(qtmp / "blurred.png").mege < detail_mege,
+    f"sharp={detail_mege} blurred={observe(qtmp / 'blurred.png').mege}",
+)
+
+# THE REGRESSION. A dark canvas with real sharp content gets no bright region, so the old
+# code returned passed=False for every one of these. It is valid content for this lecture.
+# Built by dimming a detailed source rather than by drawing sparse boxes on black: a few
+# boxes are neither dense enough to clear the edge floor nor representative of what a dark
+# slide actually is. Dimming keeps the edge population and drops the luma below the
+# bright-pixel threshold, which is exactly the case the estimator cannot see.
+subprocess.run(
+    [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=1280x720:rate=1:duration=1",
+        "-vf",
+        "format=gray,lut=y='val*0.45'",
+        "-frames:v",
+        "1",
+        str(qtmp / "dark_canvas.png"),
+    ],
+    check=True,
+)
+dark_canvas = qtmp / "dark_canvas.png"
+dc_obs = observe(dark_canvas)
+check("a dark canvas yields no bbox", dc_obs.box is None, str(dc_obs.box))
+check(
+    "a dark canvas is measured full-frame, not skipped",
+    dc_obs.crop_state == glq.CROP_FALLBACK,
+    dc_obs.crop_state,
+)
+check(
+    "a dark canvas is classified as a dark canvas",
+    dc_obs.content_type == glq.CONTENT_DARK,
+    dc_obs.content_type,
+)
+check(
+    "a dark canvas clears the edge floor",
+    glq.has_edges(dc_obs, qs),
+    f"edges={dc_obs.edges} of {dc_obs.width * dc_obs.height} px",
+)
+dc_verdict = verdict(dark_canvas, dc_obs.mege * 0.5)
+check(
+    "a dark canvas with sharp content PASSES the gate",
+    dc_verdict.passed,
+    f"mege={dc_obs.mege:.0f} reason={dc_verdict.reason}",
+)
+check(
+    "its verdict is still a real measurement, not a rubber stamp",
+    dc_verdict.mege == dc_obs.mege and dc_verdict.mege > 0.0,
+    f"mege={dc_verdict.mege}",
+)
+check(
+    "the same canvas at a raised threshold fails, so the gate reads it",
+    not verdict(dark_canvas, dc_obs.mege * 2.0).passed,
+    "a dark canvas passed a threshold it should have failed",
+)
+
+# The regression that actually bit: the full-frame path built its filter chain by appending
+# to a string, so "flags=lanczos" and "unsharp=" fused whenever there was no crop. Every
+# full-frame frame died with ffmpeg exit 234 and the run reported it as a quality failure.
+dc_enhanced = qtmp / "q_out" / glq.enhanced_name(dark_canvas.name)
+check("a full-frame enhancement actually writes a file", dc_enhanced.is_file(), str(dc_enhanced))
+check(
+    "the enhanced frame is non-empty",
+    dc_enhanced.is_file() and dc_enhanced.stat().st_size > 0,
+    "empty file",
+)
+check(
+    "enhanced frames are named .jpg, because -q:v into a .png path is silently discarded",
+    glq.enhanced_name("f_0000000000.png").endswith(".jpg"),
+    glq.enhanced_name("f_0000000000.png"),
+)
+
+# A uniform dark field is blank, not soft. Reporting it as "soft" hides which failure
+# occurred, and no sharpness number is meaningful on it.
+blank = qframe("blank.png", "black")
+blank_obs = observe(blank)
+check("a black frame is classified blank", glq.is_blank(blank_obs, qs), str(blank_obs.luma_std))
+blank_verdict = verdict(blank, 0.0)
+check(
+    "a blank frame fails with EMPTY_CANVAS, not SOFT",
+    not blank_verdict.passed and blank_verdict.reason == glq.REASON_BLANK,
+    blank_verdict.reason,
+)
+check(
+    "a blank frame gets no enhanced file",
+    not (qtmp / "q_out" / glq.enhanced_name(blank.name)).exists(),
+    "wrote an enhanced frame for a blank canvas",
+)
+
+# A white frame has a bbox covering most of itself.
+white = qframe("white.png", "white")
+white_obs = observe(white)
+check("a white frame gets a bbox", white_obs.box is not None, "no box")
+if white_obs.box:
+    check(
+        "the bbox does not exceed the frame",
+        white_obs.box.width <= 640 and white_obs.box.height <= 360,
+        f"{white_obs.box.width}x{white_obs.box.height}",
+    )
+check(
+    "a white frame is classified as a white document",
+    white_obs.content_type == glq.CONTENT_WHITE,
+    white_obs.content_type,
+)
+
+# The margin is only observable on a frame whose bright region is smaller than the frame.
+inset = tmp / "quality_inset"
+inset.mkdir(parents=True, exist_ok=True)
+subprocess.run(
+    [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=640x360",
+        "-vf",
+        "drawbox=x=200:y=120:w=240:h=120:color=white:t=fill",
+        "-frames:v",
+        "1",
+        str(inset / "panel.png"),
+    ],
+    check=True,
+)
+panel_obs = observe(inset / "panel.png")
+check("a centred panel gets a bbox", panel_obs.box is not None, "no box")
+if panel_obs.box:
+    check(
+        "the bbox is wider than the bright panel, i.e. the margin was applied",
+        panel_obs.box.width > 240 and panel_obs.box.x < 200,
+        f"box={panel_obs.box.width} at x={panel_obs.box.x}, panel=240 at x=200",
+    )
+
+# The gate is derived from the run, not fixed. Two frames, and the threshold must land at
+# decay x median(MEGE) -- and be above the weaker frame.
+two = [observe(qtmp / "detail.png"), observe(qtmp / "blurred.png")]
+derived = glq.threshold_for(two, qs)
+mid = sorted(o.mege for o in two)[1] / 2 + sorted(o.mege for o in two)[0] / 2
+check(
+    "the threshold is decay x median over content frames",
+    abs(derived - qs.decay * mid) < 1e-6,
+    f"derived={derived} expected={qs.decay * mid}",
+)
+check(
+    "the weaker frame falls below the derived threshold",
+    min(o.mege for o in two) < derived <= max(o.mege for o in two),
+    f"derived={derived} meges={[o.mege for o in two]}",
+)
+# A run of nothing but blank canvases must not normalise its way to "everything passes".
+check(
+    "an all-blank run falls back to the floor",
+    glq.threshold_for([blank_obs, blank_obs], qs) == qs.floor,
+    str(glq.threshold_for([blank_obs, blank_obs], qs)),
+)
+check(
+    "an empty run falls back to the floor",
+    glq.threshold_for([], qs) == qs.floor,
+    str(glq.threshold_for([], qs)),
+)
+
+# The same frame flips with the threshold, and the reason names the measured value.
+passing = verdict(qtmp / "detail.png", detail_mege * 0.5)
+failing = verdict(qtmp / "detail.png", detail_mege * 2.0)
+check("a frame can pass", passing.passed, "unexpected fail")
+check("the same frame fails a raised threshold", not failing.passed, "gate ignored setting")
+check(
+    "a failing reason is SOFT",
+    failing.reason == glq.REASON_SOFT,
+    failing.reason,
+)
+check(
+    "a too-thin edge population is NO_EDGES, distinct from SOFT",
+    verdict(qtmp / "blurred.png", 0.0, glq.Settings(min_edge_fraction=0.99)).reason
+    == glq.REASON_NO_EDGES,
+    verdict(qtmp / "blurred.png", 0.0, glq.Settings(min_edge_fraction=0.99)).reason,
+)
+
+# An unreadable input is a failed frame, not a crash: one bad file must not lose 15 good ones.
+bogus = qtmp / "not_an_image.png"
+bogus.write_bytes(b"not an image at all")
+try:
+    observe(bogus)
+    crashed = None
+except OSError as exc:
+    crashed = exc
+check(
+    "a corrupt frame raises OSError for run() to catch",
+    crashed is not None,
+    f"crashed={crashed!r}",
+)
+check(
+    "the reason names the input that was unusable",
+    crashed is not None and "not_an_image.png" in str(crashed),
+    f"crashed={crashed!r}",
+)
+
+mixed = glq.run([qtmp / "detail.png", bogus], qtmp / "run", settings=qs, stream=io.StringIO())
+check("run() survives a corrupt frame", len(mixed.frames) == 2, str(len(mixed.frames)))
+check(
+    "the corrupt frame is reported as failed, with its reason",
+    not mixed.ok and any("not_an_image.png" in f.reason for f in mixed.frames if not f.passed),
+    str([(f.name, f.reason[:40]) for f in mixed.frames]),
+)
+check(
+    "the good frame in the same run still passed",
+    any(f.name == "detail.png" and f.passed for f in mixed.frames),
+    str([(f.name, f.passed) for f in mixed.frames]),
+)
+check(
+    "an empty run is not ok", not glq.run([], qtmp / "empty", settings=qs, stream=io.StringIO()).ok
+)
+
+# bbox sources: a protocol with three honest implementations.
+check(
+    "the null estimator never crops",
+    observe(dark_canvas, source="null").crop_state == glq.CROP_FALLBACK,
+    observe(dark_canvas, source="null").crop_state,
+)
+check(
+    "the geometric estimator does crop a white frame",
+    observe(white, source="null").crop_state == glq.CROP_FALLBACK
+    and observe(white).crop_state == glq.CROP_CROPPED,
+    "source selection is not reaching observe()",
+)
+try:
+    glq.VLMEstimator().estimate(dark_canvas, qs)
+    vlm_raised = None
+except glq.NotConfiguredError as exc:
+    vlm_raised = exc
+check(
+    "an unconfigured VLM bbox source raises NotConfiguredError rather than guessing",
+    vlm_raised is not None,
+    f"raised={vlm_raised!r}",
+)
+try:
+    glq.resolve_estimator("telepathy")
+    unknown_raised = None
+except KeyError as exc:
+    unknown_raised = exc
+check(
+    "an unknown bbox source is refused by name",
+    unknown_raised is not None and "telepathy" in str(unknown_raised),
+    f"raised={unknown_raised!r}",
+)
+
+# The report must not leak the post-enhancement number into the gate field, and the three
+# orthogonal measurements must be present separately.
+qtmp2 = tmp / "quality_report"
+qtmp2.mkdir(parents=True, exist_ok=True)
+mixed_report = glq.run([qtmp / "detail.png", dark_canvas], qtmp2, settings=qs, stream=io.StringIO())
+glq.write(mixed_report, qtmp2 / "quality.json", qs)
+payload = json.loads((qtmp2 / "quality.json").read_text())
+check(
+    "the report records the derived threshold",
+    payload.get("threshold") == mixed_report.threshold,
+    str(payload.get("threshold")),
+)
+check(
+    "the report records how the threshold was derived",
+    "median" in payload.get("threshold_rule", ""),
+    str(payload.get("threshold_rule")),
+)
+names = {f.name for f in mixed_report.frames}
+entry = next(f for f in payload["frames"] if f["name"] == dark_canvas.name)
+check(
+    "the three measurements are separate fields",
+    {"quality_gate", "content_type", "crop_state"} <= set(entry),
+    str(sorted(entry)),
+)
+check(
+    "a dark canvas is recorded as full-frame and dark_canvas",
+    (entry["crop_state"], entry["content_type"]) == (glq.CROP_FALLBACK, glq.CONTENT_DARK),
+    str(entry),
+)
+# Note what is NOT asserted here: that this canvas PASSES the run-derived gate. In a
+# two-frame run the median is taken across one dense light slide and this dark one, and
+# their MEGE values legitimately differ -- a dense light slide really does have steeper
+# gradients. Whether the canvas clears the run's gate is tested above against an explicit
+# threshold; what this run checks is that it is measured and classified at all.
+check("the gated field is present", "mege" in entry, str(sorted(entry)))
+check(
+    "the enhanced measure is recorded separately",
+    "mege_enhanced" in entry and entry["mege"] != entry.get("mege_enhanced"),
+    str(entry),
+)
+check(
+    "the gate decision uses the source number only",
+    entry["quality_gate"] == ("PASS" if entry["mege"] >= entry["threshold"] else "FAIL"),
+    str(entry),
+)
+check(
+    "the bbox source reaches the report",
+    {f["bbox_source"] for f in payload["frames"]} == {"geometric"},
+    str([f["bbox_source"] for f in payload["frames"]]),
+)
+provenance = json.loads(glq.provenance(qs, "geometric"))
+check(
+    "provenance names the metric and the raster policy",
+    provenance["metric"] == "MEGE" and "native" in provenance["raster"],
+    str(provenance),
+)
 
 glc.run_all = real_run_all
 glp.run = real_pipeline_run

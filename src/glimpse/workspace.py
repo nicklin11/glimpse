@@ -77,9 +77,21 @@ class WorkDir:
         return f"work dir KEPT for inspection: {self.path}{suffix}"
 
     def sub(self, *parts: str) -> Path:
-        """A path inside the work dir, with parent directories created."""
+        """A path inside the work dir, with parent directories created.
+
+        Note what this does *not* do: create `parts[-1]`. For "audio.wav" that is right --
+        the parent is the work dir. For a subdirectory it is a trap: `work.sub("quality")`
+        returns a path whose own directory does not exist, and the first write into it
+        raises FileNotFoundError. Use `dir()` for directories.
+        """
         target = self.path.joinpath(*parts)
         target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def dir(self, *parts: str) -> Path:
+        """A directory inside the work dir, created."""
+        target = self.sub(*parts)
+        target.mkdir(parents=True, exist_ok=True)
         return target
 
 
