@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 from . import exitcodes as ec
-from . import pipeline, runner
+from . import pipeline as glp
+from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
 from .workspace import WorkDir
 
@@ -21,10 +22,10 @@ PENDING: dict[str, str] = {
     "audit": "stage 9, tracked in #11",
 }
 
-# `process` is implemented for stages 0-3 only. It still exits non-zero when
+# `process` is implemented for stages 0-4 only. It still exits non-zero when
 # those stages succeed, because no note was produced -- see _process.
 PROCESS_INCOMPLETE = (
-    f"stages 0-{pipeline.IMPLEMENTED} completed; {pipeline.REMAINING_NOTE}. No note was written."
+    f"stages 0-{glp.IMPLEMENTED} completed; {glp.REMAINING_NOTE}. No note was written."
 )
 
 
@@ -70,7 +71,7 @@ def _doctor(_args: argparse.Namespace) -> int:
 def _preflight() -> int:
     """Stage 0 as a gate: return the exit code, or OK if the run may start.
 
-    Only the dependencies stages 0-3 actually invoke are fatal here. The vault
+    Only the dependencies stages 0-4 actually invoke are fatal here. The vault
     and the gateway are reported but not enforced: stage 12 and stage 5 need
     them, and neither runs yet. Refusing to transcribe because the vision
     gateway happens to be down would make the gate broader than the run it
@@ -85,7 +86,7 @@ def _preflight() -> int:
         # reason to refuse this run, but it is still a fact the user wants
         # before stage 5 rather than after it.
         print(
-            f"glimpse: note: {c.name} is unavailable, but stages 0-3 do not use it",
+            f"glimpse: note: {c.name} is unavailable, but stages 0-{glp.IMPLEMENTED} do not use it",
             file=sys.stderr,
         )
     if not failed:
@@ -140,7 +141,7 @@ def _process(args: argparse.Namespace) -> int:
         )
         return ec.USAGE
     try:
-        result = pipeline.run(Path(args.path).expanduser(), work)
+        result = glp.run(Path(args.path).expanduser(), work)
     except runner.DependencyError as exc:
         work.retain(exc.message)
         runner.report(exc)
@@ -163,7 +164,7 @@ def _process(args: argparse.Namespace) -> int:
     print()
     print(f"  source     {result.source}")
     print(f"  transcript {result.transcript.summary()}")
-    print(f"  stages 1-3 done in {result.seconds:.1f}s")
+    print(f"  stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} done in {result.seconds:.1f}s")
     print(f"glimpse: {PROCESS_INCOMPLETE}")
     print(f"glimpse: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing
@@ -199,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
         "process",
         help="run the pipeline on a recording",
         description="Transcribe, extract frames, synthesise, audit, link. "
-        f"Stages 0-{pipeline.IMPLEMENTED} are implemented; the rest are tracked "
+        f"Stages 0-{glp.IMPLEMENTED} are implemented; the rest are tracked "
         "in #3, and this exits 1 until they are.",
     )
     p_process.add_argument("path", nargs="?", help="video or audio file")

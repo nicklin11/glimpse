@@ -32,6 +32,7 @@ from glimpse import audio as gla  # noqa: E402
 from glimpse import cli as glc  # noqa: E402
 from glimpse import deps as gld  # noqa: E402
 from glimpse import exitcodes as ec  # noqa: E402
+from glimpse import frames as glfr  # noqa: E402
 from glimpse import pipeline as glp  # noqa: E402
 from glimpse import probe as glprobe  # noqa: E402
 from glimpse import runner as glr  # noqa: E402
@@ -68,6 +69,7 @@ CALLS: list[tuple[str, list[str]]] = []
 real_run = glr.run
 real_resolve = glr.resolve
 real_which = glr.shutil.which
+real_sleep = glfr.time.sleep
 
 PRESENT = {"ffmpeg", "ffprobe", "shipboard"}
 
@@ -155,6 +157,7 @@ check(
 check("dependency exit code is reported", "exited 7" in exc.message, exc.message)
 
 glr.shutil.which = real_which
+glfr.time.sleep = real_sleep
 
 
 # --- 2. report(): dependency stderr is reproduced verbatim ---------------------
@@ -941,7 +944,7 @@ with redirect_stdout(out), redirect_stderr(err):
 text = out.getvalue()
 check("a partial run does NOT exit 0", rc == ec.USAGE, f"rc={rc}")
 check("a partial run says no note was written", "No note was written" in text, text)
-check("a partial run names the unbuilt stages", "stages 4-12" in text, text)
+check("a partial run names the unbuilt stages", "stages 5-12" in text, text)
 check("a partial run names the tracking issue", "#3" in text, text)
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -1139,11 +1142,272 @@ check("--workdir pointing at a file -> exit 1", rc == ec.USAGE, f"rc={rc}")
 check("--workdir error has a remediation", "remediation:" in err.getvalue(), err.getvalue())
 check("--workdir error raises no traceback", "Traceback" not in err.getvalue(), err.getvalue())
 
+
+# --- 8. stage 4: frames, two passes, and the zero-frame trap (D3) --------------
+# The filter string is the port's contract with the script it replaces: if this changes,
+# the manifest changes, and the manifest is what stage 7 binds captions by.
+check(
+    "the detector filter is byte-identical to lecture-frames",
+    glfr.detect_filter(glfr.Settings())
+    == "scale=640:-2:flags=lanczos,boxblur=16:4,mpdecimate=hi=64*60:lo=64*30:frac=0.1,"
+    "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)'",
+    glfr.detect_filter(glfr.Settings()),
+)
+check(
+    "the detector keeps the isnan guard",
+    "isnan(prev_selected_t)" in glfr.detect_filter(glfr.Settings()),
+)
+# mpdecimate thresholds are absolute sums over 8x8 blocks, so a blur radius tuned at
+# 640 px is wrong elsewhere. The port scales it; the script did too.
+check(
+    "blur radius scales with detector width",
+    "boxblur=32:8" in glfr.detect_filter(glfr.Settings(detect_width=1280)),
+    glfr.detect_filter(glfr.Settings(detect_width=1280)),
+)
+check(
+    "interval mode drops mpdecimate entirely",
+    glfr.detect_filter(glfr.Settings(mode="interval")) == "scale=640:-2:flags=lanczos,fps=1/30",
+    glfr.detect_filter(glfr.Settings(mode="interval")),
+)
+check(
+    "max_gap=0 removes the select guard",
+    "select=" not in glfr.detect_filter(glfr.Settings(max_gap=0)),
+    glfr.detect_filter(glfr.Settings(max_gap=0)),
+)
+check("timestamps format with centiseconds", glfr.hhmmss(4_396_000) == "01:13:16.00")
+# Centiseconds truncate: 500 ms is .05, not .50 -- the same floor the original used.
+check(
+    "timestamps format sub-second", glfr.hhmmss(3_600_500) == "01:00:00.05", glfr.hhmmss(3_600_500)
+)
+check(
+    "timestamps truncate to centiseconds",
+    glfr.hhmmss(3_600_999) == "01:00:00.09",
+    glfr.hhmmss(3_600_999),
+)
+
+
+# ffmpeg in these tests must *write files*, because the whole point of stage 4 is that
+# what lands on disk is what counts. A fake that only returns an exit code cannot test it.
+def ffmpeg_writes(times: list[int], *, write_output: bool = True, write_detector: bool = True):
+    """A fake ffmpeg that honours the output path in the last argv position."""
+
+    def run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
+        fake_resolve(name, remediation)
+        CALLS.append((name, list(args)))
+        if "-version" in args:
+            # Provenance asks for the build. Answered without consuming the queue, so a
+            # version probe cannot masquerade as one of the programmed ffmpeg passes.
+            return b"ffmpeg version n9.0.2 Copyright (c) 2000-2026 fake\n"
+        queue = FAKE.get(name)
+        if not queue:
+            raise AssertionError(f"unprogrammed call to {name}: {args}")
+        stdout, stderr, rc = queue.pop(0)
+        if rc != 0:
+            raise glr.DependencyError(
+                name=name,
+                code=ec.DEPENDENCY_FAILED,
+                message=f"{name} exited {rc} running `{' '.join(args)}`",
+                stderr=stderr,
+                argv=list(args),
+            )
+        if write_detector and "-frame_pts" in args:
+            target = Path(args[-1]).parent
+            target.mkdir(parents=True, exist_ok=True)
+            for t in times:
+                (target / f"d_{t:010d}.jpg").write_bytes(b"x")
+        elif write_output and "-frames:v" in args:
+            Path(args[-1]).write_bytes(b"x")
+        return stdout
+
+    return run
+
+
+frame_times = [0, 304_132, 458_606]
+frame_out = tmp / "framesout"
+
+install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
+glr.run = ffmpeg_writes(frame_times)
+manifest, produced = glfr.run(src, frame_out)
+check("stage 4 writes a manifest", manifest.is_file(), str(manifest))
+check("stage 4 produced every frame", len(produced) == len(frame_times), str(len(produced)))
+check(
+    "frame filenames are the timestamp in ms",
+    [p.name for p in produced] == [f"f_{t:010d}.jpg" for t in frame_times],
+    str([p.name for p in produced]),
+)
+
+detect_call = next(a for n, a in CALLS if "-frame_pts" in a)
+check(
+    "the detect pass drops audio", "-an" in detect_call and "-sn" in detect_call, str(detect_call)
+)
+check("the detect pass disables stdin", "-nostdin" in detect_call, str(detect_call))
+check(
+    "the detect pass reads the resolved source",
+    str(src.resolve()) in detect_call,
+    str(detect_call),
+)
+check(
+    "the detect pass writes to a throwaway directory",
+    "glimpse-detect-" in detect_call[-1],
+    detect_call[-1],
+)
+
+extract_call = next(a for n, a in CALLS if "-frames:v" in a)
+# -ss must precede -i: after it, ffmpeg decodes from the start to the seek point, which
+# on a 73-minute lecture is the difference between 0.2 s and 300 s.
+check(
+    "the extract pass seeks before the input",
+    "-ss" in extract_call and extract_call.index("-ss") < extract_call.index("-i"),
+    str(extract_call),
+)
+check(
+    "the extract pass reads the ORIGINAL source, not the detector temp dir",
+    str(src.resolve()) in extract_call and "glimpse-detect-" not in " ".join(extract_call),
+    str(extract_call),
+)
+check(
+    "the extract pass scales to the output width",
+    "scale=1600:-2" in " ".join(extract_call),
+    str(extract_call),
+)
+check(
+    "the extract pass applies NO blur (D3)",
+    "boxblur" not in extract_call[-2] and "boxblur" not in " ".join(extract_call),
+    str(extract_call),
+)
+
+man_text = manifest.read_text(encoding="utf-8") if manifest.is_file() else ""
+check(
+    "the manifest round-trips",
+    manifest.is_file() and glfr.read_manifest(manifest) == frame_times,
+    man_text,
+)
+check(
+    "the manifest carries a human time column",
+    "00:05:04.01" in man_text,
+    man_text,
+)
+
+# D3, the trap the ported script fell into: zero frames must not be a successful run.
+install_fake({"ffmpeg": [(b"", b"", 0)]})
+glr.run = ffmpeg_writes([])
+exc = raises(glfr.run, src, tmp / "zeroframes")
+check(
+    "zero frames -> exit 3",
+    exc is not None and exc.code == ec.DEPENDENCY_FAILED,
+    f"{getattr(exc, 'code', 'run reported success with no frames')}",
+)
+check(
+    "zero frames says why",
+    exc is not None and "no states" in exc.message,
+    getattr(exc, "message", "run reported success with no frames"),
+)
+
+# The same trap one level down: ffmpeg exits 0 having written nothing at all.
+install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
+glr.run = ffmpeg_writes(frame_times, write_detector=True, write_output=False)
+exc = raises(glfr.run, src, tmp / "nofiles")
+check(
+    "ffmpeg exiting 0 without writing frames -> exit 3",
+    exc is not None and exc.code == ec.DEPENDENCY_FAILED,
+    f"{getattr(exc, 'code', 'run reported success with no frames on disk')}",
+)
+check(
+    "the unwritten frames are named",
+    exc is not None and "were not written" in getattr(exc, "message", ""),
+    getattr(exc, "message", "no exception raised"),
+)
+
+# A renamed parent directory produces the same ffmpeg message as a flaky host. The retry
+# must not convert "your path is wrong" into "ffmpeg is broken".
+gone = tmp / "renamed-away" / "lecture.webm"
+install_fake({"ffmpeg": [(b"", b"Error opening input file /nope", 1)] * 6})
+exc = raises(glfr.run, gone, tmp / "goneout")
+check(
+    "a missing source -> exit 1, not exit 3", exc.code == ec.USAGE, f"{getattr(exc, 'code', None)}"
+)
+check("a missing source names the path", str(gone) in exc.message, getattr(exc, "message", ""))
+check(
+    "a missing source is not retried into a host-fault message",
+    "after 4 attempts" not in exc.message,
+    getattr(exc, "message", ""),
+)
+
+# ...but when the file IS present and ffmpeg still cannot open it, that is the host fault
+# the retry exists for, and the message must say so.
+install_fake({"ffmpeg": [(b"", b"Error opening input file", 1)] * 6})
+glfr.time.sleep = lambda _s: None
+exc = raises(glfr.run, src, tmp / "flakyout")
+check("a present-but-unopenable source -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
+check(
+    "the retry says the file was verified present",
+    "verified present" in exc.message,
+    exc.message,
+)
+glfr.time.sleep = real_sleep
+
+# An unrelated ffmpeg error is raised at once, not four times slower.
+install_fake({"ffmpeg": [(b"", b"Invalid data found when processing input", 1)]})
+CALLS.clear()
+exc = raises(glfr.run, src, tmp / "harderr")
+check("an unrelated ffmpeg error is not retried", len(CALLS) == 1, f"{len(CALLS)} calls")
+
+# A stale frame from a previous run must not survive into the new manifest.
+install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
+glr.run = ffmpeg_writes(frame_times)
+stale = frame_out / "f_9999999999.jpg"
+stale.write_bytes(b"old")
+glfr.run(src, frame_out)
+check("stale frames are cleared", not stale.exists(), str(stale))
+
+# --reuse-manifest skips the decode entirely, which is the fast path for re-rendering.
+install_fake({"ffmpeg": [(b"", b"", 0)] * len(frame_times)})
+glr.run = ffmpeg_writes(frame_times)
+CALLS.clear()
+manifest, produced = glfr.run(src, frame_out, reuse_manifest=True)
+check("--reuse-manifest keeps the frame count", len(produced) == len(frame_times), str(produced))
+check(
+    "--reuse-manifest does not run the detector",
+    not any("-frame_pts" in a for _, a in CALLS),
+    str(CALLS),
+)
+install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
+glr.run = ffmpeg_writes(frame_times)
+_fresh_manifest, fresh_frames = glfr.run(src, tmp / "emptyout", reuse_manifest=True)
+check(
+    "--reuse-manifest with no manifest falls back to detecting",
+    len(fresh_frames) == len(frame_times),
+    str(len(fresh_frames)),
+)
+
+check("the stage summary counts frames and bytes", "3 frames" in glfr.summary(manifest, produced))
+
+# Provenance: without it, a manifest cannot be reproduced, and a later reader cannot tell
+# whether the frames or the code changed. This was found the hard way -- the manifest in
+# the vault lists 17 states where the same ffmpeg on the same source now lists 16.
+prov_path = frame_out / "detect.json"
+prov_raw = prov_path.read_text(encoding="utf-8") if prov_path.is_file() else ""
+prov = json.loads(prov_raw) if prov_raw else {}
+check("provenance is written next to the frames", prov_raw != "", str(prov_path))
+check("provenance records the detector filter", "isnan(prev_selected_t)" in prov.get("filter", ""))
+check("provenance records the settings", prov.get("settings", {}).get("detect_width") == 640)
+check("provenance records the ffmpeg build", prov.get("ffmpeg", "").startswith("ffmpeg version"))
+install_fake({"ffmpeg": [(b"", b"", 0)] * len(frame_times)})
+glr.run = ffmpeg_writes(frame_times)
+glfr.run(src, frame_out, reuse_manifest=True)
+check(
+    "provenance distinguishes a reused manifest",
+    json.loads((frame_out / "detect.json").read_text(encoding="utf-8"))["reused_manifest"] is True,
+)
+
+glr.run = real_run
+
 glc.run_all = real_run_all
 glp.run = real_pipeline_run
 glr.run = real_run
 glr.resolve = real_resolve
 glr.shutil.which = real_which
+glfr.time.sleep = real_sleep
 if real_workdir_env is None:
     os.environ.pop(glw.WORKDIR_ENV, None)
 else:

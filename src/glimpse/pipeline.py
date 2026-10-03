@@ -1,8 +1,8 @@
 """Stage orchestration for `glimpse process`.
 
-Stages 1-3 live here. Stage 0 (`doctor`) runs in the CLI before this is called,
+Stages 1-4 live here. Stage 0 (`doctor`) runs in the CLI before this is called,
 because its output is a rendered report rather than a pipeline artefact, and
-stages 4-12 are not built yet.
+stages 5-12 are not built yet.
 
 **Progress is reported as stage lines, and the unbuilt stages are named.** D7's
 reason for stage-level progress is that shipboard issues one blocking HTTP
@@ -20,14 +20,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, probe, stt
+from . import audio, frames, probe, stt
 from .workspace import WorkDir
 
-# Stage 0 is `doctor`, run by the CLI. Stages 4-12 are unbuilt (#3).
-IMPLEMENTED = 3
+# Stage 0 is `doctor`, run by the CLI. Stages 5-12 are unbuilt (#3).
+IMPLEMENTED = 4
 FIRST_STAGE = 1
 REMAINING_NOTE = (
-    "stages 4-12 are not built yet (tracked in #3): frames, quality, "
+    "stages 5-12 are not built yet (tracked in #3): quality, "
     "captions, synth, lint, audit, repair, link, report"
 )
 
@@ -53,6 +53,7 @@ class RunResult:
     info: probe.MediaInfo
     audio: audio.AudioArtefact
     transcript: stt.Transcript
+    frames: list[Path]
     artefacts: dict[str, Path]
     reports: tuple[StageReport, ...]
 
@@ -129,7 +130,7 @@ def run(source: Path, work: WorkDir, *, stream=None) -> RunResult:
     # silent through the dominant stage is the lie D7 is written against.
     lo, hi = _estimate(artefact.duration)
     out.write(
-        f"  [3/3] {'stt'.ljust(7)} starting  {artefact.duration:.0f}s of audio through "
+        f"  [3/{IMPLEMENTED}] {'stt'.ljust(7)} starting  {artefact.duration:.0f}s of audio through "
         f"whisper.cpp on CPU, expect {_interval(lo, hi)}, no streaming (D7)\n"
     )
     out.flush()
@@ -143,11 +144,28 @@ def run(source: Path, work: WorkDir, *, stream=None) -> RunResult:
     if len(transcript.anomalies) > 10:
         out.write(f"           note: ... and {len(transcript.anomalies) - 10} more\n")
 
+    # --- stage 4: frames ------------------------------------------------------
+    # D3: frames are read from the source, never from a blurred intermediate. The
+    # detect pass decodes the whole container and writes only timestamps, so the
+    # blur cannot reach the output; the extract pass then seeks the original.
+    began = time.monotonic()
+    frames_dir = work.sub("frames")
+    manifest, produced = frames.run(Path(source), frames_dir)
+    reports.append(
+        StageReport(4, "frames", time.monotonic() - began, frames.summary(manifest, produced))
+    )
+    out.write(reports[-1].line() + "\n")
+
+    artefacts = dict(paths)
+    artefacts["manifest"] = manifest
+    artefacts.update({f"frame{i}": p for i, p in enumerate(produced)})
+
     return RunResult(
         source=Path(source),
         info=info,
         audio=artefact,
         transcript=transcript,
-        artefacts=paths,
+        frames=produced,
+        artefacts=artefacts,
         reports=tuple(reports),
     )
