@@ -44,6 +44,11 @@ pipx install .
 
 Requires Python 3.11+ and `ffmpeg`/`ffprobe` on `PATH`.
 
+If `glimpse` dies at import with `ModuleNotFoundError`, the venv is stale rather than
+broken: `pipx install -e` resolves dependencies once, so a later change to
+`pyproject.toml` does not reach the existing environment. Re-install with
+`pipx install --force -e <path>`. `glimpse doctor` names the missing module directly.
+
 ### As a single file, with no install
 
 ```

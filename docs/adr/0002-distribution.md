@@ -13,14 +13,22 @@ Measured on lecture 1 (`1_lecture_OCS.webm`, 4396 s container, 4520 s of audio):
 6.4 s, whisper.cpp 257.2 s, and the Python orchestration layer from process start to stage 1
 — under 100 ms. **The runtime cost is entirely native subprocesses.**
 
-One measured fact decides the whole design:
+One measured fact decides most of the design:
 
-- `glimpse` imports **only the standard library**. The complete import set in `src/` is
-  `argparse`, `json`, `os`, `shutil`, `stat`, `subprocess`, `sys`, `tempfile`, `time`,
-  `urllib.error`, `urllib.request`, `dataclasses`, `pathlib`.
+- `glimpse` imports the standard library plus **exactly one third-party module**: `numpy`,
+  in `quality.py`, for stage 5's MEGE measurement at the frame's native resolution. The
+  complete import set in `src/` is `argparse`, `json`, `os`, `shutil`, `stat`, `subprocess`,
+  `sys`, `tempfile`, `time`, `urllib.error`, `urllib.request`, `dataclasses`, `pathlib`,
+  `numpy`.
 
-`dependencies = []` in `pyproject.toml` is not an accident of taste; it is the property that
-makes D2 possible.
+`dependencies = ["numpy>=1.26"]` in `pyproject.toml`.
+
+**This ADR was first written claiming `dependencies = []` and a pure-stdlib import set. Both
+were true when the proposal was drafted and false when the ADR was landed.** numpy was added
+for the quality gate: measuring MEGE per frame in pure Python is a ~20 s pass over 1.4 M
+pixels, which would make the gate slower than speech recognition. The claim was copied from
+the proposal without re-reading `pyproject.toml`, which is the kind of unchecked carry-over
+that turns a decision record into fiction.
 
 ## Decision
 
@@ -36,9 +44,17 @@ duplicating an already-installed interpreter, is the wrong trade.
 
 ### D2 — Deliver as zipapps
 
-`python -m zipapp` produces a single executable file from a source tree, with no third-party
-imports, no archive extraction, and startup identical to running from the tree. `glimpse`
-qualifies as-is, because of the `dependencies = []` fact above.
+`python -m zipapp` produces a single executable file from a source tree, with no archive
+extraction on start.
+
+The original premise was "no third-party imports", and with numpy present it is false. The
+decision survives, because what zipapp actually buys is **no extraction step on every start**
+— that property does not depend on the dependency count. numpy is vendored into the archive
+alongside the source, and its import cost is paid once against a warm page cache.
+
+The constraint this imposes is real and worth stating: the dependency set is what someone has
+to keep the zipapp buildable from, and it is one module wide by measurement rather than by
+taste. A second runtime dependency needs the cost argument in D1 re-run against it.
 
 ### D3 — `shipboard` is an external runtime dependency, checked by `doctor`, never bundled
 
@@ -120,6 +136,27 @@ container must be deployed either way — while adding a second configuration ow
 requiring reimplementation of the idle-sleep and wake behaviour shipboard already ships. The
 hop is not the cost.
 
+## The editable-install trap
+
+Encountered on this host after numpy was added: `pipx install -e` creates the venv and
+resolves `pyproject.toml`'s dependencies **once**. Later commits that edit `pyproject.toml`
+do not re-resolve anything. The console script points at the updated source, so the code is
+current, and the run dies at import time:
+
+```
+File "/home/existingloner/.local/bin/glimpse", line 3, in <module>
+    from glimpse.cli import main
+ModuleNotFoundError: No module named 'numpy'
+```
+
+The failure looks like a broken install and is actually a stale one — the two are
+distinguished by whether `pyproject.toml` changed since the venv was made. After any
+dependency change: `pipx install --force -e <path>`.
+
+`doctor` names it in one command, which is the cheapest argument for stage 0 existing at
+all: it reported `numpy importable` and would have reported the missing module by name
+instead of leaving the traceback as the first diagnostic.
+
 ## Alternatives rejected
 
 - **Publish to PyPI.** Out of scope by request. Recorded so it is not rediscovered as a
@@ -163,7 +200,8 @@ path, and not a second owner of the backend.
 ## Acceptance
 
 - `glimpse` runs from a zipapp with no virtualenv and no `pip install`.
-- `pyproject.toml` keeps `dependencies = []`.
+- `pyproject.toml` keeps `dependencies` at numpy and nothing else. **Was `[]`; falsified by
+  the quality gate, see Context.**
 - Removing shipboard from `PATH` produces exit 2, not a traceback, and `doctor` prints the
   install command.
 - The pipeline reaches `shipboard` only through `shipboard process PATH` (ADR-0001 D2).
