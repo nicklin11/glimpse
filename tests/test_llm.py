@@ -2,13 +2,12 @@
 """A reply must be able to say which model it came from, and the bundle must not
 contradict itself about it (#61).
 
-Stage 7 writes two artefacts from one call: `synth.json` records
-`config.model`, the id that was *requested*, and `synth-llm-transcript.json`
-records `Reply.model`, which `_to_reply` fills from the response body's `model`
-field -- the id the endpoint *reported*. When the two differ, the bundle holds
-two answers to "which model wrote this note" and nothing marks which is which.
+Stage 7 writes two artefacts from one call: `synth.json` records `config.model`
+and `synth-llm-transcript.json` records `Reply.model`. Both are the id that was
+*requested*. What the endpoint *reported* is a third value, `Reply.served_model`,
+recorded beside them rather than allowed to overwrite them.
 
-The gateway this repo is wired to does differ. Measured against
+The gateway this repo is wired to does rewrite the id. Measured against
 CLIProxyAPI at 100.64.0.2:8317, a request for `opencode-go/glm-5.3-flash` comes
 back as `"model": "glm-5.3-flash"`. The prefix is stripped, and because that
 gateway runs `force-model-prefix: true` the reported id is not routable -- a
@@ -16,9 +15,11 @@ reader who tries to replay it gets `400 unknown provider for model
 glm-5.3-flash`. So the value written into the transcript cannot reproduce the
 call it claims to record.
 
-Which of the two ids wins is a separate decision (#61). What is not a decision
-is that the bundle must be able to state the answer, and must not assert two
-answers at once. That is what this script holds fixed.
+Which of the two ids wins was a separate decision (#61), now resolved: the requested
+id is canonical, because it is the only one of the two that can be replayed against this
+endpoint. What is not optional is that the bundle can state the answer, and never asserts
+two answers to one question without marking which is which. That is what this script holds
+fixed.
 """
 
 import sys
@@ -66,9 +67,9 @@ check(
 # --- the disagreement must be visible, not silent ---------------------------------
 #
 # `synth.json` gets `config.model` (synth.py:424 -> provenance, synth.py:457).
-# The transcript gets `Reply.model` (llm.py:95, via Reply.as_dict). If the
-# endpoint rewrote the id, those two artefacts currently disagree and neither
-# says why.
+# The transcript gets `Reply.model` (via Reply.as_dict). Both are the requested id, so
+# they agree by construction; `served_model` is what carries the endpoint's answer, and a
+# bundle that omitted it would have no way to say the two ever differed.
 
 config = llm.Config(endpoint="http://x/v1", model=REQUESTED)
 provenance_model = config.model  # what synth.json will carry
@@ -77,7 +78,7 @@ transcript_model = reply_echoed.model  # what synth-llm-transcript.json will car
 check(
     "the reply states which model served it, not only which model was asked for",
     hasattr(reply_echoed, "served_model"),
-    "Reply has no served_model field, so a rewritten id cannot be reported as one",
+    f"served_model={getattr(reply_echoed, 'served_model', '<absent>')}",
 )
 
 check(
@@ -95,7 +96,7 @@ check(
 check(
     "a rewritten id is reported rather than absorbed",
     getattr(reply_echoed, "served_model", None) == ECHOED,
-    "the endpoint's answer is discarded with nothing recording that it differed",
+    f"requested={REQUESTED} served={getattr(reply_echoed, 'served_model', '<absent>')}",
 )
 
 # --- the common case must not regress ---------------------------------------------

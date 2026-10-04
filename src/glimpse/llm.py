@@ -7,6 +7,21 @@ ADR-0004 D4
 possible: every call records the exact bytes sent and received, which is not something a
 provider library hands you.
 
+## The model id
+
+A reply carries **two** ids and they are not the same question.
+
+`Reply.model` is what was *requested* -- the id in `Config`, which is what a reader needs in
+order to reproduce the call. `Reply.served_model` is what the endpoint *reported*, or `None`
+when it reported nothing.
+
+They can disagree, and on this host's gateway they always do: the gateway routes by provider
+prefix and answers with the upstream's name instead, so `opencode-go/glm-5.3-flash` returns as
+`glm-5.3-flash`. With `force-model-prefix: true` the reported id is not routable at all --
+replaying it returns `400 unknown provider`. Writing that into the artefact would make the
+provenance chain record a call that cannot be repeated, so the reported id is recorded beside
+the requested one and the two are left to disagree in the open.
+
 ## What it does not do
 
 - **Retries on 4xx.** A 400 means the request is wrong; repeating it identically just burns
@@ -85,15 +100,20 @@ class Config:
 @dataclass(frozen=True)
 class Reply:
     text: str
+    #: What was requested -- the id that can be replayed against this endpoint.
     model: str
     prompt_tokens: int | None
     completion_tokens: int | None
     seconds: float
     attempts: int
+    #: What the endpoint said it served, or None when it said nothing. Recorded beside `model`
+    #: rather than substituted for it; see the module docstring.
+    served_model: str | None = None
 
     def as_dict(self) -> dict:
         return {
             "model": self.model,
+            "served_model": self.served_model,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": round(self.seconds, 3),
@@ -174,9 +194,17 @@ def _to_reply(data: dict, model: str, seconds: float, attempts: int) -> Reply:
             f"response has no choices[0].message.content; got keys {sorted(data)}"
         ) from exc
     usage = data.get("usage") or {}
+    echoed = data.get("model")
     return Reply(
         text=text.strip(),
-        model=str(data.get("model") or model),
+        # The requested id, not the reported one. A gateway that routes by provider prefix
+        # reports the *upstream's* name, which the endpoint itself cannot route: measured on
+        # CLIProxyAPI, `opencode-go/glm-5.3-flash` comes back as `glm-5.3-flash`, and with
+        # `force-model-prefix: true` replaying that id is a 400. Substituting it would put an
+        # unreplayable id in the artefact that is supposed to record what was asked for, so
+        # both are kept and the disagreement stays visible instead of being resolved silently.
+        model=model,
+        served_model=str(echoed) if echoed else None,
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
         seconds=seconds,
