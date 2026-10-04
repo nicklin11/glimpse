@@ -100,6 +100,10 @@ class _HealthResponse:
 glwsc.urllib.request.urlopen = fake_stt_urlopen
 tmp = Path(tempfile.mkdtemp())
 os.environ[gld.VAULT_ENV] = str(tmp)
+# `glimpse process` on a first run writes the vault it used to the settings file. Keep that
+# inside the temp dir: a suite must not create files in the developer's home.
+real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
+os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
 
 
 def restore():
@@ -110,6 +114,10 @@ def restore():
         os.environ.pop(gld_stt.ENV_BACKEND, None)
     else:
         os.environ[gld_stt.ENV_BACKEND] = real_stt_backend
+    if real_settings_env is None:
+        os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+    else:
+        os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
 
 
 # --- 1. everything present -> 0, with path and version listed -----------------

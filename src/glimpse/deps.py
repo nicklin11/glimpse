@@ -29,6 +29,66 @@ LLM_KEY_ENV = "GLIMPSE_LLM_KEY"
 DEFAULT_VAULT = Path.home() / "Documents/obs_notes"
 PROBE_TIMEOUT = 10.0
 
+SETTINGS_PATH_ENV = "GLIMPSE_SETTINGS"
+SETTINGS_KEY = "vault"
+#: Written by `write_settings`, read by `resolve_vault`. One key, one file.
+SETTINGS_TEMPLATE = "# glimpse settings. Written on first run; edit by hand.\n"
+
+
+def settings_path() -> Path:
+    """The settings file: `$GLIMPSE_SETTINGS` if set, else `$XDG_CONFIG_HOME/glimpse/settings.toml`.
+
+    The env var names the *file*, not a directory, which is what the name says and what
+    testing needs. Issue #52 wants a real config file with a real precedence resolver; this
+    is the file that will hold it, carrying exactly one key until then, so #52 extends
+    something rather than replacing a default someone is already relying on.
+    """
+    configured = os.environ.get(SETTINGS_PATH_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    base = Path(
+        os.environ.get("XDG_CONFIG_HOME", "").strip() or Path.home() / ".config"
+    ).expanduser()
+    return base / "glimpse" / "settings.toml"
+
+
+def read_settings() -> dict[str, str]:
+    """Top-level `key = "value"` pairs from the settings file. Never raises.
+
+    Deliberately a flat scan rather than `tomllib`: there is exactly one key, and a
+    dependency on a parser format would outlast the thing being parsed. A malformed line is
+    skipped and the rest of the file is still read, because a typo in a config file must not
+    take the pipeline down at stage 0.
+    """
+    path = settings_path()
+    if not path.is_file():
+        return {}
+    found: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        found[key.strip()] = value.strip().strip('"').strip("'")
+    return found
+
+
+def write_settings(vault: Path) -> Path:
+    """Persist the vault, creating the file on first use. Returns the path written.
+
+    Writing is the whole point of the first run: without it, "settable at setup" means the
+    user has to guess that `GLIMPSE_VAULT` exists, and a default nobody can discover is a
+    default nobody will change.
+    """
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'{SETTINGS_TEMPLATE}{SETTINGS_KEY} = "{vault}"\n', encoding="utf-8")
+    return path
+
 
 @dataclass
 class Check:
@@ -172,9 +232,11 @@ def check_stt() -> Check:
 def resolve_vault(explicit: str | Path | None = None) -> Path:
     """The vault ADR-0001 D9 names, from the most specific source available.
 
-    Explicit argument, then `$GLIMPSE_VAULT`, then the default vault directory. The result
-    is a path, not a judgement about it: a vault that does not exist is still what the user
-    named, and whether that is fatal is `check_vault`'s question, not this function's.
+    Precedence: explicit argument, then `$GLIMPSE_VAULT`, then the persisted `vault` key in
+    the settings file, then the built-in default directory.
+
+    The result is a path, not a judgement about it: a vault that does not exist is still what
+    the user named, and whether that is fatal is `check_vault`'s question, not this one's.
 
     This exists because the default lived only inside `check_vault`, so `glimpse doctor`
     reported a vault that `glimpse process` never consulted. Measured on lecture 1,
@@ -186,7 +248,13 @@ def resolve_vault(explicit: str | Path | None = None) -> Path:
     """
     if explicit is not None:
         return Path(explicit).expanduser()
-    return Path(os.environ.get(VAULT_ENV) or DEFAULT_VAULT).expanduser()
+    configured = os.environ.get(VAULT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    stored = read_settings().get(SETTINGS_KEY, "").strip()
+    if stored:
+        return Path(stored).expanduser()
+    return DEFAULT_VAULT
 
 
 def check_vault() -> Check:

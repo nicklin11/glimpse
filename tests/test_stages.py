@@ -214,6 +214,16 @@ tmp = Path(tempfile.mkdtemp(prefix="glimpse-test-"))
 real_workdir_env = os.environ.get(glw.WORKDIR_ENV)
 os.environ[glw.WORKDIR_ENV] = str(tmp)
 
+# The first `glimpse process` with nothing configured writes the vault it used to
+# `~/.config/glimpse/settings.toml` -- which is the point of the feature, and a write into
+# the developer's home from a test suite that is not testing it. Measured: a run of this
+# file created `~/.config/glimpse/settings.toml` holding the developer's real vault path.
+# Point the settings file at the temp dir for the whole suite. Issue #63 is about the other
+# ambient state these suites read; this one is fixed rather than deferred because this
+# change introduced the write.
+real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
+os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
+
 
 # --- 1. dependency absent vs. present-and-failing -----------------------------
 # these use the REAL runner.run, with only `which` patched, so the absent/failing
@@ -1317,6 +1327,22 @@ check(
     "refusing to start" not in out.getvalue(),
     out.getvalue(),
 )
+check(
+    # `export_to_vault` ends in `mkdir(parents=True)`. Exporting to a path that does not
+    # exist therefore creates it -- and `check_vault` then reports it exists, is a directory
+    # and is writable, so the next `glimpse doctor` certifies an empty vault. That turns a
+    # configuration mistake into a state the tool then calls healthy. Measured: this run
+    # created the fixture directory, and "vault is non-fatal for process" then failed with
+    # detail "writable" instead of reporting it missing.
+    "a missing vault is NOT created by the run",
+    not (tmp / "definitely-no-vault").exists(),
+    "the export materialised a vault that did not exist",
+)
+check(
+    "a missing vault is named in the output",
+    "definitely-no-vault" in err.getvalue(),
+    err.getvalue(),
+)
 check("the run actually proceeded", after == before + 1, f"{before} -> {after}")
 check(
     "the unusable later-stage deps are mentioned, not fatal",
@@ -2056,11 +2082,41 @@ vault = tmp / "vault"
 copied = b_export.export_to_vault(vault)
 check("the export copied every artefact", len(copied) == 2, str(len(copied)))
 check(
-    "the note landed at the vault root",
-    (vault / "note.md").is_file(),
+    # The subdir is not cosmetic. A lecture bundle is ~170 files; exporting into the vault
+    # root puts 25 of them beside the user's own notes and creates `images/` next to them.
+    "the export lands in its own directory, not the vault root",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
     str(sorted(q.name for q in vault.iterdir())),
 )
-check("frames land under images/", (vault / "images" / "f_0001.jpg").is_file(), str(copied))
+check(
+    "nothing is written to the vault root",
+    not any(q.is_file() for q in vault.iterdir()),
+    str(sorted(q.name for q in vault.iterdir())),
+)
+check(
+    "frames land under images/",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    str(copied),
+)
+check(
+    "an explicit subdir is honoured",
+    len(b_export.export_to_vault(vault, subdir="mscs/Курс")) == 2
+    and (vault / "mscs/Курс/note.md").is_file(),
+    str(sorted(str(p.relative_to(vault)) for p in vault.rglob("note.md"))),
+)
+
+# images/ accumulated across runs. `Bundle.open(overwrite=False)` and a `mkdir(exist_ok)`
+# property removed nothing, so the directory was the union of every run that touched it.
+# Measured on lecture 1 after three runs: 73 PNGs where the manifest listed 58, and all 15
+# extras sat below 135.5 s -- the first run's range, before the `-frame_pts` timebase fix.
+b_images = glb.Bundle.open(src, output_dir=str(tmp / "imgbundle"))
+for stale_name in ("f_1.png", "f_2.png", "f_3_q.jpg"):
+    (b_images.images / stale_name).write_bytes(b"stale")
+check("stale frames accumulated before the reset", len(list(b_images.images.iterdir())) == 3)
+check("clear_images reports what it removed", b_images.clear_images() == 3)
+check("images/ is empty after the reset", not list(b_images.images.iterdir()))
+check("clear_images leaves the directory", b_images.images.is_dir())
+check("clear_images is idempotent", b_images.clear_images() == 0)
 check(
     "the export did not consume the bundle",
     (tmp / "toexport" / "note.md").is_file()
@@ -4598,6 +4654,10 @@ if real_workdir_env is None:
     os.environ.pop(glw.WORKDIR_ENV, None)
 else:
     os.environ[glw.WORKDIR_ENV] = real_workdir_env
+if real_settings_env is None:
+    os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+else:
+    os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
 shutil.rmtree(tmp, ignore_errors=True)
 
 print()

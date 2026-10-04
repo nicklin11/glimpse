@@ -251,7 +251,10 @@ def run(
     quality.resolve_estimator(bbox_source)
     qreport = quality.run(produced, work.path, settings=qs, bbox_source=bbox_source, stream=out)
 
-    # Publish the gated frames only now, so stage 5 read real files.
+    # Publish the gated frames only now, so stage 5 read real files. Empty `images/` first:
+    # the bundle is opened with overwrite=False, so without this the directory is the union
+    # of every run that has ever touched it. See `Bundle.clear_images`.
+    bundle.clear_images()
     for index, path in enumerate(produced):
         target = bundle.images / path.name
         shutil.move(str(path), str(target))

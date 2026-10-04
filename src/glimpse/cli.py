@@ -7,9 +7,11 @@ a tool does, so `glimpse --help` and each subcommand's help can.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+from . import deps as gld
 from . import exitcodes as ec
 from . import bundle as glb
 from . import link as gllnk
@@ -197,18 +199,64 @@ def _process(args: argparse.Namespace) -> int:
     print(f"  transcript {result.transcript.summary()}")
     print(f"  stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} done in {result.seconds:.1f}s")
     print(f"  output     {result.bundle.root}  ({result.bundle.summary()})")
-    vault = getattr(args, "vault_path", None)
-    if vault:
-        try:
-            copied = result.bundle.export_to_vault(Path(vault).expanduser())
-        except OSError as exc:
-            print(f"glimpse: vault export failed: {exc}", file=sys.stderr)
+    # "One command" has to mean the note ends up in the vault, not that it ends up somewhere
+    # the user has to know to open. The vault resolves the same way doctor resolves it, so
+    # `glimpse process video.mp4` with nothing configured does what doctor just reported.
+    # `--no-vault-export` is the opt-out; the export is verified by size and never blocks.
+    if not getattr(args, "no_vault_export", False):
+        vault = gld.resolve_vault(getattr(args, "vault_path", None))
+        subdir = getattr(args, "vault_subdir", None) or glb.DEFAULT_EXPORT_SUBDIR
+        # A vault that does not exist is reported, not created. `export_to_vault` ends in
+        # `mkdir(parents=True)`, so exporting to a mistyped path silently materialises an
+        # empty directory -- and then `check_vault` finds it exists, is a directory and is
+        # writable, so the next `glimpse doctor` reports a healthy vault that is empty.
+        # That turns a configuration mistake into a state the tool then certifies.
+        if not vault.is_dir():
             print(
-                "glimpse:   remediation: the vault is an export target; the bundle is intact",
+                f"glimpse: vault does not exist, so the note was not exported: {vault}",
                 file=sys.stderr,
             )
-            return ec.DEPENDENCY_FAILED
-        print(f"  vault      {len(copied)} files exported to {Path(vault).expanduser()}")
+            print(
+                f"glimpse:   the bundle is intact at {result.bundle.root}; set "
+                f"{gld.VAULT_ENV} or pass --vault-path to export it",
+                file=sys.stderr,
+            )
+        else:
+            # First run: nothing named a vault, so write the one used down to a file.
+            # A default nobody can find is a default nobody will change, and this is meant
+            # to be settable rather than compiled in -- which needs somewhere to set it.
+            unset_everywhere = (
+                not gld.settings_path().is_file()
+                and not os.environ.get(gld.VAULT_ENV, "").strip()
+                and getattr(args, "vault_path", None) is None
+            )
+            written = None
+            if unset_everywhere:
+                try:
+                    written = gld.write_settings(vault)
+                except OSError as exc:
+                    print(
+                        f"glimpse: could not write {gld.settings_path()}: {exc}",
+                        file=sys.stderr,
+                    )
+            try:
+                copied = result.bundle.export_to_vault(vault, subdir=subdir)
+            except OSError as exc:
+                print(f"glimpse: vault export failed: {exc}", file=sys.stderr)
+                print(
+                    "glimpse:   remediation: the vault is an export target; the bundle is intact",
+                    file=sys.stderr,
+                )
+                return ec.DEPENDENCY_FAILED
+            if written is not None:
+                print(f"  vault      {vault / subdir} (first run — written to {written})")
+                print(f"             {len(copied)} files exported")
+            else:
+                print(f"  vault      {len(copied)} files exported to {vault / subdir}")
+                print(
+                    f"             (change with {gld.VAULT_ENV}, --vault-path, or "
+                    f"{gld.settings_path()})"
+                )
     if not result.quality.ok:
         # ADR-0001 D4: the note is still written; a bad frame means the crops are soft, not that
         # the pipeline stopped. The quality report is the artefact that explains why.
@@ -449,7 +497,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_process.add_argument(
         "--vault-path",
         metavar="DIR",
-        help="copy the finished bundle into this vault; never a pipeline blocker",
+        help=(
+            "copy the finished bundle into this vault; never a pipeline blocker. "
+            "defaults to the configured vault, and the run writes into it either way -- "
+            "use --no-vault-export to keep the note in the bundle only"
+        ),
+    )
+    p_process.add_argument(
+        "--no-vault-export",
+        action="store_true",
+        help="finish the bundle without copying it into the vault",
+    )
+    p_process.add_argument(
+        "--vault-subdir",
+        metavar="REL",
+        default=None,
+        help=(
+            "where inside the vault the bundle lands, relative to it "
+            f"(default: {glb.DEFAULT_EXPORT_SUBDIR}/). Not optional in practice: a bundle is "
+            "~188 files, and the vault root holds the user's own notes"
+        ),
     )
     p_process.add_argument(
         "--keep-workdir",

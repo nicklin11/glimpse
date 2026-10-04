@@ -27,6 +27,9 @@ from pathlib import Path
 NOTE_NAME = "note.md"
 AUDIT_NAME = "audit.md"
 IMAGES = "images"
+#: Where a bundle lands inside a vault unless told otherwise. Its own directory, because the
+#: alternative is writing ~188 files into the directory the user's own notes live in.
+DEFAULT_EXPORT_SUBDIR = "glimpse"
 
 
 def state_root() -> Path:
@@ -90,6 +93,36 @@ class Bundle:
         target.mkdir(parents=True, exist_ok=True)
         return target
 
+    def clear_images(self) -> int:
+        """Empty `images/` before this run's frames land in it. Returns files removed.
+
+        The directory accumulated across runs. `Bundle.open` is called with
+        `overwrite=False` and `images` only ever `mkdir(exist_ok=True)`, so nothing removed
+        what a previous run left. Measured on lecture 1 after three runs: `images/` held 73
+        PNGs where the manifest listed 58, and the 15 extras were all at timestamps below
+        135.5 s -- exactly the first run's range, before the `-frame_pts` timebase fix made
+        every frame come from the opening minutes.
+
+        Three consequences, none of them visible from any artefact:
+
+        - `images/` is not a record of this run. A frame the current gate never saw sits
+          beside the frames it did, indistinguishable by name.
+        - stage 12 verifies the registered artefacts, so those 15 were never checked and
+          never failed.
+        - `export_to_vault` copies by registry, so they were skipped there too -- but the
+          bundle's own `summary()` count disagreed with the directory by the same 32 files.
+
+        `frames.run` clears its own output directory every run; this is the same rule for the
+        directory the frames end up in.
+        """
+        target = self.images
+        removed = 0
+        for stale in target.iterdir():
+            if stale.is_file():
+                stale.unlink()
+                removed += 1
+        return removed
+
     def path(self, name: str) -> Path:
         return self.root / name
 
@@ -133,8 +166,15 @@ class Bundle:
 
         A copy, never a move: the bundle stays the single writer, and a failed export
         leaves an intact bundle rather than a half-consumed one.
+
+        `subdir` is not decoration. A lecture bundle is ~138 artefacts, 116 of which land in
+        the bundle root and 72 in `images/`, so exporting with `subdir=None` scatters ~188
+        files into the vault root -- which for an Obsidian vault is the directory holding the
+        user's own notes. The CLI therefore always passes a subdir; this default is the
+        fallback for direct callers, and it is a directory of its own for the same reason.
         """
-        root = Path(vault).expanduser() / subdir if subdir else Path(vault).expanduser()
+        subdir = subdir or DEFAULT_EXPORT_SUBDIR
+        root = Path(vault).expanduser() / subdir
         copied: list[Path] = []
         for key, source in sorted(self.artefacts.items()):
             if not source.is_file():
