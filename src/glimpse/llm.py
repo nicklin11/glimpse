@@ -2,7 +2,8 @@
 
 No SDK. `urllib` and `json` cover the whole surface -- POST to `/chat/completions`, read
 `choices[0].message.content` -- and an SDK would add a dependency whose failure modes nobody
-here has measured, for one endpoint shape. It is also what makes the provenance chain in D5
+here has measured, for one endpoint shape. It is also what makes the provenance chain in
+ADR-0004 D4
 possible: every call records the exact bytes sent and received, which is not something a
 provider library hands you.
 
@@ -11,7 +12,7 @@ provider library hands you.
 - **Retries on 4xx.** A 400 means the request is wrong; repeating it identically just burns
   the lecture's time budget. 429 and 5xx are retried, because those are transient by
   definition.
-- **Stream.** D7 forbids it: stage 7's progress cannot be estimated from a token count, and
+- **Stream.** ADR-0001 D7 forbids it: stage 7's progress cannot be estimated from a token count, and
   a partial note is not a note.
 - **Guess at a missing key.** The endpoint may be keyless (a local llama-swap, the tailnet
   gateway) or may require one. Unset means send no `Authorization` header, which both of
@@ -187,7 +188,7 @@ def _to_reply(data: dict, model: str, seconds: float, attempts: int) -> Reply:
 class Transcript:
     """Every call made, for the provenance chain.
 
-    Held in memory and written once. D5 requires that a note can be traced to the exact
+    Held in memory and written once. ADR-0004 D4 requires that a note can be traced to the exact
     model output it came from, and the cheapest way to guarantee that is to record it at the
     point of the call rather than reconstructing it later.
     """

@@ -4,7 +4,7 @@ Stages 1-4 live here. Stage 0 (`doctor`) runs in the CLI before this is called,
 because its output is a rendered report rather than a pipeline artefact, and
 stages 5-12 are not built yet.
 
-**Progress is reported as stage lines, and the unbuilt stages are named.** D7's
+**Progress is reported as stage lines, and the unbuilt stages are named.** ADR-0001 D7's
 reason for stage-level progress is that the STT backend issues one blocking HTTP
 request with no streaming, and a bar that reads 90% during a 23-minute transcribe
 and then sits still is a lie about where the time went. The same argument applies
@@ -74,18 +74,18 @@ class RunResult:
     artefacts: dict[str, Path]
     reports: tuple[StageReport, ...]
     bundle: Bundle
-    #: D4's verdict. `quality.ok` false means exit 4, reported by the caller.
+    #: ADR-0001 D4's verdict. `quality.ok` false means exit 4, reported by the caller.
     quality: quality.Report
     enhanced: list[Path]
-    #: D5's coverage verdict. `caption.ok` false means the audio and the video are not
+    #: ADR-0001 D5's coverage verdict. `caption.ok` false means the audio and the video are not
     #: describing the same lecture, which is exit 4 rather than a note with holes in it.
     caption: caption.Report
     #: The note. `synth.degraded` is reported, not hidden: a note written by the template
     #: synthesizer is a skeleton, and a reader has to be able to tell.
     note: synth.Note
-    #: D5's deterministic gate on the note. `lint.ok` false is exit 4.
+    #: ADR-0001 D5's deterministic gate on the note. `lint.ok` false is exit 4.
     lint: lint.Report
-    #: D5's audit. `audit.ok` false is exit 5: the note is written and annotated, never
+    #: ADR-0001 D5's audit. `audit.ok` false is exit 5: the note is written and annotated, never
     #: discarded. An audit that could not run says so; it never reads as one that passed.
     audit: audit.Report
     #: What stage 10 could fix, and what it declined to.
@@ -98,7 +98,7 @@ class RunResult:
     #: linked by 11. Stage 12 writes this file, not `synth.NOTE_NAME` -- publishing the
     #: stage-7 original would undo the two stages that ran after it.
     final_note: Path
-    #: D3's verdict on the filesystem. `report.ok` false is the one failure that must not
+    #: ADR-0001 D3's verdict on the filesystem. `report.ok` false is the one failure that must not
     #: reach exit 0: every earlier stage claimed success, and only this one measured it.
     report: report.Report
 
@@ -127,7 +127,7 @@ def _estimate(audio_seconds: float) -> tuple[float, float]:
     amortises away. Measured here: 25 s of audio took 4.9 s (0.20x), 4520 s took
     257.2 s (0.057x). So below WARMUP_SECONDS the floor is the slow end; using
     the fast end there would print a lower bound 3.9x below the only measurement
-    taken at that length, which is the D7 failure mode exactly.
+    taken at that length, which is the ADR-0001 D7 failure mode exactly.
 
     HEADROOM widens the upper bound so the interval is never degenerate: with
     the floor already at the slow end, a short clip would otherwise print the
@@ -185,14 +185,14 @@ def run(
 
     # --- stage 3: stt ---------------------------------------------------------
     began = time.monotonic()
-    # D7: the STT backend issues one blocking HTTP request with no streaming, so there
+    # ADR-0001 D7: the STT backend issues one blocking HTTP request with no streaming, so there
     # is nothing to report between here and the result line. Stating the
     # expected cost *before* starting is the only honest option; a bar that sits
-    # silent through the dominant stage is the lie D7 is written against.
+    # silent through the dominant stage is the lie ADR-0001 D7 is written against.
     lo, hi = _estimate(artefact.duration)
     out.write(
         f"  [3/{IMPLEMENTED}] {'stt'.ljust(7)} starting  {artefact.duration:.0f}s of audio through "
-        f"whisper.cpp on CPU, expect {_interval(lo, hi)}, no streaming (D7)\n"
+        f"whisper.cpp on CPU, expect {_interval(lo, hi)}, no streaming (ADR-0001 D7)\n"
     )
     out.flush()
     transcript = stt.transcribe(wav, audio_duration=artefact.duration)
@@ -209,7 +209,7 @@ def run(
         out.write(f"           note: ... and {len(transcript.anomalies) - 10} more\n")
 
     # --- stage 4: frames ------------------------------------------------------
-    # D3: frames are read from the source, never from a blurred intermediate. The
+    # ADR-0001 D3: frames are read from the source, never from a blurred intermediate. The
     # detect pass decodes the whole container and writes only timestamps, so the
     # blur cannot reach the output; the extract pass then seeks the original.
     began = time.monotonic()
@@ -235,8 +235,8 @@ def run(
             artefacts[extra] = bundle.publish(extra, candidate)
 
     # --- stage 5: quality -----------------------------------------------------
-    # D4. Runs on the frames stage 4 produced, not on the source, so the gate judges
-    # what stage 6 will actually caption. D4's exit-4 path is signalled by
+    # ADR-0001 D4. Runs on the frames stage 4 produced, not on the source, so the gate judges
+    # what stage 6 will actually caption. ADR-0001 D4's exit-4 path is signalled by
     # `quality_ok` rather than raised here: raising would skip the publishing of the
     # enhanced frames, and a failed gate is exactly when those frames are worth
     # looking at.

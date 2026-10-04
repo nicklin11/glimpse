@@ -18,12 +18,12 @@ USAGE = 1
 # `process` refuses to start rather than silently degrading.
 MISSING_DEPENDENCY = 2
 
-# 3 — dependency present but failed. Its stderr is reproduced VERBATIM (D2):
+# 3 — dependency present but failed. Its stderr is reproduced VERBATIM (ADR-0001 D2):
 # a tool that swallows its dependency's errors is worse than no tool, because
 # the failure looks like success.
 DEPENDENCY_FAILED = 3
 
-# 4 — quality gate failed. The note is still written; the report says why (D4).
+# 4 — quality gate failed. The note is still written; the report says why (ADR-0001 D4).
 QUALITY_GATE_FAILED = 4
 
 # 5 — the audit found errors above threshold. The note is written and FLAGGED.

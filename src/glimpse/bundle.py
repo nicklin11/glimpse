@@ -5,7 +5,7 @@ scratch: it is removed on success unless asked otherwise. The bundle is the deli
 and must survive. Folding them together would mean either keeping 137.9 MiB of extracted
 audio on every successful run, or deleting the note.
 
-**The default is `$XDG_STATE_HOME/glimpse/<lecture>`, not `./output/<lecture>`.** D9
+**The default is `$XDG_STATE_HOME/glimpse/<lecture>`, not `./output/<lecture>`.** ADR-0001 D9
 exists because artefacts written into a working directory end up in whatever repository
 the user happened to be standing in. A CWD-relative default reintroduces that one level
 down: run it from a git checkout and a 137.9 MiB wav plus a 3.7 MB transcript land in the

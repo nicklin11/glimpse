@@ -1,6 +1,6 @@
 """Stage 3 — transcription.
 
-D2 (amended 2026-10-03): STT is delegated, never reimplemented, and it is delegated to
+ADR-0001 D2 (amended 2026-10-03): STT is delegated, never reimplemented, and it is delegated to
 *an endpoint*, not to a particular utility. `TranscriptionBackend` is the boundary;
 whisper.cpp native and an OpenAI-compatible server are the two implementations.
 
@@ -111,7 +111,7 @@ def transcribe(wav: Path, *, audio_duration: float, backend: str | None = None) 
         raw_payload=raw,
         backend=engine.name,
     )
-    # D3, and the reason the interface exists: segments without word timings are not the
+    # ADR-0001 D3, and the reason the interface exists: segments without word timings are not the
     # payload this stage exists to produce.
     if transcript.timed_words == 0:
         raise runner.DependencyError(

@@ -62,7 +62,7 @@ def _doctor(_args: argparse.Namespace) -> int:
         # abandoned with no indication of what to do about it.
         if c.remediation:
             print(f"glimpse:   remediation: {c.remediation}", file=sys.stderr)
-        # D2: the dependency's own stderr, reproduced verbatim.
+        # ADR-0001 D2: the dependency's own stderr, reproduced verbatim.
         if c.stderr:
             print(f"glimpse:   {c.name} stderr:", file=sys.stderr)
             for line in c.stderr.splitlines():
@@ -117,7 +117,7 @@ def _process(args: argparse.Namespace) -> int:
 
     Exits 0 only when stage 12 has stat'd the filesystem and found every artefact it
     claimed. Exit 0 in ADR-0001 means "all artefacts written and verified", and the
-    second half of that is the half every pipeline before this one skipped: D3 records a
+    second half of that is the half every pipeline before this one skipped: ADR-0001 D3 records a
     run that produced zero frames and exited successfully, because ffmpeg wrote an empty
     file and exited 0.
 
@@ -210,7 +210,7 @@ def _process(args: argparse.Namespace) -> int:
             return ec.DEPENDENCY_FAILED
         print(f"  vault      {len(copied)} files exported to {Path(vault).expanduser()}")
     if not result.quality.ok:
-        # D4: the note is still written; a bad frame means the crops are soft, not that
+        # ADR-0001 D4: the note is still written; a bad frame means the crops are soft, not that
         # the pipeline stopped. The quality report is the artefact that explains why.
         print(
             f"glimpse: quality gate failed for {len(result.quality.failed)}"
@@ -227,7 +227,7 @@ def _process(args: argparse.Namespace) -> int:
         )
     audit_errors = [f for f in result.audit.findings if f.severity == "ERROR"]
     if audit_errors:
-        # D5: the note is written and FLAGGED, never withheld. Exit 5 is that flag.
+        # ADR-0001 D5: the note is written and FLAGGED, never withheld. Exit 5 is that flag.
         # Naming the count and the rule is the whole point -- an exit code with no list
         # attached is a code the reader cannot act on.
         print(
@@ -266,7 +266,7 @@ def _process(args: argparse.Namespace) -> int:
     #        the frames were soft. Reporting 4 alone would hide the note's own verdict.
     #   4 -- a content frame was soft. The note exists; its inputs were not.
     #   1 -- the pipeline could not finish, could not verify what it produced, or produced
-    #        a note no model ever wrote. This is D3's point: a stage that exits 0 having
+    #        a note no model ever wrote. This is ADR-0001 D3's point: a stage that exits 0 having
     #        written nothing -- or having written a template and calling it synthesis --
     #        has lied, and the only defence is that something measured the output instead
     #        of trusting it.
@@ -292,7 +292,7 @@ def _process(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         print(
-            "glimpse:   this is D3: stages above reported success, and the filesystem "
+            "glimpse:   this is ADR-0001 D3: stages above reported success, and the filesystem "
             "disagrees. Not exiting 0.",
             file=sys.stderr,
         )

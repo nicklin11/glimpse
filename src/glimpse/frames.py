@@ -14,7 +14,7 @@ an earlier version blurred on the way *out*, and every emitted frame was mush �
 Laplacian variance 1–3.6 against 686–3483 for the correct path.
 
 Ported from `lecture-frames` (294 lines, previously untracked in `~/.local/bin`). It is a
-move, not a rewrite: the working code was the only place the D3 bug fixes existed.
+move, not a rewrite: the working code was the only place the ADR-0001 D3 bug fixes existed.
 """
 
 from __future__ import annotations
@@ -261,7 +261,7 @@ def run(
 ) -> tuple[Path, list[Path]]:
     """Run both passes. Returns `(manifest, frames)`.
 
-    D3: a run that emits zero frames is a **failure**, not a success with nothing in it.
+    ADR-0001 D3: a run that emits zero frames is a **failure**, not a success with nothing in it.
     The ported script wrote a header-only manifest and exited 0 — which is how a
     27-minute extraction produced nothing and still reported success. The artefact count is
     checked against the directory, not against the exit code.
@@ -295,7 +295,7 @@ def run(
     write_manifest(rows, manifest)
     provenance(out, settings, reused)
 
-    # D3 again, one level deeper: the extract pass can also exit 0 having written nothing.
+    # ADR-0001 D3 again, one level deeper: the extract pass can also exit 0 having written nothing.
     missing = [p for _, p in rows if not p.is_file() or p.stat().st_size == 0]
     if missing:
         raise runner.DependencyError(

@@ -13,7 +13,7 @@ Two failure modes, kept apart exactly as in `deps.py`:
 caller writes the raw bytes through untouched. Decoding to str first would be a
 lossy transcription of the failure: a dependency that reports a non-UTF-8 byte in
 an error path, or that terminates mid-line, would have its last line mangled or
-truncated by the very layer meant to report it faithfully (D2). A dependency that
+truncated by the very layer meant to report it faithfully (ADR-0001 D2). A dependency that
 prints nothing to stderr is reported as having printed nothing, rather than being
 silently represented by an empty blob the reader cannot tell apart from a dropped
 one.
@@ -57,7 +57,7 @@ class DependencyError(Exception):
         self.message = message
         self.stderr = stderr
         # Kept apart from `stderr` on purpose. `report()` prints `stderr` in the
-        # position D2 reserves for the dependency's own stderr; feeding it
+        # position ADR-0001 D2 reserves for the dependency's own stderr; feeding it
         # captured stdout there would present the wrong stream as verbatim.
         self.stdout = stdout
         self.remediation = remediation
@@ -68,7 +68,7 @@ def emit_verbatim(data: bytes) -> bool:
     """Write a dependency's stderr to our stderr, unmodified. True if it wrote.
 
     No prefix, no re-wrapping, no per-line indentation. Every extra character we
-    add is a character the dependency did not emit, and the whole point of D2 is
+    add is a character the dependency did not emit, and the whole point of ADR-0001 D2 is
     that the reader can trust these lines are the dependency's own.
 
     Falls back to a lossy decode only when our stderr has no binary buffer
@@ -97,7 +97,7 @@ def report(exc: DependencyError) -> None:
         # rather than let it read as a dropped message.
         print(f"glimpse:   ({exc.name} wrote nothing to stderr)", file=sys.stderr)
     if exc.stdout:
-        # Labelled, because it is stdout and not the stderr D2 promises above.
+        # Labelled, because it is stdout and not the stderr ADR-0001 D2 promises above.
         print(f"glimpse:   {exc.name} stdout:", file=sys.stderr)
         emit_verbatim(exc.stdout)
     sys.stderr.flush()

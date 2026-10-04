@@ -17,7 +17,7 @@ exclusive representations of the same dynamical system, where the formulas contr
 both the note's prose and the physics.
 
 **A finding without a citation is discarded, and the discard is logged.** This is the whole
-point of D5 and it is enforced mechanically, not requested politely: `parse_critic_findings`
+point of ADR-0001 D5 and it is enforced mechanically, not requested politely: `parse_critic_findings`
 checks that the quoted text is verbatim from this section, that the citation is verbatim
 from the transcript, and that a confidence was stated. A finding failing any of the three
 goes into `dropped` with its reason. A critic that fabricates a plausible-sounding
@@ -37,7 +37,7 @@ This is not a theorem prover and does not claim to be. What it does:
 3. Rejects a sum whose terms disagree on whether they are scalar or non-scalar, and a
    product whose declared shapes cannot multiply.
 
-That is the "скаляр не складывается с матрицей" class from D5 and it catches the mistake
+That is the "скаляр не складывается с матрицей" class from ADR-0001 D5 and it catches the mistake
 this project already cares about. It will not catch a wrong constant, a transposed index, or
 a formula that is right about the wrong problem. Every finding it reports names the line, and
 a finding it cannot produce is not implied by its silence -- `audited` here means "these
@@ -71,7 +71,7 @@ class Finding:
     line: int
     detail: str
     quote: str = ""
-    #: A verbatim fragment of the transcript. D5: a finding without one is not evidence,
+    #: A verbatim fragment of the transcript. ADR-0001 D5: a finding without one is not evidence,
     #: it is a guess about what was said -- so it is discarded, and the drop is logged.
     citation: str = ""
     #: `high` / `medium` / `low`, as the auditor stated it. Required, not defaulted: a
@@ -104,7 +104,7 @@ class Report:
     tier2: str = "NOT_CONFIGURED"
     tier2_findings: int = 0
     tier2_coverage: dict = field(default_factory=dict)
-    #: Critic findings discarded for want of a citation, each with the reason. D5 makes
+    #: Critic findings discarded for want of a citation, each with the reason. ADR-0001 D5 makes
     #: this a logged outcome, not a silent one: a filter that hides its own discards is a
     #: filter nobody can audit.
     dropped: list[dict] = field(default_factory=list)
@@ -114,7 +114,7 @@ class Report:
 
     @property
     def ok(self) -> bool:
-        """No ERROR-tier findings. D5: annotate-and-flag, never discard the note."""
+        """No ERROR-tier findings. ADR-0001 D5: annotate-and-flag, never discard the note."""
         return not any(f.severity == "ERROR" for f in self.findings)
 
     def summary(self) -> str:
@@ -292,7 +292,7 @@ def _symbols_in(term: str) -> list[str]:
 
 
 def check_dimensions(markdown: str, lines: list[tuple[int, str]], report: Report) -> None:
-    """Scalar plus vector is the mistake D5 names, and the one this catches.
+    """Scalar plus vector is the mistake ADR-0001 D5 names, and the one this catches.
 
     Requires the note to have declared shapes. A note that never writes `\\in \\mathbb{R}^n`
     gets no dimension findings and `audit/dimensions-skipped` says so, rather than the
@@ -471,7 +471,7 @@ def _norm(text: str) -> str:
 def parse_critic_findings(
     raw: str, section: str, transcript: str
 ) -> tuple[list[Finding], list[dict]]:
-    """D5's enforced format, checked mechanically rather than trusted.
+    """ADR-0001 D5's enforced format, checked mechanically rather than trusted.
 
     Returns the findings that survived and the ones discarded with the reason for each.
     A finding is kept only if all three hold: the quoted text is verbatim from this

@@ -7,12 +7,13 @@ this is the part that is not.
 
 ## What is checked, and why each one
 
-The checks are the failure modes this pipeline has already demonstrated it can produce, plus
-the ones D5 names. Nothing here is a style preference.
+The checks are the failure modes this pipeline has already demonstrated it can produce. Nothing
+here is a style preference.
 
-- **Structure.** D5 fixes eight sections in an order. A note missing section 5 is not a note
-  that failed a lint; it is a different document, and stage 9's reviewer needs to know which
-  one it is looking at.
+- **Structure.** The synthesizer skill fixes eight sections in an order
+  (`~/.dsh/skills/academic-lecture-synthesizer/SKILL.md`, § "Структура выходного
+  документа"). A note missing section 5 is not a note that failed a lint; it is a
+  different document, and stage 9's reviewer needs to know which one it is looking at.
 - **Delimiter balance.** An unclosed `$` turns the rest of the note into mathematics. It is
   the single most damaging thing a synthesis model does to a technical note, and it is
   trivially detectable.
@@ -28,9 +29,9 @@ the ones D5 names. Nothing here is a style preference.
 ## Severity
 
 `ERROR` fails the gate (exit 4). `WARN` is reported and the note is written: a note with a
-warning is still more useful than no note, and D5's whole premise is that a bad note beats
-a missing one provided the defects are named. Suppressing a note because it has a warning
-would make the tool useless exactly when the source is worst.
+warning is still more useful than no note, and a bad note beats a missing one provided the
+defects are named. Suppressing a note because it has a warning would make the tool useless
+exactly when the source is worst.
 """
 
 from __future__ import annotations
@@ -137,7 +138,11 @@ def _outside_code(text: str) -> list[tuple[int, str]]:
 
 
 def check_structure(markdown: str, report: Report) -> None:
-    """D5's eight sections, in order, under their exact titles."""
+    """The synthesizer skill's eight sections, in order, under their exact titles.
+
+    Source: `~/.dsh/skills/academic-lecture-synthesizer/SKILL.md`, § "Структура выходного
+    документа". Not an ADR decision -- see the module docstring.
+    """
     headings = [
         (int(m.group(1)), m.group(2).strip())
         for m in re.finditer(r"^## (\d+)\.\s+(.+)$", markdown, re.M)
@@ -156,7 +161,12 @@ def check_structure(markdown: str, report: Report) -> None:
     for number, title in headings:
         canonical = next((t for n, t in expected if n == number), None)
         if canonical is None:
-            report.add("structure/unknown-section", ERROR, 0, f"section {number} is not in D5")
+            report.add(
+                "structure/unknown-section",
+                ERROR,
+                0,
+                f"section {number} is not one of the eight the synthesizer skill defines",
+            )
         elif canonical != title:
             report.add(
                 "structure/renamed-section",
