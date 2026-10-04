@@ -3656,6 +3656,39 @@ check(
     not rules(note(*["«ну, как же без этого» сказал лектор"] * 8), "style/filler"),
     "quoted filler was reported",
 )
+check(
+    # Run 6 flagged `ну` at line 120 of lecture 1, inside a stage-7 marker:
+    #     Адаптивное управление — отдельный курс; ... (какие-то базы --
+    #     [неразборчиво: ну, какие-то базы]).
+    # Stage 10 declined to repair it -- "not a mechanical fix" -- which was correct: the
+    # skill defines that payload as "буквально что услышали". But the warning stayed, and
+    # a warning that can never be actioned teaches the reader to ignore warnings.
+    "a filler inside an unverifiable-span marker is left alone",
+    not rules(
+        note(
+            *[
+                "Адаптивное управление — отдельный курс (какие-то базы — "
+                "⚠️ [неразборчиво: ну, какие-то базы])."
+            ]
+            * 8
+        ),
+        "style/filler",
+    ),
+    "filler inside a [неразборчиво: ...] marker was reported",
+)
+check(
+    "a filler outside the marker on the same line is still found",
+    rules(
+        note(*["Ну вот, а потом [неразборчиво: ну, что-то] и всё."] * 8),
+        "style/filler",
+    ),
+    "stripping the marker blanked the whole line",
+)
+check(
+    "a bare [неразборчиво] with no payload is stripped too",
+    not rules(note(*["Голый маркер [неразборчиво] тут."] * 8), "style/filler"),
+    "the bare marker form was not matched",
+)
 
 # Mathematics. An unclosed `$` turns the rest of the note into math -- the most damaging
 # thing a synthesis model does to a technical note, and trivially detectable.

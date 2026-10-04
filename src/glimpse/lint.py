@@ -265,8 +265,14 @@ def check_links_in_math(markdown: str, report: Report) -> None:
                 return
 
 
+# The stage-7 marker for an ASR span that could not be verified. Its payload is, by the
+# skill's own wording, "буквально что услышали" -- literally what was heard. So a filler
+# inside it is the transcriber's, not the note author's, exactly as with «...».
+_UNREADABLE_RE = re.compile(r"\[неразборчиво[^\]]*\]?")
+
+
 def _strip_quotes(line: str) -> str:
-    """Blank out «...» spans, preserving line numbers and column positions.
+    """Blank out verbatim spans, preserving line numbers and column positions.
 
     A quoted span is verbatim by definition. The stage-9 audit requires verbatim citations
     to be checkable against the transcript, so a filler word inside a quote is not debris in
@@ -275,10 +281,22 @@ def _strip_quotes(line: str) -> str:
     `«если вы понимаете одно, то очень легко понять другое»` was reported as
     `«вы понимаете» appears 1 times`.
 
+    The same argument covers `[неразборчиво: ...]`, the stage-7 marker for a span the ASR
+    could not verify, whose payload the skill defines as "буквально что услышали". Run 6
+    flagged `ну` at line 120 of lecture 1:
+
+        Адаптивное управление — отдельный курс; ... (какие-то базы —
+        ⚠️ [неразборчиво: ну, какие-то базы]).
+
+    and stage 10 declined to repair it: `"reason": "not a mechanical fix"`. The pipeline was
+    right and the warning was noise -- a warning that can never be actioned teaches the
+    reader to ignore warnings.
+
     An unclosed « on a line blanks to the end of that line only. A quote opened on one line
     and closed on another is the lecturer's paragraph break, and the debris after it is
     still the note author's.
     """
+    line = _UNREADABLE_RE.sub(lambda m: " " * len(m.group()), line)
     out, inside, start = [], False, 0
     for index, char in enumerate(line):
         if char == "«":
