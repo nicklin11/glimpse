@@ -37,6 +37,8 @@ the requested one and the two are left to disagree in the open.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import time
@@ -48,6 +50,17 @@ from pathlib import Path
 ENDPOINT_ENV = "GLIMPSE_LLM_ENDPOINT"
 MODEL_ENV = "GLIMPSE_LLM_MODEL"
 KEY_ENV = "GLIMPSE_LLM_KEY"
+
+#: The vision endpoint has its own names, per ADR-0004 D3: the two roles are separate
+#: sections that may point at the same URL, and switching one later must cost one line.
+VISION_ENDPOINT_ENV = "GLIMPSE_VLM_ENDPOINT"
+VISION_MODEL_ENV = "GLIMPSE_VLM_MODEL"
+VISION_KEY_ENV = "GLIMPSE_VLM_KEY"
+
+#: Longest edge sent to the vision endpoint. Stage 4 extracts at 1600 px; a model that
+#: resizes internally sees the same content either way, and the request body is 4/3 the
+#: base64 size, so sending more than the frame costs bytes and buys nothing.
+VISION_MAX_EDGE = 1600
 
 #: Retries apply to 429 and 5xx only. A 4xx is a request the endpoint has already rejected on
 #: its merits.
@@ -96,6 +109,39 @@ class Config:
             "temperature": self.temperature,
         }
 
+    @classmethod
+    def vision_from_env(cls) -> Config:
+        """Config for the vision endpoint.
+
+        Falls back to the text endpoint when the vision names are unset. They are separate
+        names because they are separate roles, not because they have to be separate places
+        -- on this host both are the same gateway, and requiring both sets to be exported
+        would make stage 6 unrunnable for anyone who configured only the text side.
+        """
+        endpoint = os.environ.get(VISION_ENDPOINT_ENV, "").strip()
+        model = os.environ.get(VISION_MODEL_ENV, "").strip()
+        key = os.environ.get(VISION_KEY_ENV, "").strip() or None
+        if not endpoint and not model:
+            return cls.from_env()
+        if not endpoint:
+            raise NotConfiguredError(f"{VISION_MODEL_ENV} is set but {VISION_ENDPOINT_ENV} is not")
+        if not model:
+            raise NotConfiguredError(f"{VISION_ENDPOINT_ENV} is set but {VISION_MODEL_ENV} is not")
+        return cls(
+            endpoint=endpoint.rstrip("/"),
+            model=model,
+            api_key=key or os.environ.get(KEY_ENV, "").strip() or None,
+        )
+
+    @property
+    def is_vision_default(self) -> bool:
+        """True when this config came from the text names rather than the vision ones.
+
+        Recorded in provenance. A reader comparing two bundles needs to know whether the
+        vision stage was pointed somewhere deliberately or inherited.
+        """
+        return not os.environ.get(VISION_ENDPOINT_ENV, "").strip()
+
 
 @dataclass(frozen=True)
 class Reply:
@@ -119,6 +165,54 @@ class Reply:
             "seconds": round(self.seconds, 3),
             "attempts": self.attempts,
         }
+
+
+#: Media types a frame may legitimately arrive as. Anything else is refused rather than
+#: guessed at: a mislabelled data URI is a 400 whose message says nothing useful.
+IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+def image_data_uri(path: Path) -> str:
+    """A frame as a `data:` URI, ready for an OpenAI-compatible `image_url` part.
+
+    Inlined rather than uploaded or linked: the endpoint is on the tailnet, the frames are
+    already local, and a URL the endpoint can fetch would be a second failure mode that
+    only appears when the two machines disagree about reachability.
+    """
+    guessed = ("image/" + path.suffix.lstrip(".").lower()).replace("jpg", "jpeg")
+    if guessed not in IMAGE_TYPES:
+        guessed = "image/jpeg"
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{guessed};base64,{payload}"
+
+
+def vision_message(prompt: str, image: Path, *, text: str = "") -> dict:
+    """One user message carrying a prompt and one image.
+
+    The transport is unchanged -- `chat()` passes `messages` through without inspecting
+    them -- so vision is a message shape, not a second client.
+    """
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"{prompt}\n\n{text}".strip() if text else prompt},
+            {"type": "image_url", "image_url": {"url": image_data_uri(image)}},
+        ],
+    }
+
+
+def frame_fingerprint(path: Path) -> str:
+    """Content hash of a frame.
+
+    Part of the stage-6 cache key alongside the model id, per ADR-0001 D4: the same frame
+    bytes and the same model must give the same caption, and a changed model must not be
+    served from a cache the previous model filled.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def chat(

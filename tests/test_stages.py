@@ -16,6 +16,7 @@ because that is where this pipeline's real failures live:
 The one real end-to-end run lives outside this file, in the acceptance notes.
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -1060,6 +1061,15 @@ def fake_pipeline(source, work, **kw):
         # A synthesised note, not a template: exit 0 is conditional on this being False,
         # so a stand-in without the attribute would crash rather than assert.
         note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
+        # Stage 6's two verdicts, both real objects. `caption.ok` gates A/V sync; the
+        # outcome gates whether the vision endpoint worked at all, and the CLI reads it
+        # before the quality gate -- so a stand-in without it would crash rather than
+        # assert. captioned=1 because ok is `captioned + reused > 0`, and a fake run that
+        # captioned nothing is a real failure, not a neutral default.
+        caption=glcap.Report(),
+        caption_outcome=glcap.CaptionOutcome(
+            captioned=1, reused=0, failed=0, model="test-model", served_model=None
+        ),
         # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
         # failure rather than a flag: that is the ADR-0001 D3 case stage 12 exists for.
         report=glro.Report(),
@@ -2571,13 +2581,17 @@ check(
     "source selection is not reaching observe()",
 )
 try:
-    glq.VLMEstimator().estimate(dark_canvas, qs)
+    glq.resolve_estimator("vlm")
     vlm_raised = None
-except glq.NotConfiguredError as exc:
+except KeyError as exc:
     vlm_raised = exc
 check(
-    "an unconfigured VLM bbox source raises NotConfiguredError rather than guessing",
-    vlm_raised is not None,
+    # `vlm` was registered and raised NotConfiguredError on both branches, so setting
+    # GLIMPSE_BBOX_SOURCE=vlm failed at the crop rather than being refused as the unknown
+    # name it is. A vision bbox source is unbuilt; an unbuilt option must be absent from the
+    # registry, not present and broken (#67).
+    "the unbuilt `vlm` bbox source is not registered at all",
+    vlm_raised is not None and "vlm" in str(vlm_raised),
     f"raised={vlm_raised!r}",
 )
 try:
@@ -2896,7 +2910,7 @@ check(
 
 # The artefact.
 cdest = ctmp / "out"
-crun = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
+creport, coutcome = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
 check(
     "run() writes the report",
     (cdest / glcap.REPORT_NAME).is_file(),
@@ -2909,19 +2923,34 @@ check(
 )
 cpayload = json.loads((cdest / glcap.REPORT_NAME).read_text(encoding="utf-8"))
 check(
-    "provenance says this stage needs no model",
-    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is False,
+    "provenance says this stage needs a model",
+    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is True,
     (cdest / glcap.PROVENANCE_NAME).read_text(),
 )
 check(
-    "provenance names the caption gap rather than hiding it",
-    "NOT_CONFIGURED" in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"],
+    # The old assertion was that provenance names the caption gap via a `NOT_CONFIGURED`
+    # string. The string is gone by design -- it read like content. What has to survive is
+    # the gap being *recorded*: an absent endpoint must still be visible in the artefact,
+    # with the count of frames it cost.
+    "provenance records that no frame was captioned, without a placeholder string",
+    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["captioned"] == 0
+    and "NOT_CONFIGURED"
+    not in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["model"],
     (cdest / glcap.PROVENANCE_NAME).read_text(),
+)
+check(
+    "an unconfigured endpoint marks each frame NO_ENDPOINT rather than leaving a caption slot",
+    all(
+        a["caption_status"] == "NO_ENDPOINT"
+        for a in cpayload["alignments"]
+        if a["caption_status"] != "GATED_OUT"
+    ),
+    str([a["caption_status"] for a in cpayload["alignments"]]),
 )
 check(
     "every alignment round-trips through the artefact",
-    [a["frame"] for a in cpayload["alignments"]] == [a.frame for a in crun.alignments]
-    and cpayload["alignments"][0]["on_screen_ms"] == list(crun.alignments[0].on_screen_ms),
+    [a["frame"] for a in cpayload["alignments"]] == [a.frame for a in creport.alignments]
+    and cpayload["alignments"][0]["on_screen_ms"] == list(creport.alignments[0].on_screen_ms),
     str(cpayload["alignments"][0]),
 )
 check(
@@ -2929,6 +2958,167 @@ check(
     "uncovered_share" in cpayload["provenance"],
     str(cpayload["provenance"]),
 )
+
+
+# --- 12a. stage 6 captioning: the half that calls a model -------------------------
+# The tests above cover alignment and the no-endpoint degradation. These cover the path
+# that actually exists now: a caption comes back, the cache is keyed correctly, and a
+# refusing endpoint is recorded rather than swallowed.
+#
+# `llm.chat` is replaced rather than `urlopen`, so these assert what this stage owns -- the
+# message it builds, the status it records, the cache key it uses -- and not the transport,
+# which `test_llm.py` and the FakeHTTP block already cover.
+_real_chat = glle.chat
+
+
+def _caption_reply(text="$\\dot{x} = Ax$, state feedback"):
+    return glle.Reply(
+        text=text,
+        model="fake-vision",
+        prompt_tokens=10,
+        completion_tokens=10,
+        seconds=0.01,
+        attempts=1,
+        served_model="fake-vision",
+    )
+
+
+_seen_messages: list = []
+# The alignment tests above never needed the frames to exist -- `align` reads only the
+# manifest and the quality report. Captioning opens the file, so they have to be present.
+# The bytes are arbitrary and deliberately not a real PNG: nothing decodes them, and
+# `image_data_uri` picks the media type from the suffix, which is the part under test.
+_FAKE_FRAME = b"\x89PNG\r\n\x1a\n" + b"frame-bytes-for-stage-6"
+for _name in ("f_0000000000.png", "f_0000100000.png", "f_0000200000.png"):
+    (cimg / _name).write_bytes(_FAKE_FRAME)
+
+_leftovers = os.environ.pop("GLIMPSE_VLM_MODEL", None) or os.environ.pop("GLIMPSE_LLM_MODEL", None)
+os.environ.pop("GLIMPSE_VLM_ENDPOINT", None)
+os.environ.pop("GLIMPSE_LLM_ENDPOINT", None)
+os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+
+
+def _fake_vision_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    _seen_messages.append((messages, config))
+    return _caption_reply()
+
+
+glle.chat = _fake_vision_chat
+try:
+    vdest = ctmp / "vision_out"
+    vreport, voutcome = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    vcache = json.loads((vdest / glcap.REPORT_NAME).read_text())["captions"]
+    # Guard first: `all()` over an empty sequence is True, and three of these assertions
+    # were vacuously green before the frames existed. Every check below states how many
+    # things it looked at, so a zero reads as a failure rather than as a pass.
+    check(
+        "there is at least one frame to caption, and one was",
+        len(vreport.considered) >= 2 and voutcome.captioned == len(vreport.considered),
+        f"considered={len(vreport.considered)} captioned={voutcome.captioned}",
+    )
+    check(
+        "every captioned frame carries status OK and non-empty text",
+        vreport.considered
+        and all(a.caption_status == "OK" and a.caption for a in vreport.considered),
+        str([(a.frame, a.caption_status) for a in vreport.considered]),
+    )
+    check(
+        "the caption lands in the artefact, not just in memory",
+        len(vcache) == voutcome.captioned
+        and all(
+            a["caption"] == "$\\dot{x} = Ax$, state feedback"
+            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            if a["caption_status"] == "OK"
+        ),
+        f"cache entries={len(vcache)} captioned={voutcome.captioned}",
+    )
+    check(
+        "the request carries the frame as an image part",
+        len(_seen_messages) == voutcome.captioned
+        and all(
+            [part["type"] for part in m[0]["content"]] == ["text", "image_url"]
+            and m[0]["content"][1]["image_url"]["url"]
+            == "data:image/png;base64," + base64.b64encode(_FAKE_FRAME).decode("ascii")
+            for m, _ in _seen_messages
+        ),
+        f"messages={len(_seen_messages)}",
+    )
+    check(
+        # The frames in this fixture all carry transcript, so the no-transcript branch of
+        # `vision_message` is asserted on the helper rather than through a fixture that
+        # would have to manufacture an uncovered frame. The point is that nothing is
+        # concatenated when there is nothing to concatenate.
+        "a frame with no transcript sends the prompt alone, with no invented context",
+        glle.vision_message("PROMPT", cimg / "f_0000000000.png")["content"][0]["text"] == "PROMPT"
+        and glle.vision_message("PROMPT", cimg / "f_0000000000.png", text="spoken")["content"][0][
+            "text"
+        ]
+        == "PROMPT\n\nspoken",
+        "vision_message text branch",
+    )
+    check(
+        "the cache is keyed by frame fingerprint and model id",
+        len(vcache) == voutcome.captioned
+        and all(
+            entry["model"] == "fake-vision" and len(entry["fingerprint"]) == 64
+            for entry in vcache.values()
+        ),
+        f"entries={len(vcache)}",
+    )
+
+    # Second run: the cache must serve it, and the model must not be called again.
+    _seen_messages.clear()
+    _, voutcome2 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    check(
+        "a second run over the same frames reuses every caption and calls nothing",
+        voutcome2.reused == voutcome.captioned and not _seen_messages,
+        f"reused={voutcome2.reused} calls={len(_seen_messages)}",
+    )
+
+    # A changed model must not be served the previous model's cache.
+    os.environ["GLIMPSE_VLM_MODEL"] = "other-vision"
+    os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision2.invalid/v1"
+    _seen_messages.clear()
+    _, voutcome3 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    check(
+        "a different model id invalidates the cache rather than inheriting it",
+        voutcome3.reused == 0 and voutcome3.captioned == len(vreport.considered),
+        f"reused={voutcome3.reused} captioned={voutcome3.captioned}",
+    )
+
+    # A refusing endpoint is recorded per frame, and the run says it captioned nothing.
+    def _refusing_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        raise glle.EndpointError("vision refused: 400 unsupported")
+
+    glle.chat = _refusing_chat
+    rreport, routcome = glcap.run(
+        cmanifest, ctrans, cquality, cimg, ctmp / "refused_out", stream=io.StringIO()
+    )
+    check(
+        "a refusing endpoint is recorded per frame, not swallowed",
+        all(
+            a.caption_status == "ERROR" and "vision endpoint refused" in a.reason
+            for a in rreport.considered
+        ),
+        str([(a.frame, a.caption_status, a.reason) for a in rreport.considered]),
+    )
+    check(
+        "a run that captioned nothing says so",
+        not routcome.ok and routcome.captioned == 0,
+        routcome.as_dict(),
+    )
+finally:
+    glle.chat = _real_chat
+    for _k in (
+        "GLIMPSE_VLM_ENDPOINT",
+        "GLIMPSE_VLM_MODEL",
+        "GLIMPSE_LLM_ENDPOINT",
+        "GLIMPSE_LLM_MODEL",
+    ):
+        os.environ.pop(_k, None)
+    if _leftovers:
+        os.environ["GLIMPSE_LLM_MODEL"] = _leftovers
 
 
 # --- 13. stage 7 synth: structure, degradation, model independence ------------------

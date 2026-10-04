@@ -196,23 +196,24 @@ would be a lie about where the time goes.
 
 ### D8 — The vision backend is pluggable; local is deferred
 
-**Status: HALF IMPLEMENTED. This is the open stage.**
-Stage 5 (`quality`) **is** closed: `GLIMPSE_BBOX_SOURCE` defaults to `geometric`, and
-`quality.GeometricEstimator` does the crop. The `vlm` branch of `resolve_estimator` exists
-as a registered name and raises `NotConfiguredError` — it is dead code, not a fallback.
+**Status: in force. Implemented 2026-10-04 (#67).**
+Stage 5 (`quality`) works through `GeometricEstimator`, the `GLIMPSE_BBOX_SOURCE` default.
+The `vlm` bbox source was never built and has been removed from the registry — an unbuilt
+option that raised rather than being refused as unknown.
 
-Stage 6 (`captions`) is **half** closed. `caption.run()` performs the frame-to-transcript
-**alignment** and that half works. The captioning half does not exist: there is no vision
-client anywhere in the codebase. `llm.py` is text-only — it has no image, base64 or
-multimodal path — and `caption.py` says so itself:
+Stage 6 (`captions`) now calls a vision model. The transport was never the missing piece:
+`llm.chat` passes `messages` through without inspecting them, so an OpenAI-compatible
+`image_url` content part is all a vision request is. `llm.py` gained `GLIMPSE_VLM_*`
+configuration (falling back to the text names when unset), `vision_message()`,
+`frame_fingerprint()`, and stage 6 captions each frame the gate passed, cached by
+`(frame fingerprint, model id)` as this decision specifies.
 
-```
-captioning is NOT_CONFIGURED -- no vision client in this codebase
-```
+Verified live against the gateway: 1.5 s and 4.6 s for two real frames, the first answered
+`NO NEW INFORMATION` for a title screen, the second transcribed a references page. See
+[`docs/stages.md`](../stages.md) § *Stage 6*.
 
-`GLIMPSE_VLM_*` is read nowhere in `src/`. Tracked as issue #67. "Local is deferred" refers
-to the *local* backend; the gateway path this decision names was never built either.
-See ADR-0004 D3, which already specifies the `[vision]` configuration section.
+What is still not built is the **vision bbox source** this decision originally described for
+stage 5. The geometric substitute stands, and `GeometricEstimator` documents why.
 
 Default backend is the gateway (`opencode-go/deepseek-v4-flash-vision-exp`), verified
 working on Russian PDF pages, ~$0.01 per 73-minute lecture. A local llama.cpp +

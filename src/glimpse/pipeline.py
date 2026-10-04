@@ -80,6 +80,10 @@ class RunResult:
     #: ADR-0001 D5's coverage verdict. `caption.ok` false means the audio and the video are not
     #: describing the same lecture, which is exit 4 rather than a note with holes in it.
     caption: caption.Report
+    #: What the captioning half actually did. Separate from the coverage verdict because they
+    #: fail for different reasons: `caption.ok` is about A/V sync, `caption_outcome.ok` is
+    #: about the vision endpoint. Only the second one is new since stage 6 gained a model.
+    caption_outcome: caption.CaptionOutcome
     #: The note. `synth.degraded` is reported, not hidden: a note written by the template
     #: synthesizer is a skeleton, and a reader has to be able to tell.
     note: synth.Note
@@ -277,11 +281,11 @@ def run(
 
     # --- stage 6: caption -----------------------------------------------------
     # Deterministic. Runs on the frames stage 5 passed and the transcript stage 3 wrote;
-    # there is no model in this stage, by design, so the alignment can be checked against
-    # the artefact rather than believed.
+    # there is no model in the alignment half, by design, so that half can be checked against
+    # the artefact rather than believed. The captioning half does call one.
     began = time.monotonic()
     capdir = work.dir("caption")
-    creport = caption.run(
+    creport, coutcome = caption.run(
         # The bundle's copies, not the work dir's. `publish` moved both, so the work-dir
         # paths are dangling -- the same move-then-read ordering bug stage 5 had.
         artefacts["manifest"],
@@ -417,6 +421,7 @@ def run(
         quality=qreport,
         enhanced=enhanced,
         caption=creport,
+        caption_outcome=coutcome,
         note=note,
         lint=lreport,
         audit=areport,

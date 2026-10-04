@@ -274,6 +274,31 @@ def _process(args: argparse.Namespace) -> int:
     #        synthesised.
     if audit_errors:
         return ec.AUDIT_FINDINGS
+    if not result.caption_outcome.ok:
+        # The endpoint was configured and reachable enough to try, and nothing came back.
+        # That is a dependency failing, not a content verdict, so it is exit 3 -- and it is
+        # checked before the quality gate because a dead vision endpoint would otherwise be
+        # reported as soft crops, sending the reader to tune the wrong thing.
+        outcome = result.caption_outcome
+        print(
+            f"glimpse: stage 6 captioned 0 of {len(result.caption.considered)} frames "
+            f"via {outcome.model} ({outcome.failed} failed); see {result.bundle.root}",
+            file=sys.stderr,
+        )
+        for alignment in result.caption.alignments:
+            if alignment.caption_status not in ("OK", "GATED_OUT"):
+                print(
+                    f"glimpse:   {alignment.frame}: {alignment.caption_status} "
+                    f"-- {alignment.reason}",
+                    file=sys.stderr,
+                )
+        print(
+            "glimpse:   remediation: check that the model serves vision requests; "
+            "GLIMPSE_VLM_ENDPOINT/GLIMPSE_VLM_MODEL select it, and fall back to the "
+            "GLIMPSE_LLM_* pair when unset",
+            file=sys.stderr,
+        )
+        return ec.DEPENDENCY_FAILED
     if not result.quality.ok:
         return ec.QUALITY_GATE_FAILED
     if result.note.degraded:

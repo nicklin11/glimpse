@@ -24,7 +24,7 @@ It does **not** mean the stage has been seen to work on a real lecture. See
 | 3 | `stt` | `stt/` — `core`, `backends`, `whispercpp`, `openai_compat` | yes | **yes** — 4520 s transcribed via the proxy |
 | 4 | `frames` | `frames.py` | yes | **yes** — 16 frames, deterministic across 3 runs |
 | 5 | `quality` | `quality.py` — `GeometricEstimator` | yes | **yes** — gate measured, threshold 300 |
-| 6 | `caption` | `caption.py` | **half** | **no — this is the open stage** |
+| 6 | `caption` | `caption.py`, `llm.py` | yes | **yes** — verified live against the gateway, 2026-10-04 |
 | 7 | `synth` | `synth.py` | yes | not yet verified on the lecture |
 | 8 | `lint` | `lint.py` | yes | not yet verified on the lecture |
 | 9 | `audit` | `audit.py` | yes | not yet verified on the lecture |
@@ -36,37 +36,58 @@ Stages 7–10 and 1–2 are not "broken" or "missing". They are written, importe
 `pipeline.run`, and covered by `tests/test_stages.py`. What they lack is a **verified run
 over the lecture**, which is a different and cheaper claim to earn.
 
-## Stage 6 — the open one
+## Stage 6 — what was added, and what it is still not
 
-Stage 6 is two halves. One works, one does not exist.
-
-**Working — alignment.** `caption.run()` matches each frame to the transcript segments that
-overlap its display window, with the boundary at the first word whose timestamp reaches the
-frame start. Deterministic, no model involved, cached into `report` and `provenance`.
-
-**Absent — captioning.** There is no vision client in this codebase. `llm.py` is text-only:
-
-```
-$ grep -niE 'image|vision|b64|base64|multimodal|image_url' src/glimpse/llm.py
-(no matches)
-```
-
-The code says so itself at `caption.py:383`:
+Stage 6 was two halves: a deterministic alignment that worked, and a captioning half that
+had **no vision client at all**. `llm.py` was text-only — `grep -niE 'image|vision|b64|base64|multimodal|image_url' src/glimpse/llm.py` returned nothing — and `caption.py` said so itself:
 
 ```
 captioning is NOT_CONFIGURED -- no vision client in this codebase
 ```
 
-and records `"caption": null, "caption_status": "NOT_CONFIGURED"` into the stage artefact.
+That string is gone. Stage 6 now builds an OpenAI-compatible message carrying the frame as
+a `data:` URI and calls the same `chat()` the text stages use; the transport was never the
+missing part, only the message shape and the configuration were.
 
-Consequence for MVP: the conspectus is written without knowing what was on the slides.
-Formulas that exist only on screen are absent from the note, and nothing downstream
-notices. Tracked as issue #67.
+**Verified live**, 2026-10-04, against `http://100.64.0.2:8317/v1` with
+`opencode-go/glm-5.3-flash`, on two real frames from lecture 1:
 
-Stage 5 is **not** open, despite `VLMEstimator` raising at `quality.py:521`. That class is
-one of three registered names in `resolve_estimator`; the default is `geometric`
-(`pipeline.py:245`), which is implemented and measured. `VLMEstimator` is dead code and
-should be deleted, not repaired.
+| frame | time | result |
+|---|---|---|
+| `f_0000000000.jpg` (53 KiB) | 1.5 s | `NO NEW INFORMATION` — a title screen with nothing the audio did not already carry |
+| `f_0000617096.jpg` (163 KiB) | 4.6 s | a full transcription of the references page: four numbered courses, the first literature entry, and the screen-share banner occluding a line |
+
+17 frames at that rate is roughly a minute of wall clock for the whole stage.
+
+The second caption also shows the provenance chain working: `served_model` came back as
+`glm-5.3-flash` while the requested id was `opencode-go/glm-5.3-flash`. Both are recorded,
+and the disagreement is visible rather than resolved silently (#61).
+
+### Failure behaviour, which changed deliberately
+
+The old code wrote `caption_status: NOT_CONFIGURED` into the artefact and exited 0. Now:
+
+| Situation | Behaviour |
+|---|---|
+| No vision endpoint | every frame marked `NO_ENDPOINT`, run **continues**, exit non-zero |
+| Endpoint configured but refusing | per-frame `ERROR` with the endpoint's message |
+| Every frame failed | exit 3, `DEPENDENCY_FAILED`, with the per-frame reasons |
+| Caption returned but empty | `EMPTY`, counted as a failure |
+
+The first row follows the contract stage 7 already has: `TemplateSynthesizer` exists so the
+pipeline runs end to end with no model configured, and stage 6 must not be the stage that
+breaks it. A note written without slide content is a worse note, not no note — but it is a
+worse note the run must say out loud.
+
+## Stage 5 is **not** open, despite what the code used to say
+
+`resolve_estimator` registered three names. `vlm` raised `NotConfiguredError` on both
+branches, so `GLIMPSE_BBOX_SOURCE=vlm` failed at the crop instead of being refused as the
+unknown name it is. It has been removed from the registry (#67): a vision bbox source is a
+real idea that is still unbuilt, and an unbuilt option should be absent rather than present
+and broken.
+
+Stage 5 itself works through `GeometricEstimator`, the default.
 
 ## Verification status
 
@@ -82,30 +103,27 @@ Three claims are load-bearing and currently unverified:
 3. **The output has not been compared against the hand-written baseline.** That comparison is
    the check that matters to the reader, and it has not been run.
 
-## Claims in the code that are currently false
+## Claims in the code that are now true
 
 `src/glimpse/stages.py` states:
 
 ```python
 IMPLEMENTED = 12
-#: Stage 0 is `doctor`, run by the CLI. Every stage D3 lists is built
-REMAINING_NOTE = "every stage D3 lists is built"
+REMAINING_NOTE = "every stage in ADR-0001 § The pipeline is built"
 ```
 
-Both claims are false today — stage 6 is half built. The module's own docstring gives the
-right rule and then breaks it:
+Both were false while stage 6 had no vision client, and both are true as of #67. The count in
+every progress line is an accurate claim again.
 
-> `[6/12] caption` on a six-stage pipeline is a claim about the software, not a formatting
-> preference.
+Two defects in those six lines were real and are fixed:
 
-Two defects in the same six lines:
+- **The citation was wrong.** The module said "every stage D3 lists". `D3` is about reading
+  frames from the source; the twelve-stage list is in ADR-0001 § *The pipeline*. An instance
+  of the unqualified `D<n>` problem in #66 where the number did not merely collide, it
+  pointed at the wrong decision.
+- **The module's own docstring gave the rule the constant broke** — "`[6/12] caption` on a
+  six-stage pipeline is a claim about the software, not a formatting preference."
 
-- **The count is a claim.** `IMPLEMENTED = 12` makes every progress line assert a stage
-  exists. It becomes true when #67 lands; it is a lie until then.
-- **The citation is wrong.** The 12-stage list is in ADR-0001 § *The pipeline*, not in
-  `D3`. `D3` is about reading frames from the source. This is an instance of the
-  unqualified `D<n>` problem in issue #66 — and here the number is not merely ambiguous,
-  it points at the wrong decision.
-
-Neither is fixed here. Changing `IMPLEMENTED` alters every progress line and the CLI's own
-output, and that is a decision to make when #67 lands, not before.
+What `IMPLEMENTED = 12` still is not: a measurement. It is a declaration. If a stage is ever
+opened again, this constant is what will keep claiming the stage is closed, and nothing in
+the test suite catches that.
