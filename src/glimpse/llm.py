@@ -263,6 +263,16 @@ def chat(
             # Connection refused, DNS failure, timeout. All transient as far as this code can
             # tell, and all indistinguishable to it -- so they are retried and then reported.
             last = EndpointError(f"{config.url} unreachable: {exc.reason}")
+        except TimeoutError as exc:
+            # **Not** a URLError, and this killed run 10. `urlopen` wraps connection failures
+            # in URLError, but a timeout while the endpoint is still sending *headers* is
+            # raised from `http.client.getresponse()` -- outside the block `urlopen` guards --
+            # so it arrives as a bare `TimeoutError` and escaped every handler above.
+            #
+            # The symptom was a Python traceback and a dead run, not exit 3. An endpoint that
+            # is installed and hanging is exactly what exit 3 means, so the contract the README
+            # states was broken by the one failure mode nobody writes a mock for.
+            last = EndpointError(f"{config.url} timed out after {config.timeout:g}s: {exc}")
         except json.JSONDecodeError as exc:
             # A body that is not JSON is a proxy or an error page, not a refusal. Retrying
             # cannot help and retrying a 500-shaped HTML page three times is worse.

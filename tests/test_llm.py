@@ -120,6 +120,74 @@ check(
     f"{reply_matching.model}",
 )
 
+# --- a timeout while the endpoint is sending headers -------------------------------
+#
+# `urlopen` wraps *connection* failures in URLError, but a timeout raised from
+# `http.client.getresponse()` -- which is outside the block `urlopen` guards -- arrives as a
+# bare `TimeoutError`. Run 10 died there: a traceback and a dead run where the contract says
+# exit 3, "a dependency is installed and failing".
+#
+# A real socket, not a mock, because the whole point is that the mock would not have raised
+# the same exception at the same place. The server accepts and then never writes a status line.
+import socket  # noqa: E402
+import threading  # noqa: E402
+import time as _time  # noqa: E402
+
+_server = socket.socket()
+_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+_server.bind(("127.0.0.1", 0))
+_server.listen(4)
+_stall_port = _server.getsockname()[1]
+
+
+def _stall_forever():
+    while True:
+        try:
+            conn, _ = _server.accept()
+        except OSError:
+            return
+        threading.Thread(
+            target=lambda c=conn: (c.recv(65536), _time.sleep(600)), daemon=True
+        ).start()
+
+
+threading.Thread(target=_stall_forever, daemon=True).start()
+
+_saved_retry, _saved_sleep = llm.RETRY_MAX, llm.RETRY_SLEEP
+llm.RETRY_MAX, llm.RETRY_SLEEP = 1, 0.0
+try:
+    _probe = llm.Config(endpoint=f"http://127.0.0.1:{_stall_port}", model="m", timeout=0.5)
+    _raised = None
+    _began = _time.monotonic()
+    try:
+        llm.chat([{"role": "user", "content": "hi"}], _probe)
+    except llm.EndpointError as _exc:
+        _raised = _exc
+    except BaseException as _exc:  # noqa: BLE001 -- the point is *what* escapes
+        _raised = _exc
+    check(
+        "a hung endpoint raises EndpointError, not a bare TimeoutError",
+        isinstance(_raised, llm.EndpointError),
+        f"{type(_raised).__name__}: {_raised}",
+    )
+    check(
+        "and the message names the endpoint and the timeout it waited",
+        isinstance(_raised, llm.EndpointError)
+        and str(_stall_port) in str(_raised)
+        and "timed out" in str(_raised),
+        str(_raised),
+    )
+    check(
+        # Retry exhaustion must still end in EndpointError. Before the fix this was the path
+        # that killed run 10, so the two must not be conflated with a retryable 5xx.
+        "it did not hang: the probe returned promptly",
+        _time.monotonic() - _began < 30.0,
+        f"{_time.monotonic() - _began:.1f}s",
+    )
+finally:
+    llm.RETRY_MAX, llm.RETRY_SLEEP = _saved_retry, _saved_sleep
+    _server.close()
+
 _env.restore(SAVED_ENV)
 
 print()
