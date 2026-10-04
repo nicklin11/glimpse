@@ -169,9 +169,29 @@ def check_stt() -> Check:
     return Check(name="stt", ok=True, detail=detail)
 
 
+def resolve_vault(explicit: str | Path | None = None) -> Path:
+    """The vault ADR-0001 D9 names, from the most specific source available.
+
+    Explicit argument, then `$GLIMPSE_VAULT`, then the default vault directory. The result
+    is a path, not a judgement about it: a vault that does not exist is still what the user
+    named, and whether that is fatal is `check_vault`'s question, not this function's.
+
+    This exists because the default lived only inside `check_vault`, so `glimpse doctor`
+    reported a vault that `glimpse process` never consulted. Measured on lecture 1,
+    2026-10-04: doctor named `~/Documents/obs_notes`, the process ran with `vault_path=None`
+    throughout, and stage 11 resolved no terms directory -- while `~/Documents/obs_notes/
+    mcs/_terms` existed with 34 term notes. Stage 12 had the same gap.
+
+    Two code paths, one documented default, and they disagreed.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    return Path(os.environ.get(VAULT_ENV) or DEFAULT_VAULT).expanduser()
+
+
 def check_vault() -> Check:
     """ADR-0001 D9: artefacts live in the vault, never in this repository."""
-    vault = Path(os.environ.get(VAULT_ENV, str(DEFAULT_VAULT))).expanduser()
+    vault = resolve_vault()
     if not vault.exists():
         return Check(
             name="vault",

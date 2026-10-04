@@ -26,6 +26,7 @@ from . import (
     audio,
     audit,
     caption,
+    deps,
     frames,
     lint,
     link,
@@ -379,7 +380,11 @@ def run(
     # would give a wikilink to a defect that stage 10 just declined to fix.
     began = time.monotonic()
     ldir2 = work.dir("link")
-    tdir = link.resolve_terms_dir(terms_dir, vault_path)
+    # The vault is resolved the same way `doctor` resolves it, not only when `--vault` was
+    # passed. Otherwise stage 11 looks for `mscs/_terms` under a `None` vault and reports
+    # "not configured" on a machine where `glimpse doctor` just named the directory that
+    # holds them.
+    tdir = link.resolve_terms_dir(terms_dir, deps.resolve_vault(vault_path))
     lreport2 = link.run(
         rdir / repair.REPAIRED_NOTE
         if (rdir / repair.REPAIRED_NOTE).is_file()

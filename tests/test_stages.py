@@ -3582,6 +3582,47 @@ check(
     "false positive",
 )
 
+# The vault default. `GLIMPSE_VAULT` and `DEFAULT_VAULT` used to live only inside
+# `check_vault`, so `doctor` reported a directory the run never consulted. Measured on
+# lecture 1: doctor named ~/Documents/obs_notes, the run carried `vault_path=None`, stage 11
+# resolved no terms directory, and stage 12 had the same gap -- on a machine where
+# `mscs/_terms` held 34 term notes.
+_saved_vault_env = os.environ.pop(gld.VAULT_ENV, None)
+try:
+    os.environ[gld.VAULT_ENV] = str(tmp / "vault-fixture")
+    (tmp / "vault-fixture").mkdir()
+    (tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME).mkdir(parents=True)
+    check(
+        "doctor and the run resolve the same vault",
+        gld.resolve_vault() == gld.Path(str(tmp / "vault-fixture")),
+        str(gld.resolve_vault()),
+    )
+    check(
+        "stage 11 finds the terms directory under the resolved vault, with no flag passed",
+        gllk.resolve_terms_dir(None, gld.resolve_vault())
+        == tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME,
+        str(gllk.resolve_terms_dir(None, gld.resolve_vault())),
+    )
+    check(
+        "an explicit --terms-dir still wins over the vault",
+        gllk.resolve_terms_dir(str(tmp), gld.resolve_vault()) == tmp,
+        "explicit argument was ignored",
+    )
+    check(
+        "an explicit --vault still wins over the environment",
+        gld.resolve_vault(str(tmp)) == tmp and gld.resolve_vault(str(tmp)) != gld.resolve_vault(),
+        "explicit argument was ignored",
+    )
+    os.environ.pop(gld.VAULT_ENV, None)
+    check(
+        "with nothing set, the default vault is used rather than None",
+        gld.resolve_vault() == gld.DEFAULT_VAULT,
+        str(gld.resolve_vault()),
+    )
+finally:
+    if _saved_vault_env is not None:
+        os.environ[gld.VAULT_ENV] = _saved_vault_env
+
 # Filler.
 bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
 check("filler is a warning, not an error", rules(note(*bodies), "style/filler"), "no finding")
