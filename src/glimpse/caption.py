@@ -568,9 +568,18 @@ def run(
     destination: Path,
     *,
     settings: Settings | None = None,
+    cache_source: Path | None = None,
     stream=None,
 ) -> tuple[Report, CaptionOutcome]:
     """Align, then caption.
+
+    `cache_source` is a previous run's `captions.json` to reuse from, and it is **not**
+    `destination`. The pipeline passes a scratch directory as `destination`, which is empty on
+    every run, so reading the cache from it yields nothing and every frame is re-called. Run 10
+    reported `0 from cache` immediately after run 9 produced the same 58 frames from the same
+    bytes -- the cache exists in the bundle and was never opened. `source: "cached"` in
+    `caption_trace` was unreachable in the real pipeline for the same reason `GATED_OUT` was
+    (#82), and fixing the wiring is what makes that field mean anything.
 
     Two failure modes, handled differently on purpose, because the pipeline already has a
     contract about which one stops a run.
@@ -614,7 +623,7 @@ def run(
         )
         out.write(f"         no vision endpoint: {exc}\n")
     else:
-        prior = load_cache(target, config.model)
+        prior = load_cache(cache_source or target, config.model)
         produced = caption_frames(report, images, config, cache=prior, stream=out)
         outcome = CaptionOutcome(
             captioned=len(produced),

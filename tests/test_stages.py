@@ -3493,6 +3493,50 @@ try:
         ),
         f"messages={len(_seen_messages)}",
     )
+    # `caption.run` writes into a scratch directory, so reading the cache from `destination`
+    # found nothing on every run. Run 10 reported `0 from cache` immediately after run 9 had
+    # captioned the same 58 frames from the same bytes. `source: "cached"` in `caption_trace`
+    # was unreachable in the real pipeline for the same reason `GATED_OUT` was (#82): the code
+    # existed, the unit test passed, and nothing ever supplied it with a real cache.
+    _bucket = ctmp / "cache_bucket"
+    _bucket.mkdir()
+    (_bucket / glcap.REPORT_NAME).write_text(
+        (vdest / glcap.REPORT_NAME).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _seen_messages.clear()
+    _warm = glcap.run(
+        cmanifest,
+        ctrans,
+        cquality,
+        cimg,
+        ctmp / "warm_out",
+        cache_source=_bucket / glcap.REPORT_NAME,
+        stream=io.StringIO(),
+    )
+    check(
+        "the cache is read from cache_source, not from the scratch destination",
+        _warm[1].reused == len(_warm[0].considered) and _warm[1].captioned == 0,
+        f"captioned={_warm[1].captioned} reused={_warm[1].reused} of {len(_warm[0].considered)}",
+    )
+    check(
+        "and a warm run issues no requests at all, which is the whole point of the cache",
+        len(_seen_messages) == 0,
+        f"{len(_seen_messages)} vision requests on a fully cached run",
+    )
+    check(
+        "a missing cache_source falls back to calling every frame, not to reusing nothing",
+        glcap.run(
+            cmanifest,
+            ctrans,
+            cquality,
+            cimg,
+            ctmp / "nocache_out",
+            cache_source=_bucket / "no-such-file.json",
+            stream=io.StringIO(),
+        )[1].reused
+        == 0,
+        "a missing cache_source still reported reuse",
+    )
     check(
         # The frames in this fixture all carry transcript, so the no-transcript branch of
         # `vision_message` is asserted on the helper rather than through a fixture that

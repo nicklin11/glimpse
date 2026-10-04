@@ -340,6 +340,9 @@ def run(
         artefacts[quality.REPORT_NAME],
         bundle.images,
         capdir,
+        # The bundle's copy from the previous run, not `capdir`: `capdir` is scratch and
+        # empty on every run, so caching from it re-called all 58 frames on run 10 (#83).
+        cache_source=bundle.root / caption.REPORT_NAME,
         stream=out,
     )
     for extra in (caption.REPORT_NAME, caption.PROVENANCE_NAME):
