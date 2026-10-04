@@ -14,23 +14,44 @@ The stage list and the exit-code table are in
 It does **not** mean the stage has been seen to work on a real lecture. See
 [Verification](#verification-status).
 
+**Stage fully working** — the stage ran on the 4520 s lecture and left its artefacts in a
+bundle, and the last column names where its provenance is. Every stage now records something,
+either a `*-provenance.json` or, for stage 4, `detect.json`. Stage 10 records none and makes no
+calls — it is deterministic, and a document asserting that would be an artefact about
+constants, not provenance.
+
+| stage | provenance | what it answers |
+|---|---|---|
+| 1, 2 | `source-provenance.json` | what the input was, and which ffmpeg measured it |
+| 3 | `stt-provenance.json` | backend, endpoint, every request field, digests of both transcripts |
+| 4 | `detect.json` | the full filter chain, every setting, the ffmpeg version |
+| 5–12 | `*-provenance.json` | the tool, its rule set, and what it changed |
+| 6 | per-frame `caption_trace` in `captions.json` | which model captioned this frame, tokens, timing, called or cached |
+| 7, 9 | `synth-`/`audit-llm-transcript.json` | every call: full messages, model, tokens, seconds, attempts |
+
+The three LLM stages keep different amounts on purpose. Stages 7 and 9 make 8 calls each and
+store the whole `messages` array — ~190 KiB per call for stage 9, which needs the section text
+to be auditable. Stage 6 makes 58 and stores a summary; the full form would be ~11 MiB per
+run, more than the rest of the bundle. Attribution still works: model, tokens, seconds,
+attempts, fingerprint, and whether the frame was called or taken from cache.
+
 ## The table
 
 | # | Stage | Code | Code present | Stage fully working |
 |---|---|---|---|---|
 | 0 | `doctor` | `deps.py`, `cli.py` | yes | yes — green with a real gateway |
-| 1 | `probe` | `probe.py` | yes | not yet verified on the lecture |
-| 2 | `audio` | `audio.py` | yes | not yet verified on the lecture |
-| 3 | `stt` | `stt/` — `core`, `backends`, `whispercpp`, `openai_compat` | yes | **yes** — 4520 s transcribed via the proxy |
-| 4 | `frames` | `frames.py` | yes | **yes** — 16 frames, deterministic across 3 runs |
-| 5 | `quality` | `quality.py` — `GeometricEstimator` | yes | **yes** — gate measured, threshold 300 |
-| 6 | `caption` | `caption.py`, `llm.py` | yes | **yes** — verified live against the gateway, 2026-10-04 |
-| 7 | `synth` | `synth.py` | yes | not yet verified on the lecture |
-| 8 | `lint` | `lint.py` | yes | not yet verified on the lecture |
-| 9 | `audit` | `audit.py` | yes | not yet verified on the lecture |
-| 10 | `repair` | `repair.py` | yes | not yet verified on the lecture |
-| 11 | `link` | `link.py` | yes | **yes** — `STAGE = 11`, ran in the 12-stage run |
-| 12 | `report` | `report.py` | yes | **yes** — caught a bug in itself, first real input |
+| 1 | `probe` | `probe.py` | yes | **yes** — `source-provenance.json` |
+| 2 | `audio` | `audio.py` | yes | **yes** — same document |
+| 3 | `stt` | `stt/` — `core`, `backends`, `whispercpp`, `openai_compat` | yes | **yes** — 4520 s, 4901 segments via the proxy |
+| 4 | `frames` | `frames.py` | yes | **yes** — 58 frames, deterministic |
+| 5 | `quality` | `quality.py` — `GeometricEstimator` | yes | **yes** — 57/58 pass, threshold 37320 |
+| 6 | `caption` | `caption.py`, `llm.py` | yes | **yes** — 58 frames, per-frame `caption_trace` |
+| 7 | `synth` | `synth.py` | yes | **yes** — 8/8 sections, 8 LLM calls recorded |
+| 8 | `lint` | `lint.py` | yes | **yes** — 9 checks, clean |
+| 9 | `audit` | `audit.py` | yes | **yes** — 4 rules, tier 2 ran, 8 LLM calls recorded |
+| 10 | `repair` | `repair.py` | yes | **yes** — deterministic, nothing to repair |
+| 11 | `link` | `link.py` | yes | **yes** — 34 terms, 96 links |
+| 12 | `report` | `report.py` | yes | **yes** — 8 verified, frames 58/58 |
 
 Stages 7–10 and 1–2 are not "broken" or "missing". They are written, imported by
 `pipeline.run`, and covered by `tests/test_stages.py`. What they lack is a **verified run
@@ -106,22 +127,30 @@ introduced them also introduced writes. Without the pin, running the suite creat
 `audio.wav`, `transcript.txt`, `transcript.json` and `transcript.raw.json` into
 `~/Documents/obs_notes/glimpse/`. `GLIMPSE_SETTINGS` also belongs in the CI scrub list.
 
-**3. Compared against the hand-written baseline.** Run 3's `note.linked.md` against
-`Лекция 1. 01.10.26.md`:
+**3. Compared against the hand-written baseline.** Run 7's `note.linked.md` against
+`Лекция 1. 01.10.26.md` (64150 bytes), re-measured rather than carried forward:
 
 | | baseline | generated |
 |---|---:|---:|
-| words | 4841 | 3961 |
+| bytes | 64150 | 50903 |
+| words | 4841 | 3808 |
 | `## N.` sections | 8 | 8 |
 | unnumbered `##` | 1 | 0 |
-| wikilinks | 159 | 95 |
-| display `$$..$$` | 10 | 4 |
-| inline `$..$` | 122 | 57 |
+| wikilinks | 159 | 96 |
+| display `$$..$$` | 10 | 6 |
+| inline `$..$` | 122 | 51 |
 | tables (rows) | 90 | **0** |
-| `### N.M` subsections | 18 | 0 |
+| `### N.M` subsections | 18 | **0** |
+| `[неразборчиво]` | 3 | 18 |
 
-The structural gaps that remain belong to the synthesizer skill, not the pipeline, and are
-recorded in #74 with the measurements.
+The section skeleton matches: 8 `## N.` headings either way. The two structural gaps belong
+to the synthesizer skill, not the pipeline, and are recorded in #74 with the measurements.
+They are also the user's explicit call — "оставить, записать как issue" — so the pipeline
+does not paper over them.
+
+`[неразборчиво]` at 18 against 3 is a stage-3 transcription artefact, not a synthesis one:
+run 6's audit flagged the contradiction, where a marker appeared inside a span the transcript
+renders in full. #49 is the underlying measurement.
 
 ## Where the note is written
 
