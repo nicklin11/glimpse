@@ -91,17 +91,51 @@ Stage 5 itself works through `GeometricEstimator`, the default.
 
 ## Verification status
 
-Three claims are load-bearing and currently unverified:
+**1. A full 12-stage run including stage 6.** Done, repeatedly. Run 3 on
+`1_lecture_OCS.mp4` (4520 s, AV1 1080p): 58 frames detected and gated, 58 captioned with 0
+failures, note 53.5 kB, lint `9 checks, 0 errors, 0 warnings`, stage 12
+`8 verified, 0 optional absent, frames 58/58`, exit 0 in 1935.6 s.
 
-1. **A full 12-stage run over the real lecture has not completed successfully.** ADR-0001's
-   amendment of 2026-10-04 records a 12-stage run, but stage 6 was a no-op in it and stage 3
-   was served differently. A run that includes stage 6 has not happened.
-2. **`tests/test_stages.py` and `tests/test_doctor.py` fail when `GLIMPSE_*` is exported**
-   into the environment. Reproduced on pristine `main` — pre-existing, not a regression,
-   filed as issue #63. The suites are not hermetic, which means "the tests pass" currently
-   means "the tests pass in a clean shell".
-3. **The output has not been compared against the hand-written baseline.** That comparison is
-   the check that matters to the reader, and it has not been run.
+**2. The suites are still not hermetic.** `tests/test_stages.py` and `tests/test_doctor.py`
+read ambient `GLIMPSE_*` and fail when those are exported. Pre-existing, reproduced on
+pristine `main`, filed as #63. "The tests pass" still means "the tests pass in a clean shell".
+
+Two variables are pinned by this work rather than deferred to #63, because the changes that
+introduced them also introduced writes. Without the pin, running the suite created
+`~/.config/glimpse/settings.toml` holding the developer's real vault path, and wrote
+`audio.wav`, `transcript.txt`, `transcript.json` and `transcript.raw.json` into
+`~/Documents/obs_notes/glimpse/`. `GLIMPSE_SETTINGS` also belongs in the CI scrub list.
+
+**3. Compared against the hand-written baseline.** Run 3's `note.linked.md` against
+`Лекция 1. 01.10.26.md`:
+
+| | baseline | generated |
+|---|---:|---:|
+| words | 4841 | 3961 |
+| `## N.` sections | 8 | 8 |
+| unnumbered `##` | 1 | 0 |
+| wikilinks | 159 | 95 |
+| display `$$..$$` | 10 | 4 |
+| inline `$..$` | 122 | 57 |
+| tables (rows) | 90 | **0** |
+| `### N.M` subsections | 18 | 0 |
+
+The structural gaps that remain belong to the synthesizer skill, not the pipeline, and are
+recorded in #74 with the measurements.
+
+## Where the note is written
+
+`glimpse process` exports into the vault by default, into `<vault>/glimpse/`. The vault
+resolves `--vault-path` → `$GLIMPSE_VAULT` → the `vault` key in
+`$XDG_CONFIG_HOME/glimpse/settings.toml` → `~/Documents/obs_notes`, and the settings file is
+written on a first run with nothing configured. Before this, a run with no flag wrote nothing
+to the vault at all and left the note in `~/.local/state/glimpse/` (#71).
+
+The subdirectory is not cosmetic: a bundle is ~170 files, 25 in the bundle root and 145 under
+`images/`, and the vault root is where the user's own notes live. A vault path that does not
+exist is reported and named, never created — `export_to_vault` ends in `mkdir(parents=True)`,
+so exporting to a typo would materialise an empty directory that `glimpse doctor` then
+certifies as healthy.
 
 ## Claims in the code that are now true
 

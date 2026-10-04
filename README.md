@@ -120,6 +120,9 @@ requests for lectures longer than about 65 minutes. See the 2026-10-04 amendment
 | `GLIMPSE_LLM_MODEL` | model id sent in the request |
 | `GLIMPSE_LLM_KEY` | optional; unset means no `Authorization` header |
 | `GLIMPSE_VLM_ENDPOINT`, `GLIMPSE_VLM_MODEL`, `GLIMPSE_VLM_KEY` | stage 6 frame captioning. Each falls back to its `GLIMPSE_LLM_*` counterpart, so a single model serving both needs two variables, not four |
+| `GLIMPSE_VAULT` | the Obsidian vault to export into; see [Export](#export-to-an-obsidian-vault) |
+| `GLIMPSE_SETTINGS` | the settings *file*, overriding `$XDG_CONFIG_HOME/glimpse/settings.toml`. Named for the file, not a directory — also how the test suites keep themselves out of `$HOME` |
+| `GLIMPSE_TERMS_DIR` | the term vocabulary for stage 11; defaults to `<vault>/mscs/_terms` |
 
 `glimpse doctor` prints which backend was selected and whether it answers.
 
@@ -226,12 +229,36 @@ removed when the run succeeds. `--keep-workdir` keeps it.
 
 ## Export to an Obsidian vault
 
+The note lands in your vault by default. Nothing to pass:
+
 ```
-glimpse process lecture.webm --vault-path ~/Documents/obs_notes/course/lecture-1
+glimpse process lecture.webm
+```
+
+It goes to `<vault>/glimpse/`, not the vault root — a lecture bundle is ~170 files, 145 of
+them frames under `images/`, and the vault root is where your own notes live.
+
+**Where the vault comes from**, most specific first:
+
+| | how |
+|---|---|
+| 1 | `--vault-path DIR` |
+| 2 | `$GLIMPSE_VAULT` |
+| 3 | the `vault` key in `$XDG_CONFIG_HOME/glimpse/settings.toml` |
+| 4 | `~/Documents/obs_notes` |
+
+On a first run with nothing configured, the vault that was used is written to the settings
+file and the path is printed. To change it later, edit that file, or set `$GLIMPSE_VAULT`.
+
+```
+--vault-subdir REL     where inside the vault, relative to it (default: glimpse/)
+--no-vault-export      finish the bundle without copying it anywhere
 ```
 
 The vault is a **copy target**, not the output root. Every file is verified after copying;
-one that lands short is an error rather than a silent success. Your bundle is left intact.
+one that lands short is an error rather than a silent success. Your bundle is left intact. A
+vault path that does not exist is reported and named, not created — otherwise a typo
+materialises an empty directory that `glimpse doctor` then certifies as healthy.
 
 ## What one lecture costs
 
