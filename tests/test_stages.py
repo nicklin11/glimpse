@@ -1375,35 +1375,82 @@ check("--workdir error raises no traceback", "Traceback" not in err.getvalue(), 
 
 
 # --- 8. stage 4: frames, two passes, and the zero-frame trap (ADR-0001 D3) --------------
-# The filter string is the port's contract with the script it replaces: if this changes,
-# the manifest changes, and the manifest is what stage 7 binds captions by.
+# The filter string used to be a byte-for-byte port of lecture-frames. It no longer can be,
+# and the reason is a defect in the port rather than a preference (#70): `mpdecimate` ran
+# before `select`, so it dropped every frame of a static stretch and `select`'s `max_gap`
+# guarantee never saw them. Measured worst gap on lecture 1: 580.9 s as shipped, against a
+# field documented as "guarantee a frame at least this often".
 check(
-    "the detector filter is byte-identical to lecture-frames",
-    glfr.detect_filter(glfr.Settings())
-    == "scale=640:-2:flags=lanczos,boxblur=16:4,mpdecimate=hi=64*60:lo=64*30:frac=0.1,"
-    "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)'",
+    "the detector selects on change and on gap in ONE expression",
+    glfr.detect_filter(glfr.Settings()) == "scale=640:-2:flags=lanczos,boxblur=16:4,"
+    "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)+gt(scene\\,0.3)'",
+    glfr.detect_filter(glfr.Settings()),
+)
+check(
+    # The specific failure: two chained filters cannot guarantee anything about the output
+    # of the first one, because the first one is free to emit nothing.
+    "no filter precedes select, so none can starve it",
+    "mpdecimate" not in glfr.detect_filter(glfr.Settings()),
     glfr.detect_filter(glfr.Settings()),
 )
 check(
     "the detector keeps the isnan guard",
     "isnan(prev_selected_t)" in glfr.detect_filter(glfr.Settings()),
 )
-# mpdecimate thresholds are absolute sums over 8x8 blocks, so a blur radius tuned at
-# 640 px is wrong elsewhere. The port scales it; the script did too.
+check(
+    # Reordering was measured too, and it is worse: select then mpdecimate drops exactly
+    # the frames select guaranteed. 1080 s worst gap, against 580.9 s before.
+    "the change threshold is not a separate filter either",
+    "mpdecimate" not in glfr.detect_filter(glfr.Settings())
+    and "mpdecimate" not in glfr.detect_filter(glfr.Settings(mode="interval")),
+    glfr.detect_filter(glfr.Settings()),
+)
+# The blur radius is a scene-detection aid now, but it still scales with detector width.
 check(
     "blur radius scales with detector width",
     "boxblur=32:8" in glfr.detect_filter(glfr.Settings(detect_width=1280)),
     glfr.detect_filter(glfr.Settings(detect_width=1280)),
 )
 check(
-    "interval mode drops mpdecimate entirely",
+    "interval mode drops the selector entirely",
     glfr.detect_filter(glfr.Settings(mode="interval")) == "scale=640:-2:flags=lanczos,fps=1/30",
     glfr.detect_filter(glfr.Settings(mode="interval")),
 )
 check(
-    "max_gap=0 removes the select guard",
-    "select=" not in glfr.detect_filter(glfr.Settings(max_gap=0)),
+    "max_gap=0 keeps the change condition but drops the gap guard",
+    "gte(t-prev_selected_t" not in glfr.detect_filter(glfr.Settings(max_gap=0))
+    and "gt(scene" in glfr.detect_filter(glfr.Settings(max_gap=0)),
     glfr.detect_filter(glfr.Settings(max_gap=0)),
+)
+_ff_argv: list = []
+_real_run_ffmpeg = glfr._run_ffmpeg
+glfr._run_ffmpeg = lambda args, **kw: _ff_argv.append(args)
+try:
+    glfr.detect(src)
+    glfr.extract_at(src, 1000, tmp)
+    detect_argv, extract_argv = _ff_argv
+finally:
+    glfr._run_ffmpeg = _real_run_ffmpeg
+check(
+    # `-frame_pts 1` writes the PTS in the output timebase, which after
+    # `-fps_mode passthrough` is the input frame rate, not milliseconds. Only pass 1 reads
+    # a timestamp out of ffmpeg at all -- pass 2 seeks to a number this pipeline already
+    # has and names its own output -- so pass 1 is the one that must pin the timebase.
+    # Without it every number is 30x small on a 30 fps lecture, and pass 2 then seeks into
+    # the first thirtieth of the video (#70).
+    "pass 1 pins the output timebase to milliseconds",
+    "-enc_time_base" in detect_argv and "1/1000" in detect_argv,
+    f"detect={detect_argv}",
+)
+check(
+    # The consequence that made the bug invisible: pass 2's seek and pass 1's filenames are
+    # the only link between a frame and a time, and both read the same number. Asserting
+    # the seek is derived from `pts_ms` and not from a second decode keeps them in step.
+    "pass 2 seeks to the timestamp it is given and does not re-derive one",
+    "-ss" in extract_argv
+    and extract_argv[extract_argv.index("-ss") + 1] == "1.000"
+    and "-frame_pts" not in extract_argv,
+    f"extract={extract_argv}",
 )
 check("timestamps format with centiseconds", glfr.hhmmss(4_396_000) == "01:13:16.00")
 # Centiseconds truncate: 500 ms is .05, not .50 -- the same floor the original used.

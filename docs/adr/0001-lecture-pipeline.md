@@ -102,8 +102,9 @@ looks like success.
 
 Two passes:
 
-1. `detect()` — decode at reduced width (640 px), blur, `mpdecimate`, `select` on
-   change. Blur here is **only** a detector pre-filter.
+1. `detect()` — decode at reduced width (640 px), blur, then a **single** `select` carrying
+   both selection conditions: `isnan(prev_selected_t) + gte(t-prev_selected_t, GAP) +
+   gt(scene, TH)`. Blur here is **only** a detector pre-filter.
 2. `extract_at()` — seek the original source per timestamp, emit a single 1600 px
    frame at q=2.
 
@@ -121,6 +122,43 @@ the kind that recur:
 
 A 27-minute run that produced zero frames exited successfully. Any pipeline that
 reports success must verify artefact counts on disk, not the exit code.
+
+**Amendment 2026-10-04 — `mpdecimate` is gone, and it was hiding the timestamps.**
+
+The `mpdecimate` step was **removed**, not retuned, and the timestamps were **wrong by a
+factor of 30**. Both were found by running the real lecture end to end for the first time
+with a working stage 6 and comparing the note against the baseline (#70).
+
+`-frame_pts 1` writes the frame's PTS **in the output timebase**. After `-fps_mode
+passthrough` that timebase is the input's frame rate — `1/30` for this lecture — so
+`d_0000135437.jpg` was frame 135437, not 135437 ms. `detect()`'s docstring promised
+milliseconds and returned frame indices. `extract_at()` then sought to `index/1000`
+seconds, so all 16 frames came from the first 135 seconds of a 4520 second lecture — the
+conferencing screen, before sharing started. `quality.json` carried the fingerprint:
+14 of 16 frames OCR to exactly `19 chars`. Fixed with `-enc_time_base 1/1000`.
+
+Separately, `mpdecimate` ran **before** `select`, so it dropped every frame of a static
+stretch and `select`'s `max_gap` guarantee never saw them. `max_gap` was documented as
+"guarantee a frame at least this often" and delivered 580.9 s. Reordering is worse, not
+better — `select` then `mpdecimate` measured 1080 s, because `mpdecimate` then discards
+exactly the frames `select` guaranteed. Two chained filters cannot guarantee anything
+about the first one's output.
+
+So the dedup condition moved **inside** the same `select` expression as the gap condition,
+where neither can suppress the other:
+
+```
+select='isnan(prev_selected_t)+gte(t-prev_selected_t\,180)+gt(scene\,0.3)'
+```
+
+Measured on lecture 1: 58 frames, worst gap 180.0 s. The guarantee now holds, and 58 frames
+across 4520 s is what "covering the lecture" actually costs. `Settings.hi` and `Settings.lo`
+became dead knobs and `Settings.scene` replaced them; `blur` remains, now as a
+scene-detection aid rather than a dedup aid.
+
+The lesson generalises past this stage: **the `mpdecimate` step was what made the wrong
+timestamps survivable.** Both bugs produced a plausible-looking bundle — 16 frames, a
+manifest, a quality report, exit 0 — so nothing downstream had a reason to doubt them.
 
 ### D4 — Frame quality is gated, and the fix is crop, not a better model
 
