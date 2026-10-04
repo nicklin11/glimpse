@@ -2088,7 +2088,33 @@ b_export.record("note", tmp / "toexport" / "note.md")
 b_export.record("frame0", tmp / "toexport" / "images" / "f_0001.jpg")
 vault = tmp / "vault"
 copied = b_export.export_to_vault(vault)
-check("the export copied every artefact", len(copied) == 2, str(len(copied)))
+check(
+    # Frames are 84% of the bytes -- 50 of 59 MiB on lecture 1 -- and the note refers to
+    # none of them: zero `![[...]]` embeds, zero frame filenames, only time ranges like
+    # `### Фрагмент 1 (0–414 с)`. Copying them by default put 50 MiB per lecture into a
+    # directory Obsidian indexes and obsidian-git synchronises, for files nothing reads.
+    "images are not exported by default",
+    not (vault / "glimpse" / "images").exists(),
+    str(sorted(str(p.relative_to(vault)) for p in vault.rglob("*"))),
+)
+check(
+    "the note is exported even though the frames are not",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
+    str(sorted(q.name for q in vault.iterdir())),
+)
+check(
+    "--vault-images copies the frames too",
+    len(b_export.export_to_vault(vault, images=True)) == 2
+    and (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    str(copied),
+)
+b_export2 = glb.Bundle.open(src, output_dir=str(tmp / "toexport2"))
+(tmp / "toexport2" / "note.md").write_text("# lecture\n")
+b_export2.record("note", tmp / "toexport2" / "note.md")
+check(
+    "a bundle with no frames exports everything it has", len(b_export2.export_to_vault(vault)) == 1
+)
+copied = b_export2.export_to_vault(vault)
 check(
     # The subdir is not cosmetic. A lecture bundle is ~170 files; exporting into the vault
     # root puts 25 of them beside the user's own notes and creates `images/` next to them.
@@ -2108,8 +2134,9 @@ check(
 )
 check(
     "an explicit subdir is honoured",
-    len(b_export.export_to_vault(vault, subdir="mscs/Курс")) == 2
-    and (vault / "mscs/Курс/note.md").is_file(),
+    len(b_export.export_to_vault(vault, subdir="mscs/Курс", images=True)) == 2
+    and (vault / "mscs/Курс/note.md").is_file()
+    and (vault / "mscs/Курс/images/f_0001.jpg").is_file(),
     str(sorted(str(p.relative_to(vault)) for p in vault.rglob("note.md"))),
 )
 

@@ -235,8 +235,11 @@ The note lands in your vault by default. Nothing to pass:
 glimpse process lecture.webm
 ```
 
-It goes to `<vault>/glimpse/`, not the vault root — a lecture bundle is ~170 files, 145 of
-them frames under `images/`, and the vault root is where your own notes live.
+It goes to `<vault>/glimpse/`, not the vault root — and without `images/`, which is most of
+the bytes. A lecture bundle is 59 MiB, 50 of it frames, and the note refers to no frame at
+all: it cites time ranges, not files. So the frames stay in the bundle, where the audit and a
+later re-run look for them, and the vault gets 9.5 MiB of note, transcript and reports.
+`--vault-images` copies them too.
 
 **Where the vault comes from**, most specific first:
 
@@ -252,6 +255,7 @@ file and the path is printed. To change it later, edit that file, or set `$GLIMP
 
 ```
 --vault-subdir REL     where inside the vault, relative to it (default: glimpse/)
+--vault-images         also copy images/; off by default, see above
 --no-vault-export      finish the bundle without copying it anywhere
 ```
 

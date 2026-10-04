@@ -240,7 +240,9 @@ def _process(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
             try:
-                copied = result.bundle.export_to_vault(vault, subdir=subdir)
+                copied = result.bundle.export_to_vault(
+                    vault, subdir=subdir, images=getattr(args, "vault_images", False)
+                )
             except OSError as exc:
                 print(f"glimpse: vault export failed: {exc}", file=sys.stderr)
                 print(
@@ -507,6 +509,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-vault-export",
         action="store_true",
         help="finish the bundle without copying it into the vault",
+    )
+    p_process.add_argument(
+        "--vault-images",
+        action="store_true",
+        help=(
+            "also copy images/ into the vault. Off by default: the frames are most of the "
+            "bytes (50 of 59 MiB on lecture 1) and the note refers to none of them, so they "
+            "stay in the bundle as the pipeline's evidence"
+        ),
     )
     p_process.add_argument(
         "--vault-subdir",
