@@ -321,6 +321,15 @@ def run(
     # Deterministic. Runs on the frames stage 5 passed and the transcript stage 3 wrote;
     # there is no model in the alignment half, by design, so that half can be checked against
     # the artefact rather than believed. The captioning half does call one.
+    #
+    # The quality report comes from `artefacts`, not `qdir`, and that is the whole fix:
+    # `Bundle.publish` *moves*, so the work-dir path stage 5 wrote is dangling by the time
+    # stage 6 reads it. `align` treats a missing file as "no gate information", which makes
+    # the guard `if alignment.quality_gate and ...` vacuously false -- stage 5's gate became a
+    # no-op in the real pipeline, and all 58 frames were captioned including the one stage 5
+    # rejected. `publish` returns the source path unchanged when it does not exist rather than
+    # raising, so no run ever reported it. The signature in the artefact was `quality_gate: ""`
+    # on all 58 frames where stage 5 had recorded one FAIL. #82.
     began = time.monotonic()
     capdir = work.dir("caption")
     creport, coutcome = caption.run(
@@ -328,7 +337,7 @@ def run(
         # paths are dangling -- the same move-then-read ordering bug stage 5 had.
         artefacts["manifest"],
         paths["json"],
-        qdir / quality.REPORT_NAME,
+        artefacts[quality.REPORT_NAME],
         bundle.images,
         capdir,
         stream=out,

@@ -2419,14 +2419,42 @@ def fake_frames_run(source, frames_dir):
         path = Path(frames_dir) / f"f_{i}.png"
         path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
         made.append(path)
-    (Path(frames_dir) / "manifest.tsv").write_text("t\tstate\n0\tA\n")
+    # A real manifest, not `t\tstate\n0\tA\n`. `read_manifest` skips the first line and
+    # parses `pts_ms` from the third column, so that stub yielded zero frames and every
+    # downstream assertion about gating was vacuously true.
+    (Path(frames_dir) / "manifest.tsv").write_text(
+        "pts_ms\ttime\tfile\n"
+        + "".join(f"{i * 1000}\t00:00:0{i}.00\t{made[i].name}\n" for i in range(2))
+    )
     return Path(frames_dir) / "manifest.tsv", made
 
 
 def spy_quality_run(frames, work_dir, *, settings=None, bbox_source="geometric", stream=None):
     seen["paths"] = list(frames)
     seen["missing"] = [f.name for f in frames if not Path(f).is_file()]
-    return glq.Report(frames=[])
+    # One real FAIL, not an empty report. Returning `frames=[]` here is why the stage-5 gate
+    # being a no-op (#82) was invisible to this test: with no frames there is no gate verdict
+    # to lose, so the wiring could be wrong in either direction and the suite stayed green.
+    # `f_0.png` passes so it reaches the images dir; `f_1.png` fails so it must not.
+    return glq.Report(
+        frames=[
+            glq.FrameQuality(
+                name=Path(f).name,
+                source=Path(f),
+                passed=(i == 0),
+                mege=100.0,
+                threshold=50.0,
+                crop_state="cropped",
+                content_type="white_document",
+                bbox_source="geometric",
+                edges=4,
+                luma_mean=200.0,
+                luma_std=10.0,
+            )
+            for i, f in enumerate(frames)
+        ],
+        threshold=50.0,
+    )
 
 
 # Only the I/O stages are stubbed. pipeline.run itself runs for real, because the ordering
@@ -2516,6 +2544,40 @@ check(
     "the frames still reach the bundle afterwards",
     len(list((tmp / "order_bundle" / "images").glob("*.png"))) == 2,
     str(sorted(q.name for q in (tmp / "order_bundle" / "images").glob("*"))),
+)
+
+# The stage-5 gate was a no-op in the real pipeline (#82). `Bundle.publish` moves, so the
+# work-dir quality.json stage 5 wrote was dangling by the time stage 6 read it; `align` treats a
+# missing file as "no gate information", which makes `if alignment.quality_gate and ...` false
+# for every frame, so nothing was ever gated out. `publish` returns a non-existent source path
+# unchanged rather than raising, so no run reported it.
+#
+# Read the *published* captions.json rather than calling `align()` directly. Calling `align()`
+# with a quality file that exists is what the rest of this file does, and it passed throughout
+# while the wiring was broken.
+_order_caps = json.loads((tmp / "order_bundle" / "captions.json").read_text(encoding="utf-8"))
+_order_by_name = {a["frame"]: a for a in _order_caps["alignments"]}
+check(
+    "the gate verdict survives into the published captions.json",
+    _order_by_name.get("f_1.png", {}).get("quality_gate") == "FAIL",
+    str({k: v.get("quality_gate") for k, v in _order_by_name.items()}),
+)
+check(
+    "and the frame stage 5 rejected is GATED_OUT, not captioned anyway",
+    _order_by_name.get("f_1.png", {}).get("caption_status") == "GATED_OUT",
+    str({k: v.get("caption_status") for k, v in _order_by_name.items()}),
+)
+check(
+    # Empty strings on all 58 frames is the exact signature of the bug, and a weaker version of
+    # this check is what would have caught it: `""` is falsy, so the guard silently passed.
+    "no frame carries an empty gate while stage 5 recorded one",
+    all(a["quality_gate"] for a in _order_caps["alignments"]),
+    str([a["frame"] for a in _order_caps["alignments"] if not a["quality_gate"]]),
+)
+check(
+    "the frame stage 5 passed still carries PASS",
+    _order_by_name.get("f_0.png", {}).get("quality_gate") == "PASS",
+    str(_order_by_name.get("f_0.png", {}).get("quality_gate")),
 )
 
 # --- 11. stage 5 quality: MEGE, the full-frame fallback, and a derived gate ------------
