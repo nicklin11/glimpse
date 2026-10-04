@@ -69,10 +69,10 @@ import glimpse.stt.whispercpp as glwsc  # noqa: E402
 gld.shutil.which = fake_which
 gld.subprocess.run = fake_run
 
-# The gateway must never be probed against the real network in this test, and neither
-# must the STT endpoint. Before this pin, `doctor` reached whatever was listening on
-# 127.0.0.1:10302, so the suite's verdict depended on container state.
-os.environ.pop(gld.GATEWAY_ENV, None)
+# The model endpoint must never be probed against the real network in this test, and
+# neither must the STT endpoint. Before this pin, `doctor` reached whatever was listening
+# on 127.0.0.1:10302, so the suite's verdict depended on container state.
+os.environ.pop(gld.LLM_ENV, None)
 real_stt_backend = os.environ.pop(gld_stt.ENV_BACKEND, None)
 os.environ[gld_stt.ENV_BACKEND] = "whispercpp"
 real_stt_urlopen = glwsc.urllib.request.urlopen
@@ -120,13 +120,16 @@ text = out.getvalue()
 check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
 check(
-    "every dependency is listed",
-    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "gateway", "vault")),
+    # `gateway` was here until #68. The list is what `doctor` exists to be: an
+    # environment report naming a dependency the pipeline does not have is the same
+    # failure as omitting one it does.
+    "every dependency is listed, and none that does not exist",
+    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "llm", "vault")) and "gateway" not in text,
     text,
 )
 check("resolved path is reported", "/usr/bin/ffmpeg" in text, text)
 check("version is reported", "ffmpeg version 7.1.1-1" in text, text)
-check("unconfigured gateway is skipped, not failed", "[skip]" in text, text)
+check("an unconfigured model endpoint is skipped, not failed", "[skip]" in text, text)
 
 # --- 2. the STT endpoint is unreachable -> 3, named, with remediation ---------
 # This replaced the old "shipboard is not on PATH -> exit 2" case. A PATH check could not
@@ -244,13 +247,19 @@ def boom_urlopen(url, timeout=None):
 
 real_urlopen = gld.urllib.request.urlopen
 gld.urllib.request.urlopen = boom_urlopen
-os.environ[gld.GATEWAY_ENV] = "http://127.0.0.1:1/inference"
-c = gld.check_gateway()
-check("unreachable gateway -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code}")
-check("unreachable gateway explains itself", "unreachable" in c.detail, c.detail)
-check("unreachable gateway has a remediation", bool(c.remediation), str(c.remediation))
+# This checked `check_gateway()` against `GLIMPSE_GATEWAY_URL`, a variable nothing wrote.
+# The endpoint the pipeline actually uses is `GLIMPSE_LLM_ENDPOINT`, and `check_llm` is
+# the check that observes it -- so the unreachability assertions moved onto the check that
+# is real (#68). Same behaviour under test, no phantom dependency.
+os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
+os.environ[gld.LLM_MODEL_ENV] = "some/model"
+c = gld.check_llm()
+check("unreachable endpoint -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code}")
+check("unreachable endpoint explains itself", "unreachable" in c.detail, c.detail)
+check("unreachable endpoint has a remediation", bool(c.remediation), str(c.remediation))
 gld.urllib.request.urlopen = real_urlopen
-os.environ.pop(gld.GATEWAY_ENV, None)
+os.environ.pop(gld.LLM_ENV, None)
+os.environ.pop(gld.LLM_MODEL_ENV, None)
 
 # --- 7. a tool with no --version must not report usage text AS a version -----
 # shipboard has no --version flag; `shipboard --help` prints argparse usage.

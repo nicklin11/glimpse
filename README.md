@@ -116,9 +116,16 @@ requests for lectures longer than about 65 minutes. See the 2026-10-04 amendment
 | `GLIMPSE_WHISPERCPP_URL` | default `http://127.0.0.1:10302` |
 | `GLIMPSE_WHISPERCPP_LANGUAGE` | pin a language; unset means autodetect |
 | `GLIMPSE_OPENAI_KEY`, `GLIMPSE_OPENAI_MODEL` | for a hosted endpoint |
-| `GLIMPSE_GATEWAY_URL` | vision model for stage 5, when that stage exists |
+| `GLIMPSE_LLM_ENDPOINT` | OpenAI-compatible base URL for synthesis, audit and repair |
+| `GLIMPSE_LLM_MODEL` | model id sent in the request |
+| `GLIMPSE_LLM_KEY` | optional; unset means no `Authorization` header |
+| `GLIMPSE_VLM_ENDPOINT`, `GLIMPSE_VLM_MODEL`, `GLIMPSE_VLM_KEY` | stage 6 frame captioning. Each falls back to its `GLIMPSE_LLM_*` counterpart, so a single model serving both needs two variables, not four |
 
 `glimpse doctor` prints which backend was selected and whether it answers.
+
+There is no `GLIMPSE_GATEWAY_URL`. It was documented here and read by a preflight check
+that reported the model endpoint under the name `gateway`, so every successful run opened
+with a false "gateway is unavailable" line (#68).
 
 ### whisper.cpp
 

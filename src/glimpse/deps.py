@@ -22,7 +22,6 @@ from pathlib import Path
 from . import exitcodes as ec
 from . import runner, stt
 
-GATEWAY_ENV = "GLIMPSE_GATEWAY_URL"
 VAULT_ENV = "GLIMPSE_VAULT"
 LLM_ENV = "GLIMPSE_LLM_ENDPOINT"
 LLM_MODEL_ENV = "GLIMPSE_LLM_MODEL"
@@ -211,47 +210,6 @@ def check_vault() -> Check:
     )
 
 
-def check_gateway() -> Check:
-    """ADR-0001 D8: the vision/audit backend. Unconfigured is not a failure."""
-    url = os.environ.get(GATEWAY_ENV, "").strip()
-    if not url:
-        # ok=False because nothing was actually verified; fatal=False because an
-        # unconfigured gateway is a state, not a fault. `failed` requires both.
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"not configured (set {GATEWAY_ENV} to enable the vision/audit stages)",
-            version="skipped",
-            fatal=False,
-        )
-    try:
-        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT) as resp:
-            code = resp.status
-    except urllib.error.HTTPError as exc:
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"{url} returned HTTP {exc.code}",
-            remediation="check the gateway is up and the model name is declared",
-            code=ec.DEPENDENCY_FAILED,
-        )
-    except (urllib.error.URLError, OSError) as exc:
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"{url} unreachable: {exc}",
-            remediation="check the gateway is running and reachable from this host",
-            code=ec.DEPENDENCY_FAILED,
-        )
-    return Check(
-        name="gateway",
-        ok=True,
-        detail="reachable",
-        path=url,
-        version=f"HTTP {code}",
-    )
-
-
 def check_numpy() -> Check:
     """Stage 5's array backend. A declared dependency, so absence is a packaging fault."""
     try:
@@ -325,16 +283,23 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     that dependency" are different questions. `glimpse process` stages 0-4 use
     ffmpeg, ffprobe and an STT endpoint, and write nothing outside the managed work
     dir, so refusing to transcribe because the *vault* is missing -- a directory
-    stage 12 will need in a later milestone -- is the wrong answer, and so is
-    refusing because the stage-5 vision gateway is offline. Without this the
-    preflight gate is broader than the run it guards.
+    stage 12 will need -- is the wrong answer. Without this the preflight gate is
+    broader than the run it guards.
     """
+    # There is no `check_gateway`. It read `GLIMPSE_GATEWAY_URL`, a name nothing in
+    # the codebase ever wrote and nothing in the docs ever told a user to set, and it
+    # reported the *model* gateway under the name `gateway` while the endpoint the
+    # pipeline actually uses is `GLIMPSE_LLM_ENDPOINT` / `GLIMPSE_VLM_ENDPOINT` --
+    # checked by `check_llm`. So a fully working run still printed
+    #
+    #     glimpse: note: gateway is unavailable, but stages 0-12 do not use it
+    #
+    # which was false in both halves: the gateway was up, and stage 6 uses it (#68).
     checks = [
         check_ffmpeg(),
         check_ffprobe(),
         check_numpy(),
         check_stt(),
-        check_gateway(),
         check_llm(),
         check_vault(),
     ]

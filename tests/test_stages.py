@@ -1291,9 +1291,14 @@ gld.shutil.which = lambda n: f"/usr/bin/{n}" if n in ("ffmpeg", "ffprobe") else 
 
 
 saved_vault = os.environ.get(gld.VAULT_ENV)
-saved_gateway = os.environ.get(gld.GATEWAY_ENV)
+# The dead dependency here is the model endpoint, not a "gateway". It was `GLIMPSE_GATEWAY_URL`
+# until #68: a name nothing wrote and nothing documented, checked under the name `gateway`
+# while the endpoint the pipeline uses is `GLIMPSE_LLM_ENDPOINT`. The behaviour under test --
+# a dependency the current run cannot use is reported and not fatal -- is the same one, and
+# `check_llm` is the check that actually observes it.
+saved_llm = os.environ.get(gld.LLM_ENV)
 os.environ[gld.VAULT_ENV] = str(tmp / "definitely-no-vault")
-os.environ[gld.GATEWAY_ENV] = "http://127.0.0.1:1/inference"
+os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
 glc.run_all = isolated_run_all
 before = len(list(work_root.glob("glimpse-*")))
 out, err = io.StringIO(), io.StringIO()
@@ -1301,9 +1306,9 @@ with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 after = len(list(work_root.glob("glimpse-*")))
 check(
-    # A dead gateway costs the vision stages, not the run. It must not turn a verified
-    # pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
-    "a dead gateway does NOT block the run",
+    # A dead model endpoint costs the synthesis stages, not the run. It must not turn a
+    # verified pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
+    "a dead model endpoint does NOT block the run",
     rc == ec.OK,
     f"rc={rc}",
 )
@@ -1318,12 +1323,20 @@ check(
     "do not use it" in err.getvalue(),
     err.getvalue(),
 )
+check(
+    # The check that made every successful run open with "gateway is unavailable, but
+    # stages 0-12 do not use it" -- false in both halves, and printed on a run whose
+    # stage 6 had just successfully captioned every frame.
+    "no dead `gateway` check is left to report",
+    "gateway" not in {c.name for c in gld.run_all()},
+    str(sorted(c.name for c in gld.run_all())),
+)
 
 # ...but `glimpse doctor` has no such excuse: it exists to report the whole
 # environment, so the same vault must be fatal there.
 strict = {c.name: c for c in gld.run_all()}
 check("doctor still sees the vault as fatal", strict["vault"].fatal, strict["vault"].detail)
-check("doctor still sees the gateway as fatal", strict["gateway"].fatal, strict["gateway"].detail)
+check("doctor still sees the model endpoint as fatal", strict["llm"].fatal, strict["llm"].detail)
 for name in ("ffmpeg", "ffprobe"):
     check(f"{name} is fatal for process", not gld.run_all(required=PROCESS_REQUIRES) or True)
 for chk in gld.run_all(required=PROCESS_REQUIRES):
@@ -1335,10 +1348,10 @@ if saved_vault is None:
     os.environ.pop(gld.VAULT_ENV, None)
 else:
     os.environ[gld.VAULT_ENV] = saved_vault
-if saved_gateway is None:
-    os.environ.pop(gld.GATEWAY_ENV, None)
+if saved_llm is None:
+    os.environ.pop(gld.LLM_ENV, None)
 else:
-    os.environ[gld.GATEWAY_ENV] = saved_gateway
+    os.environ[gld.LLM_ENV] = saved_llm
 glc.run_all = _real_run_all
 
 # --- 7f. a bad --workdir is a usage error, not a traceback --------------------
