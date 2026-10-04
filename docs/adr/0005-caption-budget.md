@@ -8,6 +8,13 @@
 > **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
 > collides with numbers in ADR-0001 and ADR-0004; references from anywhere else must be
 > written `ADR-000N Dn`. Reading order and index: [`docs/adr/README.md`](README.md).
+>
+> **The register below is stale by construction — read `## Amendment 2026-10-05` first.**
+> The state count it calls "measured, not estimated" was 17, taken from a hand-made selection
+> in the baseline note's frames directory rather than from the pipeline. Stage 4 produces 58,
+> and the decoded-frame figure it was divided into was wrong by 3 722. D1's decision stands; the
+> arithmetic under it does not. The same amendment also records that D2's acceptance was being
+> met vacuously (#82).
 
 ## Context
 

@@ -78,7 +78,9 @@ missing part, only the message shape and the configuration were.
 | `f_0000000000.jpg` (53 KiB) | 1.5 s | `NO NEW INFORMATION` — a title screen with nothing the audio did not already carry |
 | `f_0000617096.jpg` (163 KiB) | 4.6 s | a full transcription of the references page: four numbered courses, the first literature entry, and the screen-share banner occluding a line |
 
-17 frames at that rate is roughly a minute of wall clock for the whole stage.
+58 frames took **446.8 s** of wall clock for the whole stage -- 7.7 s per frame, and
+**88% of every LLM call the pipeline makes**. `caption_trace` in `captions.json` records
+the model, tokens, timing and whether each frame was called or cached; see #81.
 
 The second caption also shows the provenance chain working: `served_model` came back as
 `glm-5.3-flash` while the requested id was `opencode-go/glm-5.3-flash`. Both are recorded,

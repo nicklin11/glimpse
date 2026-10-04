@@ -167,7 +167,11 @@ by measurement. Current text: *Amendment 2026-10-03 — D4, and the gate reads t
 *Amendment 2026-10-04 — D4's gate, measured rather than asserted*.
 
 Frames are poor because the screen is mostly UI chrome, not because the model is
-weak. Measured: 17 distinct states over 73 minutes.
+weak. Measured: **58** distinct states over 75 minutes.
+
+The "17" this paragraph originally carried was the hand-made selection in the baseline
+note's frames directory, not a pipeline measurement. ADR-0005 D1 cited it as one. See
+ADR-0005, *Amendment 2026-10-05*.
 
 The pipeline asks the VLM for the document bounding box, crops to it, upscales the
 crop 2x, applies an unsharp mask, and then gates the result on a sharpness measure
@@ -634,7 +638,7 @@ physics.
 - An audit that is wrong is a *worse* failure than no audit, because a human who
   cannot check formulas will trust it. This is why D5 requires citations and D6 puts
   mechanical layers underneath: the agent layer is never the only line of defence.
-- Frame quality is capped by the source bitrate, and 17 states over 73 minutes means
+- Frame quality is capped by the source bitrate, and 58 states over 75 minutes means
   this input is visually sparse. The pipeline must not oversell visual recovery.
 
 ## Not doing (MVP boundaries)
