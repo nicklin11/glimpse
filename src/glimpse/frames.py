@@ -253,14 +253,14 @@ def provenance(out: Path, settings: Settings, reused: bool) -> None:
         "filter": detect_filter(settings),
         "settings": asdict(settings),
         "reused_manifest": reused,
-        "ffmpeg": _ffmpeg_version(),
+        "ffmpeg": ffmpeg_version(),
     }
     (out / "detect.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
 
-def _ffmpeg_version() -> str:
+def ffmpeg_version() -> str:
     try:
         raw = runner.run("ffmpeg", ["-version"], remediation=REMEDIATION, timeout=30.0)
         return raw.decode("utf-8", "replace").splitlines()[0]

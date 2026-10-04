@@ -64,6 +64,56 @@ class MediaInfo:
         return ", ".join(parts)
 
 
+PROVENANCE_NAME = "source-provenance.json"
+
+
+def provenance(info: MediaInfo, audio_artefact=None, *, ffmpeg_version: str = "") -> str:
+    """What the input was, for the bundle. Covers stages 1 and 2.
+
+    Both stages record only a run-log line today: `[1/12] probe 0.1s video av1 1920x1080,
+    audio aac 48000Hz 2ch, 4520.1s`. Those are measurements of the *input*, not constants, and
+    they change when the input does -- re-encoding the lecture moves `duration`, which moves
+    every frame timestamp stage 4 extracts, which moves every word boundary stage 6 aligns.
+    A bundle that cannot say what it was given cannot be reasoned about offline.
+
+    One document rather than two. Neither stage has a parameter a user can vary, so
+    `probe-provenance.json` and `audio-provenance.json` would each be a handful of facts about
+    one input; that is a single fact. The `stages` list says which stage measured what.
+
+    `ffmpeg_version` is here rather than left to `detect.json`, because stages 1 and 2 call
+    ffprobe/ffmpeg before stage 4 does, and #70 was a filter-chain bug -- the chain and the
+    binary that ran it belong together.
+    """
+    payload: dict = {
+        "stages": [1, 2],
+        "tool": "glimpse-probe-v1",
+        "requires_model": False,
+        "source": {
+            "name": info.path.name,
+            "duration": round(info.duration, 1),
+            "has_video": info.has_video,
+            "video_codec": info.video_codec,
+            "width": info.width,
+            "height": info.height,
+            "has_audio": info.has_audio,
+            "audio_codec": info.audio_codec,
+            "sample_rate": info.sample_rate,
+            "channels": info.channels,
+        },
+    }
+    if ffmpeg_version:
+        payload["ffmpeg"] = ffmpeg_version
+    if audio_artefact is not None:
+        payload["extracted_audio"] = {
+            "name": audio_artefact.path.name,
+            "duration": round(audio_artefact.duration, 1),
+            "sample_rate": audio_artefact.sample_rate,
+            "channels": audio_artefact.channels,
+            "size_bytes": audio_artefact.size_bytes,
+        }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def probe(path: Path) -> MediaInfo:
     """Describe a media file. Raises runner.DependencyError if ffprobe fails."""
     src = Path(path).expanduser()

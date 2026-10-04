@@ -209,6 +209,15 @@ def run(
         summary += f"  [warn] {warning}"
     reports.append(StageReport(2, "audio", time.monotonic() - began, summary))
     out.write(reports[-1].line() + "\n")
+    # Stages 1 and 2 record one document between them; see probe.provenance for why it
+    # is one and not two. Published here because the bundle exists by now.
+    if bundle is not None:
+        source_prov = work.sub(probe.PROVENANCE_NAME)
+        source_prov.write_text(
+            probe.provenance(info, artefact, ffmpeg_version=frames.ffmpeg_version()) + "\n",
+            encoding="utf-8",
+        )
+        bundle.publish(source_prov.name, source_prov)
 
     # --- stage 3: stt ---------------------------------------------------------
     began = time.monotonic()

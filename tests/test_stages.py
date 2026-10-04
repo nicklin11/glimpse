@@ -474,6 +474,85 @@ exc = raises(glprobe.probe, tmp / "no-such-file.webm")
 check("missing input -> exit 1 (usage)", exc.code == ec.USAGE, f"{exc.code}")
 check("missing input names the path", "no-such-file.webm" in exc.message, exc.message)
 
+# Stages 1 and 2 record only a run-log line each: `[1/12] probe 0.1s video av1 1920x1080 ...`.
+# Those are measurements of the input, not constants -- re-encode the lecture and `duration`
+# moves, which moves every frame timestamp and every word boundary downstream. A bundle that
+# cannot say what it was given cannot be reasoned about offline (#80).
+_src = json.loads(
+    glprobe.provenance(
+        glprobe.MediaInfo(
+            path=Path("lecture.mp4"),
+            duration=4520.1,
+            has_video=True,
+            video_codec="av1",
+            width=1920,
+            height=1080,
+            has_audio=True,
+            audio_codec="aac",
+            sample_rate=48000,
+            channels=2,
+        ),
+        ffmpeg_version="ffmpeg version n9.0.2",
+    )
+)
+check(
+    # One document, not two: neither stage has a parameter a user can vary, so two files would
+    # each be a handful of facts about one input. `stages` says which stage measured what.
+    "the document says which stages it covers",
+    _src["stages"] == [1, 2],
+    str(_src["stages"]),
+)
+check(
+    "and the measured facts, not a summary line",
+    _src["source"]["video_codec"] == "av1"
+    and _src["source"]["width"] == 1920
+    and _src["source"]["duration"] == 4520.1,
+    str(_src["source"]),
+)
+check(
+    "including the binary that measured them -- #70 was a filter-chain bug",
+    _src["ffmpeg"] == "ffmpeg version n9.0.2",
+    str(_src.get("ffmpeg")),
+)
+_src2 = json.loads(
+    glprobe.provenance(
+        glprobe.MediaInfo(
+            path=Path("lecture.mp4"),
+            duration=4520.1,
+            has_video=True,
+            video_codec="av1",
+            width=1920,
+            height=1080,
+            has_audio=True,
+            audio_codec="aac",
+            sample_rate=48000,
+            channels=2,
+        ),
+        gla.AudioArtefact(
+            path=Path("audio.wav"),
+            duration=4520.0,
+            sample_rate=16000,
+            channels=1,
+            size_bytes=144640000,
+        ),
+        ffmpeg_version="ffmpeg version n9.0.2",
+    )
+)
+check(
+    "stage 2's extraction is in there too, since it describes the same input",
+    _src2["extracted_audio"]["sample_rate"] == 16000
+    and _src2["extracted_audio"]["channels"] == 1
+    and _src2["extracted_audio"]["size_bytes"] == 144640000,
+    str(_src2.get("extracted_audio")),
+)
+check(
+    # `duration` is the load-bearing field: it moves every frame timestamp stage 4 extracts and
+    # every word boundary stage 6 aligns against. A bundle without it cannot explain a shift.
+    "and the duration, rounded consistently with every other provenance",
+    _src2["source"]["duration"] == 4520.1 and _src2["extracted_audio"]["duration"] == 4520.0,
+    str(_src2["source"]["duration"]),
+)
+
 install_fake(
     {
         "ffprobe": [
