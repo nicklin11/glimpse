@@ -265,15 +265,67 @@ def check_links_in_math(markdown: str, report: Report) -> None:
                 return
 
 
+def _strip_quotes(line: str) -> str:
+    """Blank out «...» spans, preserving line numbers and column positions.
+
+    A quoted span is verbatim by definition. The stage-9 audit requires verbatim citations
+    to be checkable against the transcript, so a filler word inside a quote is not debris in
+    the note -- it is the lecturer's speech, faithfully reproduced, and "repairing" it would
+    falsify the record the audit exists to check. Measured on lecture 1, 2026-10-04:
+    `«если вы понимаете одно, то очень легко понять другое»` was reported as
+    `«вы понимаете» appears 1 times`.
+
+    An unclosed « on a line blanks to the end of that line only. A quote opened on one line
+    and closed on another is the lecturer's paragraph break, and the debris after it is
+    still the note author's.
+    """
+    out, inside, start = [], False, 0
+    for index, char in enumerate(line):
+        if char == "«":
+            if not inside:
+                start, inside = index, True
+            out.append(" ")
+        elif char == "»" and inside:
+            inside = False
+            out.append(" ")
+        elif inside:
+            out.append(" ")
+        else:
+            out.append(char)
+    if inside:
+        out = list(line[:start] + " " * (len(line) - start))
+    return "".join(out)
+
+
 def check_filler(markdown: str, report: Report) -> None:
-    """Conversational debris that survived ASR into the prose."""
+    """Conversational debris that survived ASR into the prose.
+
+    Fillers are matched as **token sequences**, not as substrings of the line, because most
+    of `FILLER` is multi-word ("как бы", "вы поняли") and `_WORD` splits those into separate
+    tokens. A single-word filler must still be a whole token: "ну" is debris, "нужно" is not.
+
+    This was `word == filler or (filler == "как бы" and f"{word} бы" == filler)`, and the
+    second clause reduces to `word == "как"` -- it never checked that a "бы" followed. So
+    every occurrence of the ordinary Russian word "как" was reported as "как бы". Measured on
+    lecture 1, 2026-10-04: 17 findings against 0 instances of "как бы" and 17 instances of
+    "как" in correct constructions ("как и все", "как правило", "как задачу"). Stage 10 then
+    spent its budget trying to repair clean prose.
+    """
     report.checked += 1
+    by_length: dict[int, list[tuple[str, ...]]] = {}
+    for filler in FILLER:
+        by_length.setdefault(len(filler.split()), []).append(tuple(filler.split()))
+    widest = max(by_length)
+
     hits: dict[str, list[int]] = {}
     for number, line in _outside_code(markdown):
-        for word in _WORD.findall(line.lower()):
-            for filler in FILLER:
-                if word == filler or (filler == "как бы" and f"{word} бы" == filler):
-                    hits.setdefault(filler, []).append(number)
+        words = [word.lower() for word in _WORD.findall(_strip_quotes(line))]
+        for start in range(len(words)):
+            for width in range(min(widest, len(words) - start), 0, -1):
+                window = tuple(words[start : start + width])
+                for candidate in by_length.get(width, ()):
+                    if window == candidate:
+                        hits.setdefault(" ".join(candidate), []).append(number)
     for filler, numbers in hits.items():
         report.add(
             "style/filler",

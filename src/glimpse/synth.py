@@ -301,23 +301,44 @@ def assemble(note_title: str, bodies: dict[int, str], sections: list[Section]) -
 #: A heading that only exists in the document's own table of contents.
 _TOC = re.compile(r"^\s{0,3}#{1,6}\s*(содержание|оглавление)\b", re.IGNORECASE)
 
-#: `#` at any level, which the skill does not permit inside a section. The eight section headings
-#: are emitted by `assemble`; a model adding its own top level reshapes the document so the
-#: structure lint then checks a different thing than it was written to check.
-_H1 = re.compile(r"^(\s{0,3})#(?!#)\s+(.*)$")
+#: `#` at any level. The eight section headings are emitted by `assemble` as `## N. Title`;
+#: nothing inside a section body may sit at that level or above, or the document outline
+#: gains unnumbered siblings of the sections and the eight-section structure stops being
+#: the top level of anything.
+_HEADING = re.compile(r"^(\s{0,3})(#{1,6})(\s+.*)$")
 
 
 def normalise(body: str) -> str:
-    """Demote a model's top-level headings to third level. `##` is left alone.
+    """Push every heading in a section body below `##`, preserving relative nesting.
+
+    The shallowest heading in the body becomes `###`; the rest keep their distance from it.
+    Working from the minimum rather than demoting a fixed level keeps `####` under a `###`
+    from climbing above it -- mapping every `#` to `###`, as this did before, collapsed a
+    body that mixed `##` and `####` into a flat one.
 
     Demoting rather than deleting: the heading usually carries real information -- which
     slide the fragment was -- and the failure to preserve it is worse than the extra level.
     Stripping it would leave a note with unexplained structural breaks in it.
+
+    Measured on lecture 1, 2026-10-04: leaving `##` alone produced 29 unnumbered `##`
+    headings as siblings of the eight `## N.` sections, so `## N.` stopped being the top
+    level of the document and stage 8's structural rules checked a different outline than
+    the one a reader sees.
     """
-    out = []
-    for line in body.splitlines():
-        out.append(_H1.sub(r"\1### \2", line))
-    return "\n".join(out)
+    levels = [len(m.group(2)) for line in body.splitlines() if (m := _HEADING.match(line))]
+    if not levels:
+        return body
+    # `##` is the section level; a body heading may not be at or above it. The shift is
+    # 3 - min, clamped at 0 so a body that starts at `####` is not *promoted*, and the
+    # result is clamped at 6 so a deep body cannot produce `########`, which is not a
+    # heading in Markdown, it is a paragraph.
+    shift = max(0, 3 - min(levels))
+
+    def demote(match: re.Match[str]) -> str:
+        indent, hashes, rest = match.group(1), match.group(2), match.group(3)
+        return f"{indent}{'#' * min(6, len(hashes) + shift)}{rest}"
+
+    return "\n".join(_HEADING.sub(demote, line) for line in body.splitlines())
 
 
 def synthesise(

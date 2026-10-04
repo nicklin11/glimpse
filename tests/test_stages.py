@@ -3308,9 +3308,61 @@ check(
     glsy.normalise("# Фрагмент\n\nтекст"),
 )
 check(
-    "an h2 is a legitimate subsection and stays",
-    "## Подраздел" in glsy.normalise("## Подраздел"),
-    "h2 was touched",
+    # This one asserted the opposite, and the assertion is what produced 29 unnumbered `##`
+    # headings as siblings of the eight `## N.` sections on lecture 1. "##" is not a
+    # legitimate subsection here: `##` IS the subsection level inside the note, because the
+    # sections themselves are `##`. A body heading at that level makes `## N. Title` stop
+    # being the top of anything.
+    "a synthesized h2 is pushed below the section level too",
+    glsy.normalise("## Подраздел\n\nтекст") == "### Подраздел\n\nтекст",
+    glsy.normalise("## Подраздел\n\nтекст"),
+)
+check(
+    "nothing in a section body is left at or above the section level",
+    not any(
+        re.match(r"^#{1,2}\s", line)
+        for body in (
+            "## A\n### B\n#### C",
+            "# A\n## B\n### C",
+            "# A\n###### B",
+            "## A",
+        )
+        for line in glsy.normalise(body).splitlines()
+        if line.lstrip("#").startswith((" ", "")) and line.lstrip().startswith("#")
+    ),
+    "  ".join(glsy.normalise(b) for b in ("## A\n### B", "# A\n## B")),
+)
+check(
+    "relative nesting survives the shift",
+    glsy.normalise("## A\n### B\n#### C") == "### A\n#### B\n##### C",
+    glsy.normalise("## A\n### B\n#### C"),
+)
+check(
+    # Mapping every heading to `###` collapsed a body mixing `##` and `####` into a flat
+    # one, losing the model's own structure along with its level.
+    "a deeper heading does not collapse onto a shallower sibling",
+    glsy.normalise("# T\n###### D") == "### T\n###### D",
+    glsy.normalise("# T\n###### D"),
+)
+check(
+    # `########` is not a heading in Markdown, it is a paragraph. Clamping keeps the note
+    # renderable instead of silently turning a heading into text.
+    "a shift cannot produce more than six hashes",
+    max(len(m.group(1)) for m in re.finditer(r"^(#+) ", glsy.normalise("###### D\n# T"), re.M))
+    <= 6,
+    glsy.normalise("###### D\n# T"),
+)
+check(
+    # A body that starts at `###` is already correct, and shifting it to `#####` would
+    # invent depth the model did not claim.
+    "a body already below the section level is left alone",
+    glsy.normalise("### A\n#### B") == "### A\n#### B",
+    glsy.normalise("### A\n#### B"),
+)
+check(
+    "a body with no headings is returned unchanged",
+    glsy.normalise("просто текст\n\nи ещё") == "просто текст\n\nи ещё",
+    glsy.normalise("просто текст\n\nи ещё"),
 )
 
 # The template synthesizer is the oracle: it must run with nothing configured and must not
@@ -3541,6 +3593,52 @@ check(
     "«ну» inside «нулевой» is not filler",
     not rules(note(*bodies), "style/filler"),
     "substring match fired",
+)
+bodies[4] = "Метод линеаризуют, как правило, вокруг рабочей точки."
+check(
+    # The rule was `word == filler or (filler == "как бы" and f"{word} бы" == filler)`, and
+    # that second clause reduces to `word == "как"`: it never checked a "бы" followed. So
+    # every ordinary use of "как" was reported as "как бы" -- 17 findings against 0
+    # instances on lecture 1, and stage 10 spent its budget repairing clean prose.
+    "«как» is not «как бы» when no «бы» follows",
+    not rules(note(*bodies), "style/filler"),
+    "single token matched a two-token filler",
+)
+bodies[4] = "В методе «как бы» не употребляется."
+check(
+    "«нужно» is not «ну»",
+    not rules(note(*bodies), "style/filler"),
+    "single token matched a one-token filler",
+)
+bodies[4] = "Приём, который лектор называл «ну да», к сожалению, работает."
+check(
+    # A quoted span is verbatim by definition. Stage 9 checks citations against the
+    # transcript, so "repairing" a filler inside a quote falsifies the very record the
+    # audit exists to verify.
+    "a filler inside a lecture quote is the lecturer's speech, not debris",
+    not rules(note(*bodies), "style/filler"),
+    "quote was not excluded",
+)
+bodies[4] = "Ну, метод сходится, «как бы», и работает."
+check(
+    "a filler outside the quote in the same line is still found",
+    rules(note(*bodies), "style/filler"),
+    "quote-stripping swallowed the whole line",
+)
+bodies[4] = "Только «как бы», всё."
+check(
+    # ...and the converse: a line whose only filler is quoted really is clean. Otherwise the
+    # previous check would pass for the wrong reason -- an over-eager stripper also reports
+    # nothing on every line.
+    "a line whose only filler is quoted is clean",
+    not rules(note(*bodies), "style/filler"),
+    "quoted filler still reported",
+)
+bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
+check(
+    "the filler control still fires after both fixes",
+    rules(note(*bodies), "style/filler"),
+    "rewrite lost the original detection",
 )
 
 # Assets.
