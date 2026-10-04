@@ -153,6 +153,16 @@ def count_frames(bundle_root: Path) -> tuple[int, int]:
 
     Expected counts data rows, not lines: a header-only manifest is the ADR-0001 D3 failure this
     whole stage exists to catch, and counting lines would call that a success.
+
+    **Expected subtracts the frames stage 5 rejected**, because stage 5 only moves the frames
+    that passed into `images/` (`pipeline.run` calls `clear_images` then moves `qreport.passed`).
+    Without the subtraction a correctly gated bundle reads `frames 57/58` and the run exits 1
+    for having done the right thing -- ADR-0005 D2's "N states, M uncaptioned is visible"
+    turned into "M uncaptioned is a failure".
+
+    This could not have been reached before #82: the gate never fired, so `images/` always held
+    every manifest row and the subtraction was a no-op. A check that cannot fail is not a
+    check, in the same way a gate that never fires is not a gate.
     """
     manifest = bundle_root / frames.MANIFEST
     if not manifest.is_file():
@@ -160,13 +170,33 @@ def count_frames(bundle_root: Path) -> tuple[int, int]:
     images = bundle_root / IMAGES
     rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()[1:]]
     names = [row[2].strip() for row in rows if len(row) >= 3 and row[2].strip()]
-    expected = len(names)
+
+    rejected = _rejected_by_gate(bundle_root)
+    expected = len([n for n in names if n not in rejected])
     found = 0
     for name in names:
+        if name in rejected:
+            continue
         ok, _ = _check(images / name)
         if ok:
             found += 1
     return expected, found
+
+
+def _rejected_by_gate(bundle_root: Path) -> set[str]:
+    """Frame names stage 5 refused. Empty when there is no quality report to ask."""
+    path = bundle_root / quality.REPORT_NAME
+    if not path.is_file():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return set()
+    return {
+        entry.get("name", "")
+        for entry in payload.get("frames", [])
+        if entry.get("quality_gate") and entry.get("quality_gate") != "PASS"
+    }
 
 
 def run(

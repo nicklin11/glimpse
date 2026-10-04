@@ -2575,6 +2575,24 @@ check(
     str([a["frame"] for a in _order_caps["alignments"] if not a["quality_gate"]]),
 )
 check(
+    # Stage 12's `count_frames` walks the manifest and stats each row. Stage 5 only moves the
+    # frames that *passed* into `images/`, so a correctly gated bundle holds fewer PNGs than the
+    # manifest has rows. Counting the manifest alone made the correct outcome read as
+    # `frames 57/58` and exit 1. Reachable only since #82 -- before it, the gate never fired and
+    # the two counts always agreed.
+    "stage 12 counts the gate's rejections as expected, not as missing",
+    glro.count_frames(tmp / "order_bundle")[0] == 1
+    and glro.count_frames(tmp / "order_bundle")[1] == 1,
+    f"expected/found = {glro.count_frames(tmp / 'order_bundle')}, want (1, 1) for 1 pass + 1 fail",
+)
+check(
+    # And the rejection must be visible rather than merely subtracted, or ADR-0005 D2's "N
+    # states, M uncaptioned" has nowhere to live.
+    "the rejected frame is recorded in captions.json, not silently dropped",
+    _order_by_name.get("f_1.png", {}).get("reason", "").startswith("stage 5"),
+    repr(_order_by_name.get("f_1.png", {}).get("reason")),
+)
+check(
     "the frame stage 5 passed still carries PASS",
     _order_by_name.get("f_0.png", {}).get("quality_gate") == "PASS",
     str(_order_by_name.get("f_0.png", {}).get("quality_gate")),
