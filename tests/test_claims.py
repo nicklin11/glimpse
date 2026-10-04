@@ -26,6 +26,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
+
 
 from glimpse import exitcodes as ec  # noqa: E402
 from glimpse import stages as gst  # noqa: E402
@@ -145,6 +150,8 @@ check(
     not offenders,
     "; ".join(f"{p}:{ln}" for p, ln in offenders),
 )
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

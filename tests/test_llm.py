@@ -26,6 +26,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
+
 
 from glimpse import llm  # noqa: E402
 
@@ -114,6 +119,8 @@ check(
     reply_matching.model == REQUESTED,
     f"{reply_matching.model}",
 )
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

@@ -33,6 +33,10 @@ from types import SimpleNamespace
 import urllib.error
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
 from glimpse import audio as gla  # noqa: E402
 from glimpse import cli as glc  # noqa: E402
@@ -4775,6 +4779,8 @@ if real_vault_env is None:
 else:
     os.environ[gld.VAULT_ENV] = real_vault_env
 shutil.rmtree(tmp, ignore_errors=True)
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

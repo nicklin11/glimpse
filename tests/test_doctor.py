@@ -22,6 +22,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
 from glimpse import cli as glc  # noqa: E402
 from glimpse import deps as gld  # noqa: E402
@@ -328,6 +332,8 @@ except SystemExit as exc:
     check("unknown subcommand -> exit 1, not 2", False, f"argparse exited {exc.code} uncaught")
 
 restore()
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

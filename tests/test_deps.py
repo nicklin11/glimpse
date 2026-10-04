@@ -26,6 +26,11 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
+
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 PKG = SRC / "glimpse"
@@ -35,6 +40,11 @@ ALLOWED = {"numpy"}
 # The package under test. Everything below `src/glimpse/` may import it freely;
 # treating it as third-party would flag every module in the codebase.
 SELF = {"glimpse"}
+# Sibling modules in `tests/` itself. `tests/_env.py` is not a dependency the zipapp
+# would have to ship -- it is the file next door, which is a different property. Before
+# #63's fix each suite duplicated the env handling inline; sharing it means the suites now
+# import a local module, and this rule would otherwise report three of its own files.
+SIBLINGS = {path.stem for path in (REPO / "tests").glob("*.py")} - {"test_deps"}
 
 failures: list[str] = []
 
@@ -133,13 +143,15 @@ for path in sorted((REPO / "tests").rglob("*.py")):
     bad = [
         (path.relative_to(REPO).as_posix(), lineno, name)
         for name, lineno in imports_of(tree)
-        if name and name not in sys.stdlib_module_names and name not in ALLOWED | SELF
+        if name and name not in sys.stdlib_module_names and name not in ALLOWED | SELF | SIBLINGS
     ]
     check(
         f"tests/{path.name} imports no dependency outside numpy",
         not bad,
         "; ".join(f"{p}:{ln} imports {n}" for p, ln, n in bad),
     )
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:
