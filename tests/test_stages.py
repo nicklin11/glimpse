@@ -223,6 +223,14 @@ os.environ[glw.WORKDIR_ENV] = str(tmp)
 # change introduced the write.
 real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
 os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
+# And the export target itself. Pinning the settings file stops the suite writing a settings
+# file into the developer's home; it does not stop the export, whose target resolves through
+# `$GLIMPSE_VAULT` and then the built-in default. With the export on by default, a run of
+# this file wrote audio.wav, transcript.txt, transcript.json and transcript.raw.json into
+# the real `~/Documents/obs_notes/glimpse/`. Blocks that need a specific vault set it below.
+real_vault_env = os.environ.get(gld.VAULT_ENV)
+os.environ[gld.VAULT_ENV] = str(tmp / "vault")
+(tmp / "vault").mkdir(exist_ok=True)
 
 
 # --- 1. dependency absent vs. present-and-failing -----------------------------
@@ -3577,6 +3585,50 @@ check(
     not rules(note(*["в лекции не затрагивается"] * 8), "structure/claims-empty-but-is-not"),
     "a real empty section was flagged",
 )
+check(
+    # The rule matched `NOT_COVERED in body`, a substring test. Measured on lecture 1,
+    # 2026-10-04: the LLM wrote a scoped deferral inside a 29-line section --
+    # "в лекции не затрагивается: конкретные формулы функционала качества." -- which the
+    # substring test read as a declaration of emptiness and reported as a blocking ERROR.
+    # The pipeline then refused to finish a run whose note was correct.
+    "a scoped deferral inside a filled section is not a declaration of emptiness",
+    not rules(
+        note(*["в лекции не затрагивается: конкретные формулы функционала качества."] * 8),
+        "structure/claims-empty-but-is-not",
+    ),
+    "substring match on a sentence fired",
+)
+check(
+    "the sentinel mid-sentence is not a declaration of emptiness either",
+    not rules(
+        note(*["Это в лекции не затрагивается, разберём позже."] * 8),
+        "structure/claims-empty-but-is-not",
+    ),
+    "substring match inside prose fired",
+)
+check(
+    # ...and the reading that motivated the rule still holds: a bare sentinel line beside
+    # content is a template bug, and must still be reported. Shaped like the test above --
+    # the sentinel and the content are one multi-line body, not separate arguments.
+    "a bare sentinel beside content is still an error",
+    rules(
+        note(
+            *["заполнено"] * 7 + [f"{glsy.NOT_COVERED}\n\nА на самом деле три абзаца."],
+        ),
+        "structure/claims-empty-but-is-not",
+    ),
+    "the whole-line rule lost the detection",
+)
+check(
+    "a filler in prose still fires after the whole-line rewrite",
+    rules(note(*["ну, как же без этого"] * 8), "style/filler"),
+    "the filler rule stopped detecting prose",
+)
+check(
+    "the same words inside a lecture quote are left alone",
+    not rules(note(*["«ну, как же без этого» сказал лектор"] * 8), "style/filler"),
+    "quoted filler was reported",
+)
 
 # Mathematics. An unclosed `$` turns the rest of the note into math -- the most damaging
 # thing a synthesis model does to a technical note, and trivially detectable.
@@ -4658,6 +4710,10 @@ if real_settings_env is None:
     os.environ.pop(gld.SETTINGS_PATH_ENV, None)
 else:
     os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
+if real_vault_env is None:
+    os.environ.pop(gld.VAULT_ENV, None)
+else:
+    os.environ[gld.VAULT_ENV] = real_vault_env
 shutil.rmtree(tmp, ignore_errors=True)
 
 print()

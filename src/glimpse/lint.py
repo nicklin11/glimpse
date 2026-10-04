@@ -340,25 +340,44 @@ def check_empty_section_claims(markdown: str, report: Report) -> None:
 
     This is the check that catches a model padding the document to look complete, which is
     the single most damaging failure mode for a note whose purpose is to be trustworthy.
+
+    The sentinel is matched as a **whole line**, which is the contract
+    `TemplateSynthesizer` writes to (`parts.append(NOT_COVERED)` when a body is empty) --
+    not as a substring anywhere in the section. Substring matching fired on the LLM
+    synthesizer's own scoped deferral, which is honest and specific:
+
+        ## 3. Карта источников
+        ... 29 lines of content ...
+        в лекции не затрагивается: конкретные формулы функционала качества.
+
+    Measured on lecture 1, 2026-10-04: that line produced "«3. Карта источников» declares
+    itself not covered and then has 29 more line(s)" as an ERROR. It is a blocking
+    severity, so the pipeline refused to finish a run whose note was correct. The section
+    says one narrow thing is out of scope; it does not declare itself empty.
+
+    Both readings still work after the change: a template section carrying the bare sentinel
+    *and* content is a real bug and is still reported; a bare sentinel alone is not.
     """
     report.checked += 1
     parts = re.split(r"^## ", markdown, flags=re.M)[1:]
     for part in parts:
         heading, _, body = part.partition("\n")
-        if synth.NOT_COVERED in body:
-            extra = [
-                line
-                for line in body.splitlines()
-                if line.strip() and line.strip() != synth.NOT_COVERED and not line.startswith("#")
-            ]
-            if extra:
-                report.add(
-                    "structure/claims-empty-but-is-not",
-                    ERROR,
-                    0,
-                    f"«{heading.strip()}» declares itself not covered and then has "
-                    f"{len(extra)} more line(s)",
-                )
+        lines = body.splitlines()
+        if not any(line.strip() == synth.NOT_COVERED for line in lines):
+            continue
+        extra = [
+            line
+            for line in lines
+            if line.strip() and line.strip() != synth.NOT_COVERED and not line.startswith("#")
+        ]
+        if extra:
+            report.add(
+                "structure/claims-empty-but-is-not",
+                ERROR,
+                0,
+                f"«{heading.strip()}» declares itself not covered and then has "
+                f"{len(extra)} more line(s)",
+            )
 
 
 def check_assets(markdown: str, images: Path, report: Report) -> None:
