@@ -225,8 +225,11 @@ def run(
     transcript = stt.transcribe(wav, audio_duration=artefact.duration)
     paths = stt.write(transcript, work.path)
     if bundle is not None:
+        # Every stage that writes to the work dir has to name what it publishes here, or the
+        # document dies with the work dir. That is how stage 7's transcript went missing for
+        # its whole life (#76) and how stage 3 had no provenance at all (#80).
         for key, path in paths.items():
-            paths[key] = bundle.publish(key, path)
+            paths[key] = bundle.publish(path.name, path)
     reports.append(StageReport(3, "stt", time.monotonic() - began, transcript.summary()))
     out.write(reports[-1].line() + "\n")
 

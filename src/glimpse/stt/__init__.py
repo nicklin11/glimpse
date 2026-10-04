@@ -31,6 +31,7 @@ from .. import exitcodes as ec
 from .. import runner
 from .backends import ENV_BACKEND, BackendInfo, TranscriptionBackend, resolve
 from .core import (
+    PROVENANCE_NAME,
     REMEDIATION,
     RATE_RANGE,
     TIMEOUT_MARGIN,
@@ -48,6 +49,7 @@ from .core import (
 __all__ = [
     "BackendInfo",
     "ENV_BACKEND",
+    "PROVENANCE_NAME",
     "REMEDIATION",
     "RATE_RANGE",
     "Segment",
@@ -110,6 +112,9 @@ def transcribe(wav: Path, *, audio_duration: float, backend: str | None = None) 
         anomalies=anomalies,
         raw_payload=raw,
         backend=engine.name,
+        # Asked of the engine, not reconstructed here: a provenance document that re-derives
+        # the parameters reports what the code would say today rather than what was sent.
+        parameters=engine.parameters(client_timeout=timeout),
     )
     # ADR-0001 D3, and the reason the interface exists: segments without word timings are not the
     # payload this stage exists to produce.

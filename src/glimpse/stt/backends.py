@@ -72,6 +72,15 @@ class TranscriptionBackend(Protocol):
         """Transcribe and return the raw payload."""
         ...
 
+    def parameters(self, *, client_timeout: float) -> dict:
+        """What this backend will send, for the stage-3 provenance document.
+
+        Required rather than optional: a backend that cannot describe itself produces a
+        transcript whose provenance says nothing about how it was made, which is what stage 3
+        did for its whole life (#80). Implementing it is one dict per backend.
+        """
+        ...
+
 
 def _env_endpoint(name: str) -> str:
     return os.environ.get(f"GLIMPSE_{name.upper()}_URL", DEFAULT_ENDPOINTS[name]).rstrip("/")

@@ -148,12 +148,31 @@ class OpenAICompat:
             ) from exc
         return raw
 
-    def _multipart(self, boundary: str, wav: Path) -> bytes:
-        fields = (
+    def parameters(self, *, client_timeout: float) -> dict:
+        """What this backend will send, for `stt-provenance.json`.
+
+        The model id is the field that matters: two runs through two models produce two
+        different transcripts from identical audio, and without it the bundle cannot say so.
+        `client_timeout` is accepted for interface symmetry with whisper.cpp and is not part
+        of the request -- the OpenAI route takes the timeout from the client.
+        """
+        return {
+            "endpoint": f"{self.base_url}/v1/audio/transcriptions",
+            "backend": self.name,
+            "detail": f"OpenAI-compatible /v1/audio/transcriptions, model={self.model}",
+            "fields": dict(self._fields()),
+            "api_key": bool(self.key),
+        }
+
+    def _fields(self) -> tuple[tuple[str, str], ...]:
+        return (
             ("model", self.model),
             ("response_format", "verbose_json"),
             ("timestamp_granularities[]", "word"),
         )
+
+    def _multipart(self, boundary: str, wav: Path) -> bytes:
+        fields = self._fields()
         parts: list[bytes] = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
             for name, value in fields

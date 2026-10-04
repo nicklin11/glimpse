@@ -998,9 +998,49 @@ install_http([payload])
 tr = glstt.transcribe(dest, audio_duration=25.0)
 paths = glstt.write(tr, tmp)
 check(
-    "three transcript artefacts are written",
-    set(paths) == {"raw", "json", "txt"},
+    # `pipeline.run` publishes whatever `write()` returns, so a file written here and not
+    # named here never reaches the bundle. That is how stage 3 had no provenance at all
+    # (#80), and how stage 7's transcript went missing (#76).
+    "the transcript artefacts are written, and named for publishing",
+    set(paths) == {"raw", "json", "txt", "provenance"},
     str(sorted(paths)),
+)
+_prov = json.loads(paths["provenance"].read_text(encoding="utf-8"))
+check(
+    # Stage 3 recorded its results and nothing about what produced them: the backend name
+    # existed only in the run log, and `grep -ril whispercpp` over the bundle "hit"
+    # transcript.json only because an anomaly message happened to contain it.
+    "the provenance names the backend that was actually used",
+    _prov["backend"] == tr.backend and tr.backend != "unknown",
+    str(_prov["backend"]),
+)
+check(
+    "and the parameters it will be asked for, endpoint included",
+    _prov["parameters"].get("endpoint")
+    and _prov["parameters"].get("fields", {}).get("response_format") == "verbose_json",
+    str(_prov["parameters"])[:160],
+)
+check(
+    # #49 measures whisper.cpp disagreeing with itself on the same audio. A digest of the
+    # transcript is what turns "the note came out different" into "stage 3's fault" or
+    # "the model's", without re-running anything.
+    "and digests both transcript files, so a re-run can be attributed",
+    set(_prov["digests"]) == {"transcript.txt", "raw"}
+    and all(len(v) == 64 for v in _prov["digests"].values()),
+    str(_prov["digests"])[:120],
+)
+check(
+    "the digest matches the file it describes",
+    _prov["digests"]["transcript.txt"]
+    == __import__("hashlib").sha256(paths["txt"].read_bytes()).hexdigest(),
+    "stt-provenance.json digest does not match transcript.txt",
+)
+check(
+    # `requires_model: False` would say the transcript needed no model, which is the same
+    # class of error #67 was about: an artefact asserting something it did not do.
+    "stage 3 declares it needs a model",
+    _prov["requires_model"] is True and _prov["stage"] == 3,
+    str({k: _prov[k] for k in ("stage", "requires_model")}),
 )
 check("raw payload is preserved byte-for-byte", paths["raw"].read_bytes() == payload)
 text = paths["txt"].read_text(encoding="utf-8")

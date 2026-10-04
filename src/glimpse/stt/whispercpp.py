@@ -137,8 +137,13 @@ class HttpWhisperCpp:
                 remediation=REMEDIATION,
             ) from exc
 
-    def _multipart(self, boundary: str, wav: Path, client_timeout: float) -> bytes:
-        """Build the body by hand: the stdlib has no multipart encoder, and a wav is 137 MiB."""
+    def _fields(self, client_timeout: float) -> list[tuple[str, str]]:
+        """The request fields, exactly as they will be sent.
+
+        Factored out of `_multipart` so `parameters()` and the request cannot disagree. A
+        provenance document that reconstructs the parameters instead of asking for them is
+        worth less than none: it reports what the code *would* say today, not what was sent.
+        """
         server_timeout = client_timeout * SERVER_TIMEOUT_FACTOR + SERVER_TIMEOUT_MARGIN
         fields = [
             # Greedy decoding. Not a determinism fix -- measured above, nothing is -- but
@@ -157,6 +162,26 @@ class HttpWhisperCpp:
         language = os.environ.get(ENV_LANGUAGE, "").strip()
         if language:
             fields.append(("language", language))
+        return fields
+
+    def parameters(self, *, client_timeout: float) -> dict:
+        """What this backend is about to send, for `stt-provenance.json`.
+
+        The language pin matters and is invisible elsewhere: unset means whisper.cpp
+        auto-detects, and pinning it changes the transcript without changing anything a user
+        would see in the run log. #49 measures whisper.cpp disagreeing with itself on the same
+        audio, which is the situation these parameters exist to make diagnosable.
+        """
+        return {
+            "endpoint": f"{self.base_url}/inference",
+            "backend": self.name,
+            "detail": "whisper.cpp native /inference",
+            "fields": dict(self._fields(client_timeout)),
+        }
+
+    def _multipart(self, boundary: str, wav: Path, client_timeout: float) -> bytes:
+        """Build the body by hand: the stdlib has no multipart encoder, and a wav is 137 MiB."""
+        fields = self._fields(client_timeout)
         parts: list[bytes] = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
             for name, value in fields

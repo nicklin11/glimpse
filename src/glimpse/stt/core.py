@@ -34,6 +34,7 @@ things and collapsing them loses data we do not yet understand:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,7 @@ from pathlib import Path
 from .. import exitcodes as ec
 from .. import runner
 
+PROVENANCE_NAME = "stt-provenance.json"
 REMEDIATION = "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or set GLIMPSE_STT to an endpoint"
 
 # Measured on this host, CPU whisper.cpp:
@@ -120,6 +122,11 @@ class Transcript:
     anomalies: tuple[str, ...] = field(default_factory=tuple)
     raw_payload: bytes = b""
     backend: str = "unknown"
+    #: What the backend was asked for, as resolved -- endpoint and every request field.
+    #: Stage 3 published no provenance at all before this (#80): `transcript.json` recorded the
+    #: results and nothing about what produced them, so the backend existed only in the run log
+    #: and, incidentally, inside an anomaly string.
+    parameters: dict = field(default_factory=dict)
 
     @property
     def speech_end(self) -> float:
@@ -286,7 +293,52 @@ def write(transcript: Transcript, workdir: Path) -> dict[str, Path]:
         encoding="utf-8",
     )
     txt_path.write_text(render_text(transcript), encoding="utf-8")
-    return {"raw": raw_path, "json": json_path, "txt": txt_path}
+    prov_path = workdir / PROVENANCE_NAME
+    prov_path.write_text(provenance(transcript, workdir) + "\n", encoding="utf-8")
+    # Returned, not just written: `pipeline.run` publishes whatever this returns, so a file
+    # written here and not named here never reaches the bundle.
+    return {"raw": raw_path, "json": json_path, "txt": txt_path, "provenance": prov_path}
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def provenance(transcript: Transcript, workdir: Path) -> str:
+    """What produced this transcript, and a hash of what it produced.
+
+    The hashes are the point. #49 measures whisper.cpp disagreeing **with itself** on the same
+    audio, so two runs of one lecture can differ at the source. With a digest of `transcript.txt`
+    in the bundle, that is a one-line check -- equal digests mean any difference downstream is
+    the model's, unequal digests mean stage 3's, and the two files are sitting there to diff.
+    Without one, the honest answer to "why did this run produce a different note" is a guess.
+    """
+    return json.dumps(
+        {
+            "stage": 3,
+            "tool": "glimpse-stt-v1",
+            "requires_model": True,
+            "backend": transcript.backend,
+            "parameters": transcript.parameters,
+            "results": {
+                "segment_count": len(transcript.segments),
+                "timed_words": transcript.timed_words,
+                "audio_duration": round(transcript.audio_duration, 1),
+                "speech_end": round(transcript.speech_end, 1),
+                "coverage": round(transcript.coverage, 4),
+                "anomalies": len(transcript.anomalies),
+            },
+            "digests": {
+                name: _digest(workdir / filename)
+                for name, filename in (
+                    ("transcript.txt", "transcript.txt"),
+                    ("raw", "transcript.raw.json"),
+                )
+            },
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 def render_text(transcript: Transcript) -> str:
