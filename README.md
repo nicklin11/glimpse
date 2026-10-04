@@ -151,32 +151,32 @@ Frame captioning is the one stage whose cost scales with model pricing: 58 visio
 | 0 | every stage ran and every artefact it claimed is on disk |
 | 1 | usage error, or the run finished and could not verify what it wrote |
 | 2 | a dependency is missing |
-| 3 | a dependency is installed and failing -- currently only stage 3 |
+| 3 | a dependency is installed and failing |
 | 4 | a quality gate rejected the output |
 | 5 | the audit found error-tier findings in the note |
 
-Codes 2 and 3 are raised by the STT backend, which is the only dependency whose absence stops a
-run. A model endpoint that is unreachable or hangs does **not** produce exit 3: at stage 6 every
-frame fails to caption, at stage 7 synthesis fails, and at stage 9 tier 2 records a
-`critic/unavailable` WARN and degrades to tier 1. Measured on a refused endpoint:
+## What exit 0 does not tell you
+
+A reachable model is not implied by exit 0. Three cases degrade instead of failing, and each
+leaves evidence in the bundle:
+
+| stage | condition | what you see |
+|---|---|---|
+| 6 | vision endpoint down | **exit 3.** `caption_outcome.ok` is `captioned + reused > 0`, checked before the quality gate so a dead endpoint is not reported as soft crops |
+| 9 | tier-2 critic down | **exit 0** with a `critic/unavailable` WARN; the audit degrades to tier 1 |
+| 6 | some frames failed | **exit 0**; per-frame `caption_status: ERROR` with the endpoint error in `caption_trace.detail` |
+
+The third is the one to check for. `CaptionOutcome.ok` is a zero test, not a threshold, so 56 of
+57 captioned is a success. Read the counts on the `[6/12] caption` line, or count `caption_trace`
+entries whose `source` is `error`.
+
+Verified on a refused endpoint:
 
 ```
-[9/12] audit  4 rules, 0 errors, 1 warnings, tier 2 ran, 1 findings, 1/2 sections reviewed
-        WARN critic/unavailable: http://127.0.0.1:1/v1/chat/completions unreachable: [Errno 111]
-        report ok: True
+[6/12] caption  1 frames aligned, 2 words, 0 without transcript coverage
+         no frame was captioned -- see caption-provenance.json
+         status='ERROR' source='error' detail='... [Errno 111] Connection refused'
 ```
-
-That is a deliberate degradation rather than an oversight -- the audit still produced a result --
-but it means **exit 0 does not imply a model was reachable**. A run that reports 0 and shows no
-`critic/unavailable` warning did use a model; a run that reports 0 with that warning audited
-tier 1 only.
-| 130 | interrupted |
-
-The codes are the contract. `glimpse` does not report success for work it did not do. Exit 0
-is conditional on stage 12, which stats the filesystem rather than trusting the stages that
-would have failed, and on a model having actually written the note — without an endpoint,
-stage 7 emits a template skeleton and the process exits **1** instead of reporting a note
-nobody reviewed.
 
 ## Design decisions
 
