@@ -111,6 +111,20 @@ class Alignment:
     #: Always None until a VLM exists. Present as a key so consumers do not have to guess.
     caption: str | None = None
     caption_status: str = "NOT_CONFIGURED"
+    #: What produced `caption` -- model, tokens, seconds, attempts, fingerprint, and whether
+    #: this run called the endpoint or took the answer from the cache. Stage 6 makes 58 calls
+    #: per lecture, the largest consumer in the pipeline, and recorded none of them (#76).
+    #:
+    #: A summary, not the `messages` array. `audit-llm-transcript.json` averages ~190 KiB per
+    #: call because each entry carries the whole section text, so the equivalent here would be
+    #: ~11 MiB per run -- more than the rest of the bundle put together. ADR-0004 D4 asks the
+    #: artefact to carry enough to attribute a difference, and this does: which model, how many
+    #: tokens, how long, how many attempts, and **called vs cached**.
+    #:
+    #: That last field is not decoration. `caption_frames` caches by `(fingerprint, model)`, so
+    #: a warm re-run makes zero calls. Without an explicit marker the bundle after such a run
+    #: would show no caption evidence at all, which reads as an omission rather than a hit.
+    caption_trace: dict = field(default_factory=dict)
     quality_gate: str = ""
     content_type: str = ""
     crop_state: str = ""
@@ -133,6 +147,7 @@ class Alignment:
             "text": self.text,
             "caption": self.caption,
             "caption_status": self.caption_status,
+            "caption_trace": self.caption_trace,
             "quality_gate": self.quality_gate,
             "content_type": self.content_type,
             "crop_state": self.crop_state,
@@ -442,6 +457,7 @@ def caption_frames(
         if not path.is_file():
             alignment.caption_status = "FRAME_MISSING"
             alignment.reason = f"{source} is not in the bundle"
+            alignment.caption_trace = {"source": "missing", "image": source}
             failed += 1
             continue
 
@@ -450,6 +466,14 @@ def caption_frames(
         if prior and prior.get("fingerprint") == fingerprint and prior.get("text"):
             alignment.caption = str(prior["text"])
             alignment.caption_status = "OK"
+            # `cached`, not `called`. A warm re-run makes zero requests, and the bundle has to
+            # say so -- an empty trace here would read as "stage 6 did not run".
+            alignment.caption_trace = {
+                "source": "cached",
+                "fingerprint": fingerprint,
+                "model": prior.get("model"),
+                "served_model": prior.get("served_model"),
+            }
             reused += 1
             continue
 
@@ -464,6 +488,12 @@ def caption_frames(
         except llm.EndpointError as exc:
             alignment.caption_status = "ERROR"
             alignment.reason = f"vision endpoint refused: {exc}"
+            alignment.caption_trace = {
+                "source": "error",
+                "fingerprint": fingerprint,
+                "model": config.model,
+                "detail": str(exc),
+            }
             failed += 1
             continue
 
@@ -471,12 +501,24 @@ def caption_frames(
         if not text:
             alignment.caption_status = "EMPTY"
             alignment.reason = "vision model returned nothing"
+            alignment.caption_trace = {
+                "source": "empty",
+                "fingerprint": fingerprint,
+                "model": config.model,
+                "served_model": reply.served_model,
+                "attempts": reply.attempts,
+            }
             failed += 1
             continue
 
         alignment.caption = text
         alignment.caption_status = "OK"
         alignment.reason = ""
+        alignment.caption_trace = {
+            "source": "called",
+            "fingerprint": fingerprint,
+            **reply.as_dict(),
+        }
         produced[alignment.frame] = {
             "fingerprint": fingerprint,
             "model": config.model,

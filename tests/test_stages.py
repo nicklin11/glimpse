@@ -3233,6 +3233,56 @@ try:
         ),
         f"cache entries={len(vcache)} captioned={voutcome.captioned}",
     )
+    _traces = [a.caption_trace for a in vreport.considered]
+    check(
+        # Stage 6 makes 58 calls per lecture -- the largest consumer in the pipeline -- and
+        # recorded none of them (#76). A summary per frame, not the `messages` array:
+        # `audit-llm-transcript.json` averages ~190 KiB per call, so the full form here would
+        # be ~11 MiB per run. ADR-0004 D4 needs enough to attribute, not the prompts.
+        "every captioned frame records what produced it",
+        len(_traces) >= 2 and all(tr.get("source") == "called" for tr in _traces),
+        str([tr.get("source") for tr in _traces]),
+    )
+    check(
+        "and the trace carries model, tokens and timing, not just a yes",
+        all(
+            tr.get("model") == "fake-vision"
+            and tr.get("served_model") is not None
+            and isinstance(tr.get("prompt_tokens"), int)
+            and tr.get("seconds") is not None
+            for tr in _traces
+        ),
+        str(_traces[:1]),
+    )
+    check(
+        "the trace survives into captions.json, not only in memory",
+        all(
+            a.get("caption_trace", {}).get("source") == "called"
+            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            if a["caption_status"] == "OK"
+        ),
+        "captions.json alignments lack caption_trace",
+    )
+    _warm = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())[0]
+    check(
+        # The cache is keyed by (fingerprint, model), so a warm re-run makes zero requests.
+        # An empty trace there would read as "stage 6 did not run" rather than "nothing to
+        # do", which is the whole reason the field says `cached` instead of staying blank.
+        "a cached frame says cached, not called and not nothing",
+        len(_warm.considered) >= 2
+        and all(a.caption_trace.get("source") == "cached" for a in _warm.considered),
+        str([a.caption_trace.get("source") for a in _warm.considered]),
+    )
+    check(
+        "a cached frame still names the model it came from",
+        all(a.caption_trace.get("model") == "fake-vision" for a in _warm.considered),
+        str([a.caption_trace.get("model") for a in _warm.considered]),
+    )
+    check(
+        "the trace is not shared between frames",
+        vreport.considered[0].caption_trace is not vreport.considered[-1].caption_trace,
+        "two frames share one caption_trace dict",
+    )
     check(
         "the request carries the frame as an image part",
         len(_seen_messages) == voutcome.captioned
