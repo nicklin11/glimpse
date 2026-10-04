@@ -151,9 +151,25 @@ Frame captioning is the one stage whose cost scales with model pricing: 58 visio
 | 0 | every stage ran and every artefact it claimed is on disk |
 | 1 | usage error, or the run finished and could not verify what it wrote |
 | 2 | a dependency is missing |
-| 3 | a dependency is installed and failing |
+| 3 | a dependency is installed and failing -- currently only stage 3 |
 | 4 | a quality gate rejected the output |
 | 5 | the audit found error-tier findings in the note |
+
+Codes 2 and 3 are raised by the STT backend, which is the only dependency whose absence stops a
+run. A model endpoint that is unreachable or hangs does **not** produce exit 3: at stage 6 every
+frame fails to caption, at stage 7 synthesis fails, and at stage 9 tier 2 records a
+`critic/unavailable` WARN and degrades to tier 1. Measured on a refused endpoint:
+
+```
+[9/12] audit  4 rules, 0 errors, 1 warnings, tier 2 ran, 1 findings, 1/2 sections reviewed
+        WARN critic/unavailable: http://127.0.0.1:1/v1/chat/completions unreachable: [Errno 111]
+        report ok: True
+```
+
+That is a deliberate degradation rather than an oversight -- the audit still produced a result --
+but it means **exit 0 does not imply a model was reachable**. A run that reports 0 and shows no
+`critic/unavailable` warning did use a model; a run that reports 0 with that warning audited
+tier 1 only.
 | 130 | interrupted |
 
 The codes are the contract. `glimpse` does not report success for work it did not do. Exit 0
