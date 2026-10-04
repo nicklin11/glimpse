@@ -9,6 +9,16 @@ glimpse process lecture.webm
 glimpse doctor
 ```
 
+## Documentation
+
+| | |
+|---|---|
+| [`docs/adr/README.md`](docs/adr/README.md) | The five architecture decisions, what `D<n>` means, and the order to read them in |
+| [`docs/stages.md`](docs/stages.md) | Which of the twelve stages are built, which are open, which have been verified on a real lecture |
+
+The ADRs record what was **decided**; `docs/stages.md` records what is **built**. Where the
+two disagree, the disagreement is the work.
+
 ## Status: all 12 stages built, one gap that needs an endpoint
 
 `glimpse process` runs end to end. Exit 0 is conditional on three things, all of which are

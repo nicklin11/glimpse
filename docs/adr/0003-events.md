@@ -5,6 +5,10 @@
 - **Proposal:** [#14](https://github.com/nicklin11/glimpse/issues/14)
 - **Scope:** MVP. The terminal renderer is not designed here.
 
+> **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
+> collides with numbers in ADR-0001 and ADR-0004; references from anywhere else must be
+> written `ADR-000N Dn`. Reading order and index: [`docs/adr/README.md`](README.md).
+
 ## Context
 
 The requirement is a view of what the summarisation stages are doing. The measured facts

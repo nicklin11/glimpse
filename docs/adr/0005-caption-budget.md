@@ -5,6 +5,10 @@
 - **Proposal:** [#16](https://github.com/nicklin11/glimpse/issues/16)
 - **Scope:** MVP. The cost control for stage 6.
 
+> **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
+> collides with numbers in ADR-0001 and ADR-0004; references from anywhere else must be
+> written `ADR-000N Dn`. Reading order and index: [`docs/adr/README.md`](README.md).
+
 ## Context
 
 The requirement is "assess the frames". "All frames" has two readings that differ by **four
