@@ -59,6 +59,13 @@ from . import llm, stages
 REPORT_NAME = "synth.json"
 PROVENANCE_NAME = "synth-provenance.json"
 NOTE_NAME = "note.md"
+#: The stage-7 calls, verbatim. Written to the stage's own directory since #38 and never
+#: promoted from it until #76 -- so the note in the bundle was written by 8 calls the bundle
+#: did not record. ADR-0004 D4: a regression gate that cannot attribute a difference is not
+#: a gate. Stage 9 names its equivalent `audit-llm-transcript.json`.
+LLM_TRANSCRIPT_NAME = "synth-llm-transcript.json"
+#: What `pipeline.publishes_stage7_transcript` promotes when stage 7 runs.
+STAGE7_ARTEFACTS = (NOTE_NAME, REPORT_NAME, PROVENANCE_NAME)
 
 #: the skill's document structure. `(number, title, one line on what belongs here)`. The lint stage checks
 #: the note against this list, so a section title that drifts here drifts in two places.
@@ -461,7 +468,7 @@ def run(
     write(note, destination / REPORT_NAME)
     (destination / PROVENANCE_NAME).write_text(provenance(note, config) + "\n", encoding="utf-8")
     if isinstance(synthesizer, LLMSynthesizer):
-        synthesizer.transcript.write(destination / "synth-llm-transcript.json")
+        synthesizer.transcript.write(destination / LLM_TRANSCRIPT_NAME)
 
     out.write(
         f"  [7/{stages.IMPLEMENTED}] synth    {note.synthesizer}, "

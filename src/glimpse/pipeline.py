@@ -144,6 +144,28 @@ def _estimate(audio_seconds: float) -> tuple[float, float]:
     return audio_seconds * floor, audio_seconds * slow * HEADROOM
 
 
+def publishes_stage7_transcript(sdir: Path, bundle: Bundle) -> dict[str, Path]:
+    """Publish stage 7's artefacts out of its work directory, into the bundle.
+
+    `synth-llm-transcript.json` is conditional on the LLM synthesizer having run -- the
+    template one makes no calls and writes no transcript -- so the guard is `.is_file()`,
+    the same shape stage 9 uses for its equivalent.
+
+    The transcript used to be missing from this list entirely. `synth.py` has written it
+    since #38, into `work.dir("synth")`, and the list named three files, so the 8 calls that
+    wrote the note were recorded and then deleted with the work directory. Measured on run 6:
+    the bundle held `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7
+    equivalent. ADR-0004 D4 -- a regression gate that cannot attribute a difference is not a
+    gate -- so this returns what it published rather than returning nothing, which lets the
+    caller record it in the run's artefact registry.
+    """
+    artefacts = {extra: bundle.publish(extra, sdir / extra) for extra in synth.STAGE7_ARTEFACTS}
+    transcript = sdir / synth.LLM_TRANSCRIPT_NAME
+    if transcript.is_file():
+        artefacts[synth.LLM_TRANSCRIPT_NAME] = bundle.publish(synth.LLM_TRANSCRIPT_NAME, transcript)
+    return artefacts
+
+
 def run(
     source: Path,
     work: WorkDir,
@@ -322,8 +344,9 @@ def run(
         title=note_title,
         stream=out,
     )
-    for extra in (synth.NOTE_NAME, synth.REPORT_NAME, synth.PROVENANCE_NAME):
-        artefacts[extra] = bundle.publish(extra, sdir / extra)
+    # The transcript is conditional: it exists only when the LLM synthesizer ran, and the
+    # template one makes no calls to record. Stage 9 guards its equivalent the same way.
+    artefacts.update(publishes_stage7_transcript(sdir, bundle))
     reports.append(
         StageReport(
             7,

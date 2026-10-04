@@ -1116,6 +1116,51 @@ check(
 check("and it says where the artefacts are", "verified" in text, text)
 
 
+# --- 7z. stage 7's LLM transcript reaches the bundle -----------------------
+# The note is written by 8 model calls. `synth.py` has recorded all 8 since #38, and
+# `pipeline.py` promoted 3 files from that directory without naming the transcript, so it
+# was written to `work.dir("synth")` and deleted with it. Measured on run 6: the bundle held
+# `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7 equivalent. ADR-0004 D4 --
+# a regression gate that cannot attribute a difference is not a gate.
+def _stage7_promotes(with_transcript: bool, name: str) -> dict[str, Path]:
+    """Run the real promotion helper over a stage-7 work dir and report what it published."""
+    root = tmp / name
+    sdir = root / "synth"
+    sdir.mkdir(parents=True, exist_ok=True)
+    for extra in glsy.STAGE7_ARTEFACTS:
+        (sdir / extra).write_text("{}", encoding="utf-8")
+    if with_transcript:
+        (sdir / glsy.LLM_TRANSCRIPT_NAME).write_text('{"calls": []}\n', encoding="utf-8")
+    bundle = glb.Bundle.open(src, output_dir=str(root / "bundle"), overwrite=True)
+    published = glp.publishes_stage7_transcript(sdir, bundle)
+    return {key: Path(value).name for key, value in published.items()}
+
+
+_kept = _stage7_promotes(True, "s7")
+check(
+    # The note is written by 8 model calls. `synth.py` has recorded all 8 since #38, and the
+    # promotion named three files without it, so the transcript was written to
+    # `work.dir("synth")` and deleted with it. Measured on run 6: the bundle held
+    # `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7 equivalent.
+    # ADR-0004 D4 -- a regression gate that cannot attribute a difference is not a gate.
+    "the stage-7 transcript is published into the bundle when the LLM ran",
+    glsy.LLM_TRANSCRIPT_NAME in _kept,
+    str(sorted(_kept)),
+)
+check(
+    "and the note and its two reports are published alongside it",
+    set(_kept) == set(glsy.STAGE7_ARTEFACTS) | {glsy.LLM_TRANSCRIPT_NAME},
+    str(sorted(_kept)),
+)
+check(
+    # Guarded by `.is_file()`, because the template synthesizer makes no calls and writes no
+    # transcript. Promoting unconditionally would publish a file that does not exist.
+    "a template run publishes no transcript",
+    glsy.LLM_TRANSCRIPT_NAME not in _stage7_promotes(False, "s7b"),
+    str(sorted(_stage7_promotes(False, "s7c"))),
+)
+
+
 # ADR-0001 D3, which is what exit 0 is now conditional on. Every stage above reports success; this
 # is the case where the filesystem disagrees, and the code must not be 0.
 def unverified_pipeline(source, work, **kw):
