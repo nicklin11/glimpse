@@ -3680,6 +3680,117 @@ check(
 )
 check("no alignments is no sections", glsy.build_sections([]) == [], "produced sections")
 
+
+# --- 14. a refusal is a status, not a caption ---------------------------------------
+# #83. `NO NEW INFORMATION.` was `caption_status: OK` with a non-empty string, so a frame the
+# model declined to describe was indistinguishable from one it described. Three properties
+# have to hold at once, and only the first is obvious:
+#
+#   * it is its own status;
+#   * it is NOT a failure -- the call happened and came back, and counting 16 refusals as
+#     errors would push them into the count `cli.py` reports and, at the extreme, make an
+#     all-refusal run exit 3;
+#   * a warm re-run reports it identically. The cache path used to hardcode `OK`, which made
+#     a warm bundle claim all 57 frames described while the cold run before it said 16 were
+#     not -- same input, contradictory artefact.
+def _refusal_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    _seen_messages.append((messages, config))
+    return _caption_reply(text=glcap.NO_NEW_INFORMATION)
+
+
+# The stage-6 block above popped these and restored whatever was there before it. Without
+# them the `NO_ENDPOINT` path runs and reports 2 considered / 2 failed, which every assertion
+# below would read as "the refusal was counted as a failure" -- a false pass on the one bug
+# this block exists to catch.
+_refusal_saved = {
+    _k: os.environ.pop(_k, None) for _k in ("GLIMPSE_VLM_ENDPOINT", "GLIMPSE_VLM_MODEL")
+}
+os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+
+glle.chat = _refusal_chat
+try:
+    rdest = ctmp / "refusal_out"
+    rreport, routcome = glcap.run(cmanifest, ctrans, cquality, cimg, rdest, stream=io.StringIO())
+finally:
+    glle.chat = _fake_vision_chat
+
+check(
+    "a refusal is not a failure",
+    len(rreport.considered) >= 2 and routcome.failed == 0,
+    f"considered={len(rreport.considered)} failed={routcome.failed}",
+)
+check(
+    "a refusal is still a success -- the call happened and returned",
+    routcome.ok and routcome.refused == len(rreport.considered),
+    f"ok={routcome.ok} refused={routcome.refused} of {len(rreport.considered)}",
+)
+check(
+    "a refusal carries its own status and a reason",
+    all(a.caption_status == "NO_NEW_INFORMATION" and a.reason for a in rreport.considered),
+    str([(a.frame, a.caption_status, a.reason) for a in rreport.considered]),
+)
+check(
+    "the status is recorded in the artefact, not only in memory",
+    all(
+        a["caption_status"] == "NO_NEW_INFORMATION"
+        for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+        if a["caption_status"] != "GATED_OUT"
+    ),
+    str(
+        [
+            a["caption_status"]
+            for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+        ]
+    ),
+)
+check(
+    "the refusal count is in the outcome the report is written from",
+    json.loads((rdest / glcap.PROVENANCE_NAME).read_text().rsplit("\n{", 1)[0] + "") is not None
+    and routcome.as_dict()["refused"] == routcome.refused,
+    str(routcome.as_dict()),
+)
+
+# Warm re-run over the refusal cache: the same frames, zero calls, and the same statuses.
+_seen_messages.clear()
+glle.chat = _refusal_chat
+try:
+    wdest = ctmp / "refusal_warm"
+    wreport, woutcome = glcap.run(
+        cmanifest,
+        ctrans,
+        cquality,
+        cimg,
+        wdest,
+        cache_source=rdest / glcap.REPORT_NAME,
+        stream=io.StringIO(),
+    )
+finally:
+    glle.chat = _fake_vision_chat
+
+check(
+    "a warm re-run makes no calls",
+    not _seen_messages and woutcome.reused == len(wreport.considered),
+    f"calls={len(_seen_messages)} reused={woutcome.reused}",
+)
+check(
+    "a warm re-run reports the refusals the cold run reported",
+    [a.caption_status for a in wreport.considered] == [a.caption_status for a in rreport.considered]
+    and woutcome.refused == routcome.refused,
+    f"warm={[a.caption_status for a in wreport.considered]} "
+    f"cold={[a.caption_status for a in rreport.considered]}",
+)
+check(
+    "a warm re-run does not turn refusals into failures",
+    woutcome.failed == 0 and woutcome.ok,
+    f"failed={woutcome.failed} ok={woutcome.ok}",
+)
+
+for _k, _v in _refusal_saved.items():
+    os.environ.pop(_k, None)
+    if _v is not None:
+        os.environ[_k] = _v
+
 # --- 14. stage 7 gets the captions, not the filenames ---------------------------------
 # #84. Stage 6 computed 57 captions (55 404 chars) on lecture 1 and stage 7 was handed
 # `section.frames` -- filenames like `f_0000180000.png`, which say nothing about the slide.

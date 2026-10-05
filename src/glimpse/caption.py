@@ -61,6 +61,14 @@ UNCOVERED_SHARE_LIMIT = 0.30
 #: that separates them is #83; this is only the name to compare against.
 NO_NEW_INFORMATION = "NO NEW INFORMATION."
 
+#: Statuses that mean stage 6 produced a description. `NO_NEW_INFORMATION` belongs here and is
+#: deliberately *not* `OK`: a refusal is a finding, not a caption, and collapsing the two is
+#: what made 16 of 57 captions on lecture 1 indistinguishable from content (#83). It is still
+#: a **success** -- the frame cost a call and came back with an answer -- so it counts towards
+#: `captioned` and never towards `failed`. Making it a failure would drop 16 frames into the
+#: error count that `cli.py` reports and, at the extreme, turn an all-refusal run into exit 3.
+DESCRIBED = ("OK", "NO_NEW_INFORMATION")
+
 #: What the model is asked for. A slide in a technical lecture is mostly equations, and a
 #: generic "describe this image" returns "a slide with text on it" -- content-free, and worse
 #: than nothing because stage 7 will treat it as material. So the prompt asks for the things
@@ -460,6 +468,7 @@ def caption_frames(
     produced: dict[str, dict] = {}
     reused = 0
     failed = 0
+    refused = 0
 
     for alignment in report.considered:
         source = alignment.enhanced or alignment.image
@@ -475,7 +484,18 @@ def caption_frames(
         prior = cache.get(alignment.frame)
         if prior and prior.get("fingerprint") == fingerprint and prior.get("text"):
             alignment.caption = str(prior["text"])
-            alignment.caption_status = "OK"
+            # The same mapping the cold path applies. A cache hit that hardcoded `OK` would
+            # make a warm re-run report all 57 frames described when 16 of them are refusals --
+            # a bundle that contradicts the run before it, from the same input.
+            is_refusal = alignment.caption == NO_NEW_INFORMATION
+            alignment.caption_status = "NO_NEW_INFORMATION" if is_refusal else "OK"
+            alignment.reason = (
+                "the model found nothing on screen that the excerpt does not already state"
+                if is_refusal
+                else ""
+            )
+            if is_refusal:
+                refused += 1
             # `cached`, not `called`. A warm re-run makes zero requests, and the bundle has to
             # say so -- an empty trace here would read as "stage 6 did not run".
             alignment.caption_trace = {
@@ -522,8 +542,15 @@ def caption_frames(
             continue
 
         alignment.caption = text
-        alignment.caption_status = "OK"
-        alignment.reason = ""
+        is_refusal = text == NO_NEW_INFORMATION
+        alignment.caption_status = "NO_NEW_INFORMATION" if is_refusal else "OK"
+        alignment.reason = (
+            "the model found nothing on screen that the excerpt does not already state"
+            if is_refusal
+            else ""
+        )
+        if is_refusal:
+            refused += 1
         alignment.caption_trace = {
             "source": "called",
             "fingerprint": fingerprint,
@@ -537,7 +564,10 @@ def caption_frames(
         }
         out.write(f"         {alignment.frame}: {len(text)} chars\n")
 
-    out.write(f"         {len(produced)} captioned, {reused} from cache, {failed} failed\n")
+    out.write(
+        f"         {len(produced)} captioned, {reused} from cache, {failed} failed, "
+        f"{refused} refused\n"
+    )
     return produced
 
 
@@ -550,6 +580,10 @@ class CaptionOutcome:
     failed: int
     model: str
     served_model: str | None
+    #: Frames the vision model reported as carrying nothing beyond the excerpt. Counted out of
+    #: `captioned`, not into `failed`. Read before trusting a note's coverage: a run with a high
+    #: refusal share is a run whose screens were not read, whatever the exit code says.
+    refused: int = 0
 
     @property
     def ok(self) -> bool:
@@ -565,6 +599,7 @@ class CaptionOutcome:
             "captioned": self.captioned,
             "reused": self.reused,
             "failed": self.failed,
+            "refused": self.refused,
             "model": self.model,
             "served_model": self.served_model,
         }
@@ -637,8 +672,10 @@ def run(
         produced = caption_frames(report, images, config, cache=prior, stream=out)
         outcome = CaptionOutcome(
             captioned=len(produced),
-            reused=sum(1 for a in report.considered if a.caption_status == "OK") - len(produced),
-            failed=sum(1 for a in report.considered if a.caption_status != "OK"),
+            reused=sum(1 for a in report.considered if a.caption_status in DESCRIBED)
+            - len(produced),
+            failed=sum(1 for a in report.considered if a.caption_status not in DESCRIBED),
+            refused=sum(1 for a in report.considered if a.caption_status == "NO_NEW_INFORMATION"),
             model=config.model,
             served_model=next(
                 (e.get("served_model") for e in produced.values() if e.get("served_model")), None
