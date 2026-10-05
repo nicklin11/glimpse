@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from . import caption, llm, stages
+from . import caption, llm
 
 REPORT_NAME = "synth.json"
 PROVENANCE_NAME = "synth-provenance.json"
@@ -527,12 +527,6 @@ def run(
     if isinstance(synthesizer, LLMSynthesizer):
         synthesizer.transcript.write(destination / LLM_TRANSCRIPT_NAME)
 
-    out.write(
-        f"  [7/{stages.IMPLEMENTED}] synth    {note.synthesizer}, "
-        f"{note.filled}/{len(SECTIONS)} sections filled"
-        + ("  DEGRADED" if note.degraded else "")
-        + "\n"
-    )
     for warning in note.notes[:5]:
         out.write(f"           note: {warning}\n")
     return note

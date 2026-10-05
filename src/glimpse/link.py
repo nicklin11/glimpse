@@ -60,17 +60,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import stages
 
 LINKED_NOTE = "note.linked.md"
 REPORT_NAME = "link.json"
 PROVENANCE_NAME = "link-provenance.json"
 ALL_ARTEFACTS = (LINKED_NOTE, REPORT_NAME, PROVENANCE_NAME)
-
-#: This module's own stage number. Printing `stages.IMPLEMENTED` here worked only while
-#: IMPLEMENTED happened to equal 11; adding stage 12 made it announce "[12/12] link"
-#: for a stage that is not the twelfth.
-STAGE = 11
 
 TERMS_ENV = "GLIMPSE_TERMS_DIR"
 DEFAULT_GLOB = "Лекция*.md"
@@ -444,10 +438,10 @@ def run(
 
     if terms_dir is None:
         report = Report(terms=0, configured=False)
-        out.write(f"  [{STAGE}/{stages.IMPLEMENTED}] link    not configured\n")
         out.write(
-            f"           note: no terms directory resolved (pass --terms-dir, set "
-            f"{TERMS_ENV}, or pass --vault-path). The note is written unlinked.\n"
+            f"           note: link stage not configured -- no terms directory resolved "
+            f"(pass --terms-dir, set {TERMS_ENV}, or pass --vault-path). "
+            f"The note is written unlinked.\n"
         )
     else:
         terms = load_terms(terms_dir)
@@ -455,7 +449,6 @@ def run(
         report = Report(terms=len(terms), files=1 if counts else 0, links=sum(counts.values()))
         report.per_term.update(counts)
         report.written = True
-        out.write(f"  [{STAGE}/{stages.IMPLEMENTED}] link    {report.summary()}\n")
         for canonical, count in sorted(counts.items(), key=lambda kv: -kv[1])[:8]:
             out.write(f"           {count:>4}  {canonical}\n")
 

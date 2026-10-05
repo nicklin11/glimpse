@@ -38,7 +38,6 @@ from pathlib import Path
 
 from . import audit as audit_mod
 from . import lint as lint_mod
-from . import stages
 
 REPORT_NAME = "repair.json"
 PROVENANCE_NAME = "repair-provenance.json"
@@ -292,7 +291,6 @@ def run(
     )
     (destination / PROVENANCE_NAME).write_text(provenance(report) + "\n", encoding="utf-8")
 
-    out.write(f"  [10/{stages.IMPLEMENTED}] repair  {report.summary()}\n")
     for change in report.changes[:8]:
         out.write(f"           fixed {change.rule} line {change.line}\n")
     declined_rules = sorted({d["rule"] for d in report.declined})

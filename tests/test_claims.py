@@ -370,12 +370,14 @@ def _is_line(node: ast.AST) -> bool:
 
 
 announced: set[int] = set()
+announced_counts: dict[int, int] = {}
 for _node in ast.walk(PIPELINE_TREE):
     if not _is_line(_node):
         continue
     _prior = [n for ln, n in _stages if ln <= _node.lineno]
     if _prior:
         announced.add(_prior[-1])
+        announced_counts[_prior[-1]] = announced_counts.get(_prior[-1], 0) + 1
 
 expected = set(range(gst.FIRST_STAGE, gst.IMPLEMENTED + 1))
 #: The one documented exception, asserted as a literal so that removing the comment in
@@ -401,6 +403,73 @@ check(
     "every stage reaches the bundle's timings, silent or not",
     "write_timings(bundle, reports)" in PIPELINE,
     f"write_timings called after stage 12: {'write_timings(bundle, reports)' in PIPELINE}",
+)
+
+# --- 7b. one stage line per stage, spelled in exactly one place --------------------
+# #101: a run printed 20 stage lines for 12 stages. Commit 5ef9dfa added
+# `out.write(reports[-1].line())` for stages 5-11 to a pipeline where those seven stages
+# already announced themselves from inside their own `run()`. The check above could not see
+# it, and the reason is worth keeping in the source: `announced` is a set, and a set has no
+# duplicates. Each stage *was* announced once by pipeline.py and once more by its own module,
+# and both announcements collapsed into the same member.
+#
+# So what is counted here is the literal, not the call: a stage-prefixed string anywhere in
+# the package. `ast.unparse` reassembles the placeholder text, so `[3/{IMPLEMENTED}]` is
+# matched even though `{IMPLEMENTED}` is a FormattedValue and not part of any constant.
+# Without it the regex would see only `"  [3/"` and stop looking.
+STAGE_PREFIX = re.compile(r"\[[^\]]*IMPLEMENTED[^\]]*\]")
+
+
+def stage_prefixed_literals(tree: ast.AST) -> list[str]:
+    return [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.JoinedStr))
+        or (isinstance(node, ast.Constant) and isinstance(node.value, str))
+        if STAGE_PREFIX.search(ast.unparse(node))
+    ]
+
+
+_spelling: dict[str, list[str]] = {}
+for _src in sorted((REPO / "src" / "glimpse").glob("*.py")):
+    _hits = stage_prefixed_literals(ast.parse(_src.read_text(encoding="utf-8"), filename=str(_src)))
+    if _hits:
+        _spelling[_src.name] = _hits
+
+#: `StageReport.line()` is the formatter; `report.run` announces stage 12 because the
+#: pipeline deliberately prints no line for it (see the comment in `pipeline.run`). Nothing
+#: else may spell a stage prefix -- that is the whole of #101.
+SPELLING_ALLOWED = {"pipeline.py", "report.py"}
+check(
+    "no stage announces itself: the prefix is spelled only where a line is formatted",
+    not (set(_spelling) - SPELLING_ALLOWED),
+    f"stage-prefixed literals outside {sorted(SPELLING_ALLOWED)}: "
+    f"{ {k: len(v) for k, v in _spelling.items() if k not in SPELLING_ALLOWED} }",
+)
+
+#: Two in `pipeline.py` (the formatter and stage 3's progress line) and one in
+#: `report.py`. A second formatter, or a stage announcing itself again, breaks this.
+check(
+    "the stage prefix is spelled three times in total: the formatter, stage 3's progress "
+    "line, and stage 12",
+    sum(len(v) for v in _spelling.values()) == 3,
+    f"{ {k: len(v) for k, v in _spelling.items()} } -- expected 3 across the package",
+)
+
+#: The acceptance criterion "exactly 12 stage lines" would also be satisfied by deleting
+#: progress output, which is the other thing #101 asked to preserve. Asserted so that a
+#: future fix cannot buy the count by silencing the only line that says a 292 s stage began.
+STT_PROGRESS = "starting"
+check(
+    "stage 3 still announces itself before the transcription, not only after",
+    any(STT_PROGRESS in text for text in _spelling.get("pipeline.py", [])),
+    f"no stage-prefixed pipeline literal mentions {STT_PROGRESS!r}: {_spelling.get('pipeline.py')}",
+)
+
+check(
+    "the pipeline formats exactly one completion line per stage, with no stage twice",
+    all(announced_counts.get(s) == 1 for s in range(gst.FIRST_STAGE, gst.IMPLEMENTED)),
+    f"completion lines per stage: { {s: announced_counts.get(s, 0) for s in range(gst.FIRST_STAGE, gst.IMPLEMENTED + 1)} }",
 )
 
 # --- 8. the configuration reference matches the code ---------------------------

@@ -446,7 +446,9 @@ def run(
             7,
             "synth",
             time.monotonic() - began,
-            f"{note.synthesizer}, {note.markdown.count(chr(10))} lines",
+            f"{note.synthesizer}, {note.markdown.count(chr(10))} lines, "
+            f"{note.filled}/{len(synth.SECTIONS)} sections filled"
+            + ("  DEGRADED" if note.degraded else ""),
         )
     )
     out.write(reports[-1].line() + "\n")

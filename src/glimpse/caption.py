@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import sys
 from . import llm
-from . import stages  # noqa: F401 -- the progress line's denominator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -686,7 +685,6 @@ def run(
     (destination / PROVENANCE_NAME).write_text(
         provenance(settings, config, outcome) + "\n", encoding="utf-8"
     )
-    out.write(f"  [6/{stages.IMPLEMENTED}] caption  {report.summary()}\n")
     if report.uncovered:
         for line in report.explain().splitlines():
             out.write(f"         {line.strip()}\n")

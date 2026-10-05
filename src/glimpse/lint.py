@@ -42,7 +42,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import stages, synth
+from . import synth
 
 REPORT_NAME = "lint.json"
 PROVENANCE_NAME = "lint-provenance.json"
@@ -461,7 +461,6 @@ def run(note: Path, images: Path, destination: Path, *, stream=None) -> Report:
         json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (destination / PROVENANCE_NAME).write_text(provenance(report) + "\n", encoding="utf-8")
-    out.write(f"  [8/{stages.IMPLEMENTED}] lint    {report.summary()}\n")
     for finding in report.findings[:12]:
         out.write(
             f"           {finding.severity} {finding.rule} line {finding.line}: {finding.detail}\n"
