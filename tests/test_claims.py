@@ -21,6 +21,7 @@ thing that makes it true is a check that fails when it stops being true.
 
 import ast
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -151,6 +152,38 @@ check(
     "caches on disk are gitignored, not committed",
     all(f"{name}/" in gitignore for name in tracked),
     f"present but possibly unignored: {sorted(tracked)}",
+)
+
+# The rule above reads the file and compares strings, which cannot see a pattern that
+# covers nothing. `git check-ignore` asks git directly, on a path that need not exist, so
+# this creates no files in the working tree.
+#
+# These four were all missing and all reachable by an ordinary command:
+# `Bundle.open` (bundle.py) falls back to `./output/<lecture>` when $XDG_STATE_HOME is
+# unset, so a run started in this directory drops a whole bundle here; `images/` is where
+# stage 5 puts the frames, not the `frames/` the rule above names; `*.log` is where a
+# redirected run writes; and `-o glimpse` from the README's zipapp build lands a binary
+# named after the package at the repository root, which `ALLOWED_ROOT` would also reject.
+MUST_BE_IGNORED = {
+    "output/1_lecture_OCS/report.json": "the default bundle root when XDG_STATE_HOME is unset",
+    "output/1_lecture_OCS/images/f_1.png": "the frames stage 5 publishes",
+    "glimpse-run.log": "a redirected run",
+    "glimpse": "the zipapp binary",
+}
+unignored = []
+for candidate, _why in MUST_BE_IGNORED.items():
+    rc = subprocess.run(
+        ["git", "check-ignore", "-q", candidate],
+        cwd=REPO,
+        capture_output=True,
+        check=False,
+    ).returncode
+    if rc != 0:
+        unignored.append(candidate)
+check(
+    "a run's own outputs are gitignored",
+    not unignored,
+    f"git check-ignore accepted nothing for: {unignored}",
 )
 
 # --- 5. no shipboard ----------------------------------------------------------
