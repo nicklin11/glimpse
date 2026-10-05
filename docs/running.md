@@ -66,6 +66,23 @@ glimpse process [path] [options]
 | `--glossary FILE` | ASR term glossary for stages 9 and 10, in the `\| variant \| canonical \| domain \| date \|` format. Without it the term-drift rule finds nothing and the audit says so |
 | `--terms-dir DIR` | atomic term notes for stage 11. Default: `$GLIMPSE_TERMS_DIR`, then `<vault-path>/mscs/_terms`. Without it the note is written unlinked and the stage says so |
 
+### Redirecting the log
+
+```
+glimpse process lecture.mp4 > run.log 2>&1
+```
+
+`run.log` is live. Every stage line, per-frame caption line and audit finding reaches the file
+before the next stage begins — the streams are reconfigured line-buffered at the entrypoint, so
+`tail -f run.log` tracks the run instead of showing nothing until it exits.
+
+This was not true until #100, and the failure was worth recording. CPython block-buffers
+`sys.stdout` in 8192-byte chunks when fd 1 is not a tty, and the pipeline flushed exactly once,
+immediately before stage 3. Run 14 sat at 266 bytes for 16 minutes with its last line reading
+`[3/12] stt starting`, while the run was in fact in stage 8 with its only socket open to the LLM
+gateway. The obvious reading of that log is a 16-minute transcription stall, and what disproved
+it was the bundle's file mtimes rather than the log itself.
+
 ## `glimpse audit`
 
 ```
