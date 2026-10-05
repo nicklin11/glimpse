@@ -36,7 +36,25 @@ A local model (zero-shot, no training; there are 58 frames per lecture and no la
 labels frames before any frame leaves the machine.
 
 It is not built now because the blocker is elsewhere (#84: the captions never reach stage 7)
-and because the cost argument is weak: stage 6 is ~$0.0006 per frame on the measured gateway.
+and because the cost argument is weak.
+
+The cost of stage 6, measured on a 180-second clip of lecture 1 (7 frames, 4 of them captioned,
+`/tmp/glimpse-clip/captions.json`, `caption_trace` per frame):
+
+| per call | mean | total |
+|---|---|---|
+| `prompt_tokens` | 6 052 | 24 207 |
+| `completion_tokens` | 590 | 2 358 |
+| `seconds` | 13.8 | 55.0 |
+
+Four calls, `attempts: 1` each, no retries. On a full 75-minute lecture #81 measures 396 000
+input tokens and 7.7 minutes.
+
+**No dollar figure is given here, and the reason is that the repository does not record a
+price.** No rate for this gateway appears in any document or in any artefact, so tokens cannot
+be turned into money from anything written down. An earlier revision of this ADR carried
+"~$0.0006 per frame on the measured gateway" — no such measurement was ever made, and the
+number was flagged as unsourced in #86's review before being merged. #96 tracks it.
 
 ### D3 — Triggers for building D2
 

@@ -21,10 +21,17 @@
 The requirement is "assess the frames". "All frames" has two readings that differ by **four
 orders of magnitude** on lecture 1 (4396 s, 30 fps):
 
-| Reading | Count | Cost at the measured gateway price |
+| Reading | Count | What is known about the cost |
 |---|---|---|
 | every **decoded** frame | ~131 880 | not a cost, a different program |
-| every **distinct screen state** after stage 4 | **17** | ~$0.01 per lecture |
+| every **distinct screen state** after stage 4 | **17** | 396 k input tokens, cold cache (D5) |
+
+No dollar figure appears here, and the reason is recorded rather than implied: **the repository
+does not hold a price for this gateway.** Nothing in any document and nothing in any artefact
+states a rate per token, so a dollar cost cannot be derived from what has actually been
+measured. An earlier revision of this table had a "Cost at the measured gateway price" column
+holding ~$0.01 — there is no such measurement, and calling the price "measured" was the larger
+of the two errors. #96.
 
 17 distinct states over 73 minutes is **measured, not estimated** (ADR-0001 D4; manifest at
 `mscs/Проектирование оптимальных систем управления/frames/Лекция 1. 01.10.26/manifest.tsv`).
@@ -119,7 +126,7 @@ captioned  58   <- see below
 | decoded frames | ~131 880 | **135 602** |
 | distinct states | 17 | **58** |
 | ratio | ~7 800x | **~2 340x** |
-| visual budget | ~$0.01 | 396 k input tokens |
+| visual budget | ~$0.01 (never measured) | 396 k input tokens |
 
 ### D5 — The real budget, measured from `caption_trace`
 
