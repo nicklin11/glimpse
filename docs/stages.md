@@ -29,6 +29,7 @@ constants, not provenance.
 | 6 | per-frame `caption_trace` in `captions.json` | which model captioned this frame, tokens, timing, called or cached |
 | 6 | `caption_status` per frame | `NO_NEW_INFORMATION` says the model declined; it is a success, not an error, and a high share means the screens went unread |
 | 7, 9 | `synth-`/`audit-llm-transcript.json` | every call: full messages, model, tokens, seconds, attempts |
+| 1-12 | `timings.json` | wall clock per stage and the total. Written after stage 12, not registered as an artefact |
 
 The three LLM stages keep different amounts on purpose. Stages 7 and 9 make 8 calls each and
 store the whole `messages` array — ~190 KiB per call for stage 9, which needs the section text

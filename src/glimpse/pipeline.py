@@ -15,6 +15,7 @@ of every run states what is still missing and which issue tracks it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -110,6 +111,53 @@ class RunResult:
     @property
     def seconds(self) -> float:
         return sum(r.seconds for r in self.reports)
+
+
+#: Per-stage wall clock, written after stage 12. Every `StageReport` already carries its own
+#: seconds and `RunResult.seconds` already sums them -- all of it in memory, all of it printed
+#: to a terminal that closes. Nothing reached the bundle, so the one number the bundle could
+#: not answer was "what did this run cost": stage 3 transcribes 4520 s of audio in ~297 s and
+#: no artefact said so. Stages 6, 7 and 9 record per-call seconds (`caption_trace`, the two
+#: `*-llm-transcript.json`), which made the omission look like a stage-3 gap. It was not --
+#: stages 1, 2, 4, 5, 8, 10, 11 and 12 recorded nothing either, and stages 5-12 do not even
+#: print the seconds they had.
+#:
+#: A sidecar, not an artefact: written straight to `bundle.root` and deliberately **not**
+#: registered through `Bundle.record`, so `bundle.summary()` and stage 12's REQUIRED/OPTIONAL
+#: verification do not move. It is a record of the run, not a product of a stage.
+TIMINGS_NAME = "timings.json"
+
+
+def write_timings(bundle: Bundle, reports: list[StageReport]) -> Path:
+    """Per-stage seconds into the bundle. Best effort: never fail a run over a log."""
+    target = bundle.root / TIMINGS_NAME
+    try:
+        target.write_text(
+            json.dumps(
+                {
+                    "tool": "glimpse-timings-v1",
+                    "total_seconds": round(sum(r.seconds for r in reports), 1),
+                    "stages": [
+                        {
+                            "stage": r.index,
+                            "name": r.name,
+                            "seconds": round(r.seconds, 1),
+                            "summary": r.summary,
+                        }
+                        for r in reports
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # A run that produced a verified note does not become a failure because a diagnostic
+        # file could not be written. The exit code is about the note.
+        pass
+    return target
 
 
 def _interval(lo: float, hi: float) -> str:
@@ -463,6 +511,8 @@ def run(
     artefacts["note"] = bundle.root / synth.NOTE_NAME
     artefacts[report.REPORT_NAME] = bundle.root / report.REPORT_NAME
     reports.append(StageReport(12, "report", time.monotonic() - began, rreport2.summary()))
+
+    write_timings(bundle, reports)
 
     return RunResult(
         source=Path(source),

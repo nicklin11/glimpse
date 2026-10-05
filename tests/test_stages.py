@@ -2546,6 +2546,77 @@ check(
     str(sorted(q.name for q in (tmp / "order_bundle" / "images").glob("*"))),
 )
 
+# --- 15. the run leaves a timing record ---------------------------------------------
+# Every `StageReport` has carried its seconds since the pipeline was written, and
+# `RunResult.seconds` sums them -- all of it in memory, all of it printed to a terminal that
+# closes. Nothing reached the bundle, so the bundle could not answer "what did this run cost".
+# Stage 3 transcribes 4520 s of audio in ~297 s and no artefact said so; stages 6, 7 and 9
+# record per-call seconds, which made it look like a stage-3 gap rather than a whole-run one.
+_timings_path = tmp / "order_bundle" / glp.TIMINGS_NAME
+check(
+    "a real pipeline.run writes timings.json into the bundle",
+    _timings_path.is_file(),
+    f"{_timings_path} exists={_timings_path.is_file()}",
+)
+if _timings_path.is_file():
+    _tm = json.loads(_timings_path.read_text())
+    _tm_stages = _tm.get("stages", [])
+    check(
+        "every stage is timed, not just the ones that printed a duration",
+        [_s["stage"] for _s in _tm_stages] == list(range(1, glp.IMPLEMENTED + 1)),
+        f"stages recorded: {[_s['stage'] for _s in _tm_stages]}",
+    )
+    check(
+        "each stage carries its name, its seconds and the summary that was printed",
+        all(
+            _s["name"]
+            and isinstance(_s["seconds"], (int, float))
+            and _s["seconds"] >= 0
+            and _s["summary"] is not None
+            for _s in _tm_stages
+        ),
+        str(_tm_stages[:2]),
+    )
+    check(
+        "the total is the sum of the parts, not a separate measurement",
+        abs(_tm["total_seconds"] - round(sum(_s["seconds"] for _s in _tm_stages), 1)) < 0.2,
+        f"total={_tm['total_seconds']} sum={round(sum(_s['seconds'] for _s in _tm_stages), 1)}",
+    )
+    check(
+        "stage 3 is timed -- the 297 s that nothing else recorded",
+        any(_s["name"] == "stt" for _s in _tm_stages),
+        str([_s["name"] for _s in _tm_stages]),
+    )
+
+# The run above is stubbed, so every stage finishes in ~0 s and "the total is the sum of the
+# parts" is 0 == 0 -- it would pass against a hardcoded zero. Asserted again on real numbers
+# through `write_timings` directly, where the sum has something to get wrong.
+_tb = glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle"))
+glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle")).record(
+    "placeholder", tmp / "timing_unit.mp4"
+)
+_tunit = [
+    glp.StageReport(3, "stt", 296.5, "4901 segments"),
+    glp.StageReport(7, "synth", 155.9, "8/8"),
+]
+_twritten = glp.write_timings(_tb, _tunit)
+_tu = json.loads(_twritten.read_text())
+check(
+    "the total is a real sum of real per-stage seconds",
+    abs(_tu["total_seconds"] - 452.4) < 0.05
+    and [s["seconds"] for s in _tu["stages"]] == [296.5, 155.9],
+    f"total={_tu['total_seconds']} stages={[(s['seconds']) for s in _tu['stages']]}",
+)
+
+# A sidecar, not an artefact. If it went through `Bundle.record` the count in the run's own
+# closing line would move, and stage 12's REQUIRED/OPTIONAL verification would gain a name
+# that no stage produces.
+check(
+    "timings.json is not registered as a pipeline artefact",
+    glp.TIMINGS_NAME not in glro.REQUIRED and glp.TIMINGS_NAME not in glro.OPTIONAL,
+    "stage 12 now expects a file that no stage publishes",
+)
+
 # The stage-5 gate was a no-op in the real pipeline (#82). `Bundle.publish` moves, so the
 # work-dir quality.json stage 5 wrote was dangling by the time stage 6 read it; `align` treats a
 # missing file as "no gate information", which makes `if alignment.quality_gate and ...` false
