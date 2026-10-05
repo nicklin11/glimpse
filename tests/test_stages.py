@@ -2617,6 +2617,64 @@ check(
     "stage 12 now expects a file that no stage publishes",
 )
 
+# --- 15b. report.json says what it did not check --------------------------------
+# `report.json` said `"ok": true` after stat-ing 65 of 143 files, and nothing in the artefact
+# said so. On run 12 `captions.json` and `quality.json` were never examined, so a corrupted
+# quality gate still exits 0. #87.
+#
+# This does not make the run fail on those files -- that is a contract change and it is not
+# taken here. It makes the gap a number a reader can see and disagree with.
+_order_report = json.loads((tmp / "order_bundle" / glro.REPORT_NAME).read_text(encoding="utf-8"))
+check(
+    "report.json records how many files it checked and how many the bundle holds",
+    isinstance(_order_report.get("files_checked"), int)
+    and isinstance(_order_report.get("files_in_bundle_excluding_this_stage"), int)
+    and _order_report["files_checked"] > 0
+    and _order_report["files_in_bundle_excluding_this_stage"] > 0,
+    str(
+        {
+            k: _order_report.get(k)
+            for k in ("files_checked", "files_in_bundle_excluding_this_stage", "unchecked")
+        }
+    ),
+)
+check(
+    "checked plus unchecked is exactly what the bundle held",
+    len(_order_report["unchecked"]) + _order_report["files_checked"]
+    == _order_report["files_in_bundle_excluding_this_stage"],
+    f"unchecked={len(_order_report['unchecked'])} "
+    f"checked={_order_report['files_checked']} "
+    f"bundle={_order_report['files_in_bundle_excluding_this_stage']}",
+)
+check(
+    "captions.json is named as unexamined -- it is the whole product of stage 6",
+    "captions.json" in _order_report["unchecked"],
+    str(_order_report["unchecked"]),
+)
+_order_expected, _order_rejected = glro.expected_frames(tmp / "order_bundle")
+check(
+    "every frame count_frames verified is absent from the unexamined list",
+    not ({f"images/{name}" for name in _order_expected} & set(_order_report["unchecked"])),
+    f"expected {sorted(_order_expected)}, rejected {sorted(_order_rejected)}, "
+    f"unexamined frames {[n for n in _order_report['unchecked'] if n.startswith('images/')]}",
+)
+# The opposite is true and correct: stage 5 moves every produced frame into `images/` and then
+# decides which pass, so a rejected frame stays on disk, is subtracted from `frames_expected`,
+# and is therefore never examined by anything. It belongs in the list. The first version of the
+# check above asserted it was absent, which was a claim about the code rather than a measurement.
+check(
+    "a frame the gate rejected is listed as unexamined, because nothing checks it",
+    _order_rejected
+    and all(f"images/{name}" in _order_report["unchecked"] for name in _order_rejected),
+    f"rejected {sorted(_order_rejected)}; unexamined "
+    f"{[n for n in _order_report['unchecked'] if n.startswith('images/')]}",
+)
+check(
+    "report.json does not claim to have verified itself",
+    glro.REPORT_NAME not in _order_report["unchecked"],
+    str(_order_report["unchecked"]),
+)
+
 # The stage-5 gate was a no-op in the real pipeline (#82). `Bundle.publish` moves, so the
 # work-dir quality.json stage 5 wrote was dangling by the time stage 6 read it; `align` treats a
 # missing file as "no gate information", which makes `if alignment.quality_gate and ...` false

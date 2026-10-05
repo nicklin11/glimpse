@@ -78,6 +78,18 @@ class Report:
     frames_expected: int = 0
     frames_found: int = 0
     promoted: bool = False
+    #: Files under the bundle root other than the two this stage writes below. Recorded
+    #: because `ok` is otherwise a statement about eight filenames while the directory holds
+    #: 143, and nothing in the artefact said so. See `unchecked`.
+    bundle_files: int = 0
+    #: Files that no check touched, by name. `len(unchecked) + checked` is everything the run
+    #: left, and a reader can compare that against `bundle_files` without trusting this stage.
+    unchecked: list[str] = field(default_factory=list)
+
+    @property
+    def checked(self) -> int:
+        """Files a check actually looked at. REQUIRED entries plus the counted frames."""
+        return len(self.verified) + self.frames_found
 
     @property
     def ok(self) -> bool:
@@ -101,6 +113,9 @@ class Report:
             "frames_expected": self.frames_expected,
             "frames_found": self.frames_found,
             "note_promoted": self.promoted,
+            "files_checked": self.checked,
+            "files_in_bundle_excluding_this_stage": self.bundle_files,
+            "unchecked": self.unchecked,
         }
 
 
@@ -164,23 +179,47 @@ def count_frames(bundle_root: Path) -> tuple[int, int]:
     every manifest row and the subtraction was a no-op. A check that cannot fail is not a
     check, in the same way a gate that never fires is not a gate.
     """
-    manifest = bundle_root / frames.MANIFEST
-    if not manifest.is_file():
-        return 0, 0
+    expected, rejected = expected_frames(bundle_root)
     images = bundle_root / IMAGES
-    rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()[1:]]
-    names = [row[2].strip() for row in rows if len(row) >= 3 and row[2].strip()]
-
-    rejected = _rejected_by_gate(bundle_root)
-    expected = len([n for n in names if n not in rejected])
     found = 0
-    for name in names:
-        if name in rejected:
-            continue
+    for name in expected:
         ok, _ = _check(images / name)
         if ok:
             found += 1
-    return expected, found
+    return len(expected), found
+
+
+def expected_frames(bundle_root: Path) -> tuple[set[str], set[str]]:
+    """(manifest rows the gate did not reject, manifest rows it did)."""
+    manifest = bundle_root / frames.MANIFEST
+    if not manifest.is_file():
+        return set(), set()
+    rows = [line.split("\t") for line in manifest.read_text(encoding="utf-8").splitlines()[1:]]
+    names = {row[2].strip() for row in rows if len(row) >= 3 and row[2].strip()}
+    rejected = _rejected_by_gate(bundle_root)
+    return names - rejected, rejected
+
+
+def inventory(root: Path, checked: set[Path], frames: set[str]) -> tuple[int, list[str]]:
+    """(files under `root`, the names of those no check touched).
+
+    `checked` is the resolved paths the REQUIRED loop stat'd and passed; `frames` are the
+    manifest rows `count_frames` looked for, which live in `images/`. Everything else the run
+    wrote -- `captions.json`, `quality.json`, every `*-provenance.json`, the two intermediate
+    notes, this stage's own two files -- comes back by name.
+
+    The point is not to fail on them. It is that `report.json` said `"ok": true` after looking
+    at 65 of 143 files and nothing in the artefact said so. Measured on run 12: `captions.json`
+    and `quality.json` were never stat'd, so a corrupted quality gate still exits 0. #87.
+    """
+    on_disk = {p for p in root.rglob("*") if p.is_file()}
+    frame_paths = {(root / IMAGES / name).resolve() for name in frames}
+    unchecked = sorted(
+        p.relative_to(root).as_posix()
+        for p in on_disk
+        if p.resolve() not in checked and p.resolve() not in frame_paths
+    )
+    return len(on_disk), unchecked
 
 
 def _rejected_by_gate(bundle_root: Path) -> set[str]:
@@ -210,6 +249,7 @@ def run(
     out = stream if stream is not None else sys.stdout
     root = Path(bundle_root)
     report = Report()
+    checked_paths: set[Path] = set()
 
     published, promoted = promote_note(root, final_note, synth_note)
     report.promoted = promoted
@@ -222,6 +262,7 @@ def run(
         entry = {"artefact": name, "why": reason, "detail": detail}
         if ok:
             report.verified.append(entry)
+            checked_paths.add(Path(path).resolve())
         else:
             report.missing.append(entry)
 
@@ -231,6 +272,11 @@ def run(
             report.absent.append({"artefact": name, "why_absent": reason})
 
     report.frames_expected, report.frames_found = count_frames(root)
+    expected, _ = expected_frames(root)
+    # Measured before this stage writes its own two files, so `bundle_files` is everything
+    # under the root *except* `report.json` and `report-provenance.json`. Stated that way
+    # because a number that needs a footnote to be right is a number nobody checks.
+    report.bundle_files, report.unchecked = inventory(root, checked_paths, expected)
 
     (root / REPORT_NAME).write_text(
         json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -243,6 +289,14 @@ def run(
     )
     for entry in report.missing:
         out.write(f"           MISSING {entry['artefact']}: {entry['detail']} -- {entry['why']}\n")
+    if report.unchecked:
+        # The exit code does not depend on this line and must not. It exists so that `ok: true`
+        # is never read as "everything in the bundle was verified": it is a statement about the
+        # required set and the frame count, and those are 65 files out of 143. #87.
+        out.write(
+            f"           verified {report.checked} of {report.bundle_files + 2} files; "
+            f"{len(report.unchecked)} unexamined, listed in {REPORT_NAME} under 'unchecked'\n"
+        )
     if report.frames_expected and report.frames_found != report.frames_expected:
         out.write(
             f"           frame count disagrees with {frames.MANIFEST}: "
@@ -268,6 +322,14 @@ def provenance(report: Report) -> str:
             "frames_expected": report.frames_expected,
             "frames_found": report.frames_found,
             "note_promoted": report.promoted,
+            "files_checked": report.checked,
+            "files_in_bundle_excluding_this_stage": report.bundle_files,
+            "not_checked": report.unchecked,
+            "coverage": (
+                f"{report.checked} of {report.bundle_files + 2} files were examined; the "
+                "remainder are listed in report.json under 'unchecked'. `ok` is a statement "
+                "about the required set and the frame count, not about every file present."
+            ),
         },
         indent=2,
         ensure_ascii=False,
