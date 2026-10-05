@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -332,6 +333,44 @@ except SystemExit as exc:
     check("unknown subcommand -> exit 1, not 2", False, f"argparse exited {exc.code} uncaught")
 
 restore()
+
+# --- a redirected log is live, not flushed at exit ----------------------------
+# `pipeline` flushes exactly once, at `pipeline.py:281`, immediately before stage 3.
+# Every line after that rides on the stream's own buffering, and CPython block-buffers
+# `sys.stdout` in 8192-byte chunks whenever fd 1 is not a tty. Measured on run 14: the
+# log sat at `[3/12] stt starting` for 16m18s while stages 1-8 were finished on disk
+# and the process was in stage 9.
+#
+# Block-buffered output is discarded when a process dies without flushing, so this
+# test kills it. Letting it exit normally cannot tell the two apart -- the flush at exit
+# happens either way, which is exactly why the bug survived thirteen runs.
+KILL_SCRIPT = (
+    "import sys, time\n"
+    "from glimpse.cli import _line_buffer\n"
+    "_line_buffer()\n"
+    "sys.stdout.write('[1/12] probe  0.3s\\n')\n"
+    "time.sleep(60)\n"
+)
+size_while_running = -1
+with tempfile.TemporaryDirectory() as td:
+    log = Path(td) / "run.log"
+    child_env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
+    with log.open("wb") as handle:
+        proc = subprocess.Popen([sys.executable, "-c", KILL_SCRIPT], stdout=handle, env=child_env)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            size_while_running = log.stat().st_size
+            if size_while_running:
+                break
+            time.sleep(0.05)
+        proc.kill()
+        proc.wait()
+    landed = log.read_text(encoding="utf-8", errors="replace")
+check(
+    "a redirected log is written before the process exits",
+    "[1/12] probe" in landed,
+    f"size while running={size_while_running}B, after SIGKILL={len(landed)}B",
+)
 
 _env.restore(SAVED_ENV)
 

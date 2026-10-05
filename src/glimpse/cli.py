@@ -608,7 +608,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _line_buffer() -> None:
+    """Make a redirected log live. `pipeline` flushes exactly once, before stage 3.
+
+    `sys.stdout` is a `TextIOWrapper` over fd 1, and CPython block-buffers that whenever
+    fd 1 is not a tty, in 8192-byte chunks. Measured on run 14: with stdout redirected to a
+    file, the log stopped at `[3/12] stt starting` for 16m18s while stages 1-8 finished on
+    disk and the process sat in stage 9. A log that lags the run cannot be used to tell a
+    slow stage from a hung one, which is the only thing it is wanted for.
+
+    Reconfiguring here rather than flushing at each call site fixes every stream the
+    pipeline and the stages write to, including the ones they receive as `stream=`.
+    `StringIO` and other test doubles have no `reconfigure`, so this is not an error.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _line_buffer()
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
