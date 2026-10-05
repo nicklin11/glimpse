@@ -7,6 +7,21 @@ ADR-0004 D4
 possible: every call records the exact bytes sent and received, which is not something a
 provider library hands you.
 
+## The model id
+
+A reply carries **two** ids and they are not the same question.
+
+`Reply.model` is what was *requested* -- the id in `Config`, which is what a reader needs in
+order to reproduce the call. `Reply.served_model` is what the endpoint *reported*, or `None`
+when it reported nothing.
+
+They can disagree, and on this host's gateway they always do: the gateway routes by provider
+prefix and answers with the upstream's name instead, so `opencode-go/glm-5.3-flash` returns as
+`glm-5.3-flash`. With `force-model-prefix: true` the reported id is not routable at all --
+replaying it returns `400 unknown provider`. Writing that into the artefact would make the
+provenance chain record a call that cannot be repeated, so the reported id is recorded beside
+the requested one and the two are left to disagree in the open.
+
 ## What it does not do
 
 - **Retries on 4xx.** A 400 means the request is wrong; repeating it identically just burns
@@ -22,6 +37,8 @@ provider library hands you.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import time
@@ -33,6 +50,17 @@ from pathlib import Path
 ENDPOINT_ENV = "GLIMPSE_LLM_ENDPOINT"
 MODEL_ENV = "GLIMPSE_LLM_MODEL"
 KEY_ENV = "GLIMPSE_LLM_KEY"
+
+#: The vision endpoint has its own names, per ADR-0004 D3: the two roles are separate
+#: sections that may point at the same URL, and switching one later must cost one line.
+VISION_ENDPOINT_ENV = "GLIMPSE_VLM_ENDPOINT"
+VISION_MODEL_ENV = "GLIMPSE_VLM_MODEL"
+VISION_KEY_ENV = "GLIMPSE_VLM_KEY"
+
+#: Longest edge sent to the vision endpoint. Stage 4 extracts at 1600 px; a model that
+#: resizes internally sees the same content either way, and the request body is 4/3 the
+#: base64 size, so sending more than the frame costs bytes and buys nothing.
+VISION_MAX_EDGE = 1600
 
 #: Retries apply to 429 and 5xx only. A 4xx is a request the endpoint has already rejected on
 #: its merits.
@@ -81,24 +109,110 @@ class Config:
             "temperature": self.temperature,
         }
 
+    @classmethod
+    def vision_from_env(cls) -> Config:
+        """Config for the vision endpoint.
+
+        Falls back to the text endpoint when the vision names are unset. They are separate
+        names because they are separate roles, not because they have to be separate places
+        -- on this host both are the same gateway, and requiring both sets to be exported
+        would make stage 6 unrunnable for anyone who configured only the text side.
+        """
+        endpoint = os.environ.get(VISION_ENDPOINT_ENV, "").strip()
+        model = os.environ.get(VISION_MODEL_ENV, "").strip()
+        key = os.environ.get(VISION_KEY_ENV, "").strip() or None
+        if not endpoint and not model:
+            return cls.from_env()
+        if not endpoint:
+            raise NotConfiguredError(f"{VISION_MODEL_ENV} is set but {VISION_ENDPOINT_ENV} is not")
+        if not model:
+            raise NotConfiguredError(f"{VISION_ENDPOINT_ENV} is set but {VISION_MODEL_ENV} is not")
+        return cls(
+            endpoint=endpoint.rstrip("/"),
+            model=model,
+            api_key=key or os.environ.get(KEY_ENV, "").strip() or None,
+        )
+
+    @property
+    def is_vision_default(self) -> bool:
+        """True when this config came from the text names rather than the vision ones.
+
+        Recorded in provenance. A reader comparing two bundles needs to know whether the
+        vision stage was pointed somewhere deliberately or inherited.
+        """
+        return not os.environ.get(VISION_ENDPOINT_ENV, "").strip()
+
 
 @dataclass(frozen=True)
 class Reply:
     text: str
+    #: What was requested -- the id that can be replayed against this endpoint.
     model: str
     prompt_tokens: int | None
     completion_tokens: int | None
     seconds: float
     attempts: int
+    #: What the endpoint said it served, or None when it said nothing. Recorded beside `model`
+    #: rather than substituted for it; see the module docstring.
+    served_model: str | None = None
 
     def as_dict(self) -> dict:
         return {
             "model": self.model,
+            "served_model": self.served_model,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": round(self.seconds, 3),
             "attempts": self.attempts,
         }
+
+
+#: Media types a frame may legitimately arrive as. Anything else is refused rather than
+#: guessed at: a mislabelled data URI is a 400 whose message says nothing useful.
+IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+def image_data_uri(path: Path) -> str:
+    """A frame as a `data:` URI, ready for an OpenAI-compatible `image_url` part.
+
+    Inlined rather than uploaded or linked: the endpoint is on the tailnet, the frames are
+    already local, and a URL the endpoint can fetch would be a second failure mode that
+    only appears when the two machines disagree about reachability.
+    """
+    guessed = ("image/" + path.suffix.lstrip(".").lower()).replace("jpg", "jpeg")
+    if guessed not in IMAGE_TYPES:
+        guessed = "image/jpeg"
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{guessed};base64,{payload}"
+
+
+def vision_message(prompt: str, image: Path, *, text: str = "") -> dict:
+    """One user message carrying a prompt and one image.
+
+    The transport is unchanged -- `chat()` passes `messages` through without inspecting
+    them -- so vision is a message shape, not a second client.
+    """
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"{prompt}\n\n{text}".strip() if text else prompt},
+            {"type": "image_url", "image_url": {"url": image_data_uri(image)}},
+        ],
+    }
+
+
+def frame_fingerprint(path: Path) -> str:
+    """Content hash of a frame.
+
+    Part of the stage-6 cache key alongside the model id, per ADR-0001 D4: the same frame
+    bytes and the same model must give the same caption, and a changed model must not be
+    served from a cache the previous model filled.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def chat(
@@ -149,6 +263,16 @@ def chat(
             # Connection refused, DNS failure, timeout. All transient as far as this code can
             # tell, and all indistinguishable to it -- so they are retried and then reported.
             last = EndpointError(f"{config.url} unreachable: {exc.reason}")
+        except TimeoutError as exc:
+            # **Not** a URLError, and this killed run 10. `urlopen` wraps connection failures
+            # in URLError, but a timeout while the endpoint is still sending *headers* is
+            # raised from `http.client.getresponse()` -- outside the block `urlopen` guards --
+            # so it arrives as a bare `TimeoutError` and escaped every handler above.
+            #
+            # The symptom was a Python traceback and a dead run, not exit 3. An endpoint that
+            # is installed and hanging is exactly what exit 3 means, so the contract the README
+            # states was broken by the one failure mode nobody writes a mock for.
+            last = EndpointError(f"{config.url} timed out after {config.timeout:g}s: {exc}")
         except json.JSONDecodeError as exc:
             # A body that is not JSON is a proxy or an error page, not a refusal. Retrying
             # cannot help and retrying a 500-shaped HTML page three times is worse.
@@ -174,9 +298,17 @@ def _to_reply(data: dict, model: str, seconds: float, attempts: int) -> Reply:
             f"response has no choices[0].message.content; got keys {sorted(data)}"
         ) from exc
     usage = data.get("usage") or {}
+    echoed = data.get("model")
     return Reply(
         text=text.strip(),
-        model=str(data.get("model") or model),
+        # The requested id, not the reported one. A gateway that routes by provider prefix
+        # reports the *upstream's* name, which the endpoint itself cannot route: measured on
+        # CLIProxyAPI, `opencode-go/glm-5.3-flash` comes back as `glm-5.3-flash`, and with
+        # `force-model-prefix: true` replaying that id is a 400. Substituting it would put an
+        # unreplayable id in the artefact that is supposed to record what was asked for, so
+        # both are kept and the disagreement stays visible instead of being resolved silently.
+        model=model,
+        served_model=str(echoed) if echoed else None,
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
         seconds=seconds,

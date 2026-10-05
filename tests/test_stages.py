@@ -16,6 +16,7 @@ because that is where this pipeline's real failures live:
 The one real end-to-end run lives outside this file, in the acceptance notes.
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -32,6 +33,10 @@ from types import SimpleNamespace
 import urllib.error
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
 from glimpse import audio as gla  # noqa: E402
 from glimpse import cli as glc  # noqa: E402
@@ -212,6 +217,24 @@ def fake_run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
 tmp = Path(tempfile.mkdtemp(prefix="glimpse-test-"))
 real_workdir_env = os.environ.get(glw.WORKDIR_ENV)
 os.environ[glw.WORKDIR_ENV] = str(tmp)
+
+# The first `glimpse process` with nothing configured writes the vault it used to
+# `~/.config/glimpse/settings.toml` -- which is the point of the feature, and a write into
+# the developer's home from a test suite that is not testing it. Measured: a run of this
+# file created `~/.config/glimpse/settings.toml` holding the developer's real vault path.
+# Point the settings file at the temp dir for the whole suite. Issue #63 is about the other
+# ambient state these suites read; this one is fixed rather than deferred because this
+# change introduced the write.
+real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
+os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
+# And the export target itself. Pinning the settings file stops the suite writing a settings
+# file into the developer's home; it does not stop the export, whose target resolves through
+# `$GLIMPSE_VAULT` and then the built-in default. With the export on by default, a run of
+# this file wrote audio.wav, transcript.txt, transcript.json and transcript.raw.json into
+# the real `~/Documents/obs_notes/glimpse/`. Blocks that need a specific vault set it below.
+real_vault_env = os.environ.get(gld.VAULT_ENV)
+os.environ[gld.VAULT_ENV] = str(tmp / "vault")
+(tmp / "vault").mkdir(exist_ok=True)
 
 
 # --- 1. dependency absent vs. present-and-failing -----------------------------
@@ -450,6 +473,85 @@ check("a format of the wrong type -> exit 3", exc.code == ec.DEPENDENCY_FAILED, 
 exc = raises(glprobe.probe, tmp / "no-such-file.webm")
 check("missing input -> exit 1 (usage)", exc.code == ec.USAGE, f"{exc.code}")
 check("missing input names the path", "no-such-file.webm" in exc.message, exc.message)
+
+# Stages 1 and 2 record only a run-log line each: `[1/12] probe 0.1s video av1 1920x1080 ...`.
+# Those are measurements of the input, not constants -- re-encode the lecture and `duration`
+# moves, which moves every frame timestamp and every word boundary downstream. A bundle that
+# cannot say what it was given cannot be reasoned about offline (#80).
+_src = json.loads(
+    glprobe.provenance(
+        glprobe.MediaInfo(
+            path=Path("lecture.mp4"),
+            duration=4520.1,
+            has_video=True,
+            video_codec="av1",
+            width=1920,
+            height=1080,
+            has_audio=True,
+            audio_codec="aac",
+            sample_rate=48000,
+            channels=2,
+        ),
+        ffmpeg_version="ffmpeg version n9.0.2",
+    )
+)
+check(
+    # One document, not two: neither stage has a parameter a user can vary, so two files would
+    # each be a handful of facts about one input. `stages` says which stage measured what.
+    "the document says which stages it covers",
+    _src["stages"] == [1, 2],
+    str(_src["stages"]),
+)
+check(
+    "and the measured facts, not a summary line",
+    _src["source"]["video_codec"] == "av1"
+    and _src["source"]["width"] == 1920
+    and _src["source"]["duration"] == 4520.1,
+    str(_src["source"]),
+)
+check(
+    "including the binary that measured them -- #70 was a filter-chain bug",
+    _src["ffmpeg"] == "ffmpeg version n9.0.2",
+    str(_src.get("ffmpeg")),
+)
+_src2 = json.loads(
+    glprobe.provenance(
+        glprobe.MediaInfo(
+            path=Path("lecture.mp4"),
+            duration=4520.1,
+            has_video=True,
+            video_codec="av1",
+            width=1920,
+            height=1080,
+            has_audio=True,
+            audio_codec="aac",
+            sample_rate=48000,
+            channels=2,
+        ),
+        gla.AudioArtefact(
+            path=Path("audio.wav"),
+            duration=4520.0,
+            sample_rate=16000,
+            channels=1,
+            size_bytes=144640000,
+        ),
+        ffmpeg_version="ffmpeg version n9.0.2",
+    )
+)
+check(
+    "stage 2's extraction is in there too, since it describes the same input",
+    _src2["extracted_audio"]["sample_rate"] == 16000
+    and _src2["extracted_audio"]["channels"] == 1
+    and _src2["extracted_audio"]["size_bytes"] == 144640000,
+    str(_src2.get("extracted_audio")),
+)
+check(
+    # `duration` is the load-bearing field: it moves every frame timestamp stage 4 extracts and
+    # every word boundary stage 6 aligns against. A bundle without it cannot explain a shift.
+    "and the duration, rounded consistently with every other provenance",
+    _src2["source"]["duration"] == 4520.1 and _src2["extracted_audio"]["duration"] == 4520.0,
+    str(_src2["source"]["duration"]),
+)
 
 install_fake(
     {
@@ -975,9 +1077,49 @@ install_http([payload])
 tr = glstt.transcribe(dest, audio_duration=25.0)
 paths = glstt.write(tr, tmp)
 check(
-    "three transcript artefacts are written",
-    set(paths) == {"raw", "json", "txt"},
+    # `pipeline.run` publishes whatever `write()` returns, so a file written here and not
+    # named here never reaches the bundle. That is how stage 3 had no provenance at all
+    # (#80), and how stage 7's transcript went missing (#76).
+    "the transcript artefacts are written, and named for publishing",
+    set(paths) == {"raw", "json", "txt", "provenance"},
     str(sorted(paths)),
+)
+_prov = json.loads(paths["provenance"].read_text(encoding="utf-8"))
+check(
+    # Stage 3 recorded its results and nothing about what produced them: the backend name
+    # existed only in the run log, and `grep -ril whispercpp` over the bundle "hit"
+    # transcript.json only because an anomaly message happened to contain it.
+    "the provenance names the backend that was actually used",
+    _prov["backend"] == tr.backend and tr.backend != "unknown",
+    str(_prov["backend"]),
+)
+check(
+    "and the parameters it will be asked for, endpoint included",
+    _prov["parameters"].get("endpoint")
+    and _prov["parameters"].get("fields", {}).get("response_format") == "verbose_json",
+    str(_prov["parameters"])[:160],
+)
+check(
+    # #49 measures whisper.cpp disagreeing with itself on the same audio. A digest of the
+    # transcript is what turns "the note came out different" into "stage 3's fault" or
+    # "the model's", without re-running anything.
+    "and digests both transcript files, so a re-run can be attributed",
+    set(_prov["digests"]) == {"transcript.txt", "raw"}
+    and all(len(v) == 64 for v in _prov["digests"].values()),
+    str(_prov["digests"])[:120],
+)
+check(
+    "the digest matches the file it describes",
+    _prov["digests"]["transcript.txt"]
+    == __import__("hashlib").sha256(paths["txt"].read_bytes()).hexdigest(),
+    "stt-provenance.json digest does not match transcript.txt",
+)
+check(
+    # `requires_model: False` would say the transcript needed no model, which is the same
+    # class of error #67 was about: an artefact asserting something it did not do.
+    "stage 3 declares it needs a model",
+    _prov["requires_model"] is True and _prov["stage"] == 3,
+    str({k: _prov[k] for k in ("stage", "requires_model")}),
 )
 check("raw payload is preserved byte-for-byte", paths["raw"].read_bytes() == payload)
 text = paths["txt"].read_text(encoding="utf-8")
@@ -1060,6 +1202,15 @@ def fake_pipeline(source, work, **kw):
         # A synthesised note, not a template: exit 0 is conditional on this being False,
         # so a stand-in without the attribute would crash rather than assert.
         note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
+        # Stage 6's two verdicts, both real objects. `caption.ok` gates A/V sync; the
+        # outcome gates whether the vision endpoint worked at all, and the CLI reads it
+        # before the quality gate -- so a stand-in without it would crash rather than
+        # assert. captioned=1 because ok is `captioned + reused > 0`, and a fake run that
+        # captioned nothing is a real failure, not a neutral default.
+        caption=glcap.Report(),
+        caption_outcome=glcap.CaptionOutcome(
+            captioned=1, reused=0, failed=0, model="test-model", served_model=None
+        ),
         # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
         # failure rather than a flag: that is the ADR-0001 D3 case stage 12 exists for.
         report=glro.Report(),
@@ -1082,6 +1233,51 @@ check(
     f"rc={rc}\n{text}",
 )
 check("and it says where the artefacts are", "verified" in text, text)
+
+
+# --- 7z. stage 7's LLM transcript reaches the bundle -----------------------
+# The note is written by 8 model calls. `synth.py` has recorded all 8 since #38, and
+# `pipeline.py` promoted 3 files from that directory without naming the transcript, so it
+# was written to `work.dir("synth")` and deleted with it. Measured on run 6: the bundle held
+# `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7 equivalent. ADR-0004 D4 --
+# a regression gate that cannot attribute a difference is not a gate.
+def _stage7_promotes(with_transcript: bool, name: str) -> dict[str, Path]:
+    """Run the real promotion helper over a stage-7 work dir and report what it published."""
+    root = tmp / name
+    sdir = root / "synth"
+    sdir.mkdir(parents=True, exist_ok=True)
+    for extra in glsy.STAGE7_ARTEFACTS:
+        (sdir / extra).write_text("{}", encoding="utf-8")
+    if with_transcript:
+        (sdir / glsy.LLM_TRANSCRIPT_NAME).write_text('{"calls": []}\n', encoding="utf-8")
+    bundle = glb.Bundle.open(src, output_dir=str(root / "bundle"), overwrite=True)
+    published = glp.publishes_stage7_transcript(sdir, bundle)
+    return {key: Path(value).name for key, value in published.items()}
+
+
+_kept = _stage7_promotes(True, "s7")
+check(
+    # The note is written by 8 model calls. `synth.py` has recorded all 8 since #38, and the
+    # promotion named three files without it, so the transcript was written to
+    # `work.dir("synth")` and deleted with it. Measured on run 6: the bundle held
+    # `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7 equivalent.
+    # ADR-0004 D4 -- a regression gate that cannot attribute a difference is not a gate.
+    "the stage-7 transcript is published into the bundle when the LLM ran",
+    glsy.LLM_TRANSCRIPT_NAME in _kept,
+    str(sorted(_kept)),
+)
+check(
+    "and the note and its two reports are published alongside it",
+    set(_kept) == set(glsy.STAGE7_ARTEFACTS) | {glsy.LLM_TRANSCRIPT_NAME},
+    str(sorted(_kept)),
+)
+check(
+    # Guarded by `.is_file()`, because the template synthesizer makes no calls and writes no
+    # transcript. Promoting unconditionally would publish a file that does not exist.
+    "a template run publishes no transcript",
+    glsy.LLM_TRANSCRIPT_NAME not in _stage7_promotes(False, "s7b"),
+    str(sorted(_stage7_promotes(False, "s7c"))),
+)
 
 
 # ADR-0001 D3, which is what exit 0 is now conditional on. Every stage above reports success; this
@@ -1281,9 +1477,14 @@ gld.shutil.which = lambda n: f"/usr/bin/{n}" if n in ("ffmpeg", "ffprobe") else 
 
 
 saved_vault = os.environ.get(gld.VAULT_ENV)
-saved_gateway = os.environ.get(gld.GATEWAY_ENV)
+# The dead dependency here is the model endpoint, not a "gateway". It was `GLIMPSE_GATEWAY_URL`
+# until #68: a name nothing wrote and nothing documented, checked under the name `gateway`
+# while the endpoint the pipeline uses is `GLIMPSE_LLM_ENDPOINT`. The behaviour under test --
+# a dependency the current run cannot use is reported and not fatal -- is the same one, and
+# `check_llm` is the check that actually observes it.
+saved_llm = os.environ.get(gld.LLM_ENV)
 os.environ[gld.VAULT_ENV] = str(tmp / "definitely-no-vault")
-os.environ[gld.GATEWAY_ENV] = "http://127.0.0.1:1/inference"
+os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
 glc.run_all = isolated_run_all
 before = len(list(work_root.glob("glimpse-*")))
 out, err = io.StringIO(), io.StringIO()
@@ -1291,9 +1492,9 @@ with redirect_stdout(out), redirect_stderr(err):
     rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 after = len(list(work_root.glob("glimpse-*")))
 check(
-    # A dead gateway costs the vision stages, not the run. It must not turn a verified
-    # pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
-    "a dead gateway does NOT block the run",
+    # A dead model endpoint costs the synthesis stages, not the run. It must not turn a
+    # verified pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
+    "a dead model endpoint does NOT block the run",
     rc == ec.OK,
     f"rc={rc}",
 )
@@ -1302,18 +1503,42 @@ check(
     "refusing to start" not in out.getvalue(),
     out.getvalue(),
 )
+check(
+    # `export_to_vault` ends in `mkdir(parents=True)`. Exporting to a path that does not
+    # exist therefore creates it -- and `check_vault` then reports it exists, is a directory
+    # and is writable, so the next `glimpse doctor` certifies an empty vault. That turns a
+    # configuration mistake into a state the tool then calls healthy. Measured: this run
+    # created the fixture directory, and "vault is non-fatal for process" then failed with
+    # detail "writable" instead of reporting it missing.
+    "a missing vault is NOT created by the run",
+    not (tmp / "definitely-no-vault").exists(),
+    "the export materialised a vault that did not exist",
+)
+check(
+    "a missing vault is named in the output",
+    "definitely-no-vault" in err.getvalue(),
+    err.getvalue(),
+)
 check("the run actually proceeded", after == before + 1, f"{before} -> {after}")
 check(
     "the unusable later-stage deps are mentioned, not fatal",
     "do not use it" in err.getvalue(),
     err.getvalue(),
 )
+check(
+    # The check that made every successful run open with "gateway is unavailable, but
+    # stages 0-12 do not use it" -- false in both halves, and printed on a run whose
+    # stage 6 had just successfully captioned every frame.
+    "no dead `gateway` check is left to report",
+    "gateway" not in {c.name for c in gld.run_all()},
+    str(sorted(c.name for c in gld.run_all())),
+)
 
 # ...but `glimpse doctor` has no such excuse: it exists to report the whole
 # environment, so the same vault must be fatal there.
 strict = {c.name: c for c in gld.run_all()}
 check("doctor still sees the vault as fatal", strict["vault"].fatal, strict["vault"].detail)
-check("doctor still sees the gateway as fatal", strict["gateway"].fatal, strict["gateway"].detail)
+check("doctor still sees the model endpoint as fatal", strict["llm"].fatal, strict["llm"].detail)
 for name in ("ffmpeg", "ffprobe"):
     check(f"{name} is fatal for process", not gld.run_all(required=PROCESS_REQUIRES) or True)
 for chk in gld.run_all(required=PROCESS_REQUIRES):
@@ -1325,10 +1550,10 @@ if saved_vault is None:
     os.environ.pop(gld.VAULT_ENV, None)
 else:
     os.environ[gld.VAULT_ENV] = saved_vault
-if saved_gateway is None:
-    os.environ.pop(gld.GATEWAY_ENV, None)
+if saved_llm is None:
+    os.environ.pop(gld.LLM_ENV, None)
 else:
-    os.environ[gld.GATEWAY_ENV] = saved_gateway
+    os.environ[gld.LLM_ENV] = saved_llm
 glc.run_all = _real_run_all
 
 # --- 7f. a bad --workdir is a usage error, not a traceback --------------------
@@ -1352,35 +1577,82 @@ check("--workdir error raises no traceback", "Traceback" not in err.getvalue(), 
 
 
 # --- 8. stage 4: frames, two passes, and the zero-frame trap (ADR-0001 D3) --------------
-# The filter string is the port's contract with the script it replaces: if this changes,
-# the manifest changes, and the manifest is what stage 7 binds captions by.
+# The filter string used to be a byte-for-byte port of lecture-frames. It no longer can be,
+# and the reason is a defect in the port rather than a preference (#70): `mpdecimate` ran
+# before `select`, so it dropped every frame of a static stretch and `select`'s `max_gap`
+# guarantee never saw them. Measured worst gap on lecture 1: 580.9 s as shipped, against a
+# field documented as "guarantee a frame at least this often".
 check(
-    "the detector filter is byte-identical to lecture-frames",
-    glfr.detect_filter(glfr.Settings())
-    == "scale=640:-2:flags=lanczos,boxblur=16:4,mpdecimate=hi=64*60:lo=64*30:frac=0.1,"
-    "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)'",
+    "the detector selects on change and on gap in ONE expression",
+    glfr.detect_filter(glfr.Settings()) == "scale=640:-2:flags=lanczos,boxblur=16:4,"
+    "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)+gt(scene\\,0.3)'",
+    glfr.detect_filter(glfr.Settings()),
+)
+check(
+    # The specific failure: two chained filters cannot guarantee anything about the output
+    # of the first one, because the first one is free to emit nothing.
+    "no filter precedes select, so none can starve it",
+    "mpdecimate" not in glfr.detect_filter(glfr.Settings()),
     glfr.detect_filter(glfr.Settings()),
 )
 check(
     "the detector keeps the isnan guard",
     "isnan(prev_selected_t)" in glfr.detect_filter(glfr.Settings()),
 )
-# mpdecimate thresholds are absolute sums over 8x8 blocks, so a blur radius tuned at
-# 640 px is wrong elsewhere. The port scales it; the script did too.
+check(
+    # Reordering was measured too, and it is worse: select then mpdecimate drops exactly
+    # the frames select guaranteed. 1080 s worst gap, against 580.9 s before.
+    "the change threshold is not a separate filter either",
+    "mpdecimate" not in glfr.detect_filter(glfr.Settings())
+    and "mpdecimate" not in glfr.detect_filter(glfr.Settings(mode="interval")),
+    glfr.detect_filter(glfr.Settings()),
+)
+# The blur radius is a scene-detection aid now, but it still scales with detector width.
 check(
     "blur radius scales with detector width",
     "boxblur=32:8" in glfr.detect_filter(glfr.Settings(detect_width=1280)),
     glfr.detect_filter(glfr.Settings(detect_width=1280)),
 )
 check(
-    "interval mode drops mpdecimate entirely",
+    "interval mode drops the selector entirely",
     glfr.detect_filter(glfr.Settings(mode="interval")) == "scale=640:-2:flags=lanczos,fps=1/30",
     glfr.detect_filter(glfr.Settings(mode="interval")),
 )
 check(
-    "max_gap=0 removes the select guard",
-    "select=" not in glfr.detect_filter(glfr.Settings(max_gap=0)),
+    "max_gap=0 keeps the change condition but drops the gap guard",
+    "gte(t-prev_selected_t" not in glfr.detect_filter(glfr.Settings(max_gap=0))
+    and "gt(scene" in glfr.detect_filter(glfr.Settings(max_gap=0)),
     glfr.detect_filter(glfr.Settings(max_gap=0)),
+)
+_ff_argv: list = []
+_real_run_ffmpeg = glfr._run_ffmpeg
+glfr._run_ffmpeg = lambda args, **kw: _ff_argv.append(args)
+try:
+    glfr.detect(src)
+    glfr.extract_at(src, 1000, tmp)
+    detect_argv, extract_argv = _ff_argv
+finally:
+    glfr._run_ffmpeg = _real_run_ffmpeg
+check(
+    # `-frame_pts 1` writes the PTS in the output timebase, which after
+    # `-fps_mode passthrough` is the input frame rate, not milliseconds. Only pass 1 reads
+    # a timestamp out of ffmpeg at all -- pass 2 seeks to a number this pipeline already
+    # has and names its own output -- so pass 1 is the one that must pin the timebase.
+    # Without it every number is 30x small on a 30 fps lecture, and pass 2 then seeks into
+    # the first thirtieth of the video (#70).
+    "pass 1 pins the output timebase to milliseconds",
+    "-enc_time_base" in detect_argv and "1/1000" in detect_argv,
+    f"detect={detect_argv}",
+)
+check(
+    # The consequence that made the bug invisible: pass 2's seek and pass 1's filenames are
+    # the only link between a frame and a time, and both read the same number. Asserting
+    # the seek is derived from `pts_ms` and not from a second decode keeps them in step.
+    "pass 2 seeks to the timestamp it is given and does not re-derive one",
+    "-ss" in extract_argv
+    and extract_argv[extract_argv.index("-ss") + 1] == "1.000"
+    and "-frame_pts" not in extract_argv,
+    f"extract={extract_argv}",
 )
 check("timestamps format with centiseconds", glfr.hhmmss(4_396_000) == "01:13:16.00")
 # Centiseconds truncate: 500 ms is .05, not .50 -- the same floor the original used.
@@ -1984,13 +2256,70 @@ b_export.record("note", tmp / "toexport" / "note.md")
 b_export.record("frame0", tmp / "toexport" / "images" / "f_0001.jpg")
 vault = tmp / "vault"
 copied = b_export.export_to_vault(vault)
-check("the export copied every artefact", len(copied) == 2, str(len(copied)))
 check(
-    "the note landed at the vault root",
-    (vault / "note.md").is_file(),
+    # Frames are 84% of the bytes -- 50 of 59 MiB on lecture 1 -- and the note refers to
+    # none of them: zero `![[...]]` embeds, zero frame filenames, only time ranges like
+    # `### Фрагмент 1 (0–414 с)`. Copying them by default put 50 MiB per lecture into a
+    # directory Obsidian indexes and obsidian-git synchronises, for files nothing reads.
+    "images are not exported by default",
+    not (vault / "glimpse" / "images").exists(),
+    str(sorted(str(p.relative_to(vault)) for p in vault.rglob("*"))),
+)
+check(
+    "the note is exported even though the frames are not",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
     str(sorted(q.name for q in vault.iterdir())),
 )
-check("frames land under images/", (vault / "images" / "f_0001.jpg").is_file(), str(copied))
+check(
+    "--vault-images copies the frames too",
+    len(b_export.export_to_vault(vault, images=True)) == 2
+    and (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    str(copied),
+)
+b_export2 = glb.Bundle.open(src, output_dir=str(tmp / "toexport2"))
+(tmp / "toexport2" / "note.md").write_text("# lecture\n")
+b_export2.record("note", tmp / "toexport2" / "note.md")
+check(
+    "a bundle with no frames exports everything it has", len(b_export2.export_to_vault(vault)) == 1
+)
+copied = b_export2.export_to_vault(vault)
+check(
+    # The subdir is not cosmetic. A lecture bundle is ~170 files; exporting into the vault
+    # root puts 25 of them beside the user's own notes and creates `images/` next to them.
+    "the export lands in its own directory, not the vault root",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
+    str(sorted(q.name for q in vault.iterdir())),
+)
+check(
+    "nothing is written to the vault root",
+    not any(q.is_file() for q in vault.iterdir()),
+    str(sorted(q.name for q in vault.iterdir())),
+)
+check(
+    "frames land under images/",
+    (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    str(copied),
+)
+check(
+    "an explicit subdir is honoured",
+    len(b_export.export_to_vault(vault, subdir="mscs/Курс", images=True)) == 2
+    and (vault / "mscs/Курс/note.md").is_file()
+    and (vault / "mscs/Курс/images/f_0001.jpg").is_file(),
+    str(sorted(str(p.relative_to(vault)) for p in vault.rglob("note.md"))),
+)
+
+# images/ accumulated across runs. `Bundle.open(overwrite=False)` and a `mkdir(exist_ok)`
+# property removed nothing, so the directory was the union of every run that touched it.
+# Measured on lecture 1 after three runs: 73 PNGs where the manifest listed 58, and all 15
+# extras sat below 135.5 s -- the first run's range, before the `-frame_pts` timebase fix.
+b_images = glb.Bundle.open(src, output_dir=str(tmp / "imgbundle"))
+for stale_name in ("f_1.png", "f_2.png", "f_3_q.jpg"):
+    (b_images.images / stale_name).write_bytes(b"stale")
+check("stale frames accumulated before the reset", len(list(b_images.images.iterdir())) == 3)
+check("clear_images reports what it removed", b_images.clear_images() == 3)
+check("images/ is empty after the reset", not list(b_images.images.iterdir()))
+check("clear_images leaves the directory", b_images.images.is_dir())
+check("clear_images is idempotent", b_images.clear_images() == 0)
 check(
     "the export did not consume the bundle",
     (tmp / "toexport" / "note.md").is_file()
@@ -2090,14 +2419,42 @@ def fake_frames_run(source, frames_dir):
         path = Path(frames_dir) / f"f_{i}.png"
         path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
         made.append(path)
-    (Path(frames_dir) / "manifest.tsv").write_text("t\tstate\n0\tA\n")
+    # A real manifest, not `t\tstate\n0\tA\n`. `read_manifest` skips the first line and
+    # parses `pts_ms` from the third column, so that stub yielded zero frames and every
+    # downstream assertion about gating was vacuously true.
+    (Path(frames_dir) / "manifest.tsv").write_text(
+        "pts_ms\ttime\tfile\n"
+        + "".join(f"{i * 1000}\t00:00:0{i}.00\t{made[i].name}\n" for i in range(2))
+    )
     return Path(frames_dir) / "manifest.tsv", made
 
 
 def spy_quality_run(frames, work_dir, *, settings=None, bbox_source="geometric", stream=None):
     seen["paths"] = list(frames)
     seen["missing"] = [f.name for f in frames if not Path(f).is_file()]
-    return glq.Report(frames=[])
+    # One real FAIL, not an empty report. Returning `frames=[]` here is why the stage-5 gate
+    # being a no-op (#82) was invisible to this test: with no frames there is no gate verdict
+    # to lose, so the wiring could be wrong in either direction and the suite stayed green.
+    # `f_0.png` passes so it reaches the images dir; `f_1.png` fails so it must not.
+    return glq.Report(
+        frames=[
+            glq.FrameQuality(
+                name=Path(f).name,
+                source=Path(f),
+                passed=(i == 0),
+                mege=100.0,
+                threshold=50.0,
+                crop_state="cropped",
+                content_type="white_document",
+                bbox_source="geometric",
+                edges=4,
+                luma_mean=200.0,
+                luma_std=10.0,
+            )
+            for i, f in enumerate(frames)
+        ],
+        threshold=50.0,
+    )
 
 
 # Only the I/O stages are stubbed. pipeline.run itself runs for real, because the ordering
@@ -2187,6 +2544,187 @@ check(
     "the frames still reach the bundle afterwards",
     len(list((tmp / "order_bundle" / "images").glob("*.png"))) == 2,
     str(sorted(q.name for q in (tmp / "order_bundle" / "images").glob("*"))),
+)
+
+# --- 15. the run leaves a timing record ---------------------------------------------
+# Every `StageReport` has carried its seconds since the pipeline was written, and
+# `RunResult.seconds` sums them -- all of it in memory, all of it printed to a terminal that
+# closes. Nothing reached the bundle, so the bundle could not answer "what did this run cost".
+# Stage 3 transcribes 4520 s of audio in ~297 s and no artefact said so; stages 6, 7 and 9
+# record per-call seconds, which made it look like a stage-3 gap rather than a whole-run one.
+_timings_path = tmp / "order_bundle" / glp.TIMINGS_NAME
+check(
+    "a real pipeline.run writes timings.json into the bundle",
+    _timings_path.is_file(),
+    f"{_timings_path} exists={_timings_path.is_file()}",
+)
+if _timings_path.is_file():
+    _tm = json.loads(_timings_path.read_text())
+    _tm_stages = _tm.get("stages", [])
+    check(
+        "every stage is timed, not just the ones that printed a duration",
+        [_s["stage"] for _s in _tm_stages] == list(range(1, glp.IMPLEMENTED + 1)),
+        f"stages recorded: {[_s['stage'] for _s in _tm_stages]}",
+    )
+    check(
+        "each stage carries its name, its seconds and the summary that was printed",
+        all(
+            _s["name"]
+            and isinstance(_s["seconds"], (int, float))
+            and _s["seconds"] >= 0
+            and _s["summary"] is not None
+            for _s in _tm_stages
+        ),
+        str(_tm_stages[:2]),
+    )
+    check(
+        "the total is the sum of the parts, not a separate measurement",
+        abs(_tm["total_seconds"] - round(sum(_s["seconds"] for _s in _tm_stages), 1)) < 0.2,
+        f"total={_tm['total_seconds']} sum={round(sum(_s['seconds'] for _s in _tm_stages), 1)}",
+    )
+    check(
+        "stage 3 is timed -- the 297 s that nothing else recorded",
+        any(_s["name"] == "stt" for _s in _tm_stages),
+        str([_s["name"] for _s in _tm_stages]),
+    )
+
+# The run above is stubbed, so every stage finishes in ~0 s and "the total is the sum of the
+# parts" is 0 == 0 -- it would pass against a hardcoded zero. Asserted again on real numbers
+# through `write_timings` directly, where the sum has something to get wrong.
+_tb = glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle"))
+glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle")).record(
+    "placeholder", tmp / "timing_unit.mp4"
+)
+_tunit = [
+    glp.StageReport(3, "stt", 296.5, "4901 segments"),
+    glp.StageReport(7, "synth", 155.9, "8/8"),
+]
+_twritten = glp.write_timings(_tb, _tunit)
+_tu = json.loads(_twritten.read_text())
+check(
+    "the total is a real sum of real per-stage seconds",
+    abs(_tu["total_seconds"] - 452.4) < 0.05
+    and [s["seconds"] for s in _tu["stages"]] == [296.5, 155.9],
+    f"total={_tu['total_seconds']} stages={[(s['seconds']) for s in _tu['stages']]}",
+)
+
+# A sidecar, not an artefact. If it went through `Bundle.record` the count in the run's own
+# closing line would move, and stage 12's REQUIRED/OPTIONAL verification would gain a name
+# that no stage produces.
+check(
+    "timings.json is not registered as a pipeline artefact",
+    glp.TIMINGS_NAME not in glro.REQUIRED and glp.TIMINGS_NAME not in glro.OPTIONAL,
+    "stage 12 now expects a file that no stage publishes",
+)
+
+# --- 15b. report.json says what it did not check --------------------------------
+# `report.json` said `"ok": true` after stat-ing 65 of 143 files, and nothing in the artefact
+# said so. On run 12 `captions.json` and `quality.json` were never examined, so a corrupted
+# quality gate still exits 0. #87.
+#
+# This does not make the run fail on those files -- that is a contract change and it is not
+# taken here. It makes the gap a number a reader can see and disagree with.
+_order_report = json.loads((tmp / "order_bundle" / glro.REPORT_NAME).read_text(encoding="utf-8"))
+check(
+    "report.json records how many files it checked and how many the bundle holds",
+    isinstance(_order_report.get("files_checked"), int)
+    and isinstance(_order_report.get("files_in_bundle_excluding_this_stage"), int)
+    and _order_report["files_checked"] > 0
+    and _order_report["files_in_bundle_excluding_this_stage"] > 0,
+    str(
+        {
+            k: _order_report.get(k)
+            for k in ("files_checked", "files_in_bundle_excluding_this_stage", "unchecked")
+        }
+    ),
+)
+check(
+    "checked plus unchecked is exactly what the bundle held",
+    len(_order_report["unchecked"]) + _order_report["files_checked"]
+    == _order_report["files_in_bundle_excluding_this_stage"],
+    f"unchecked={len(_order_report['unchecked'])} "
+    f"checked={_order_report['files_checked']} "
+    f"bundle={_order_report['files_in_bundle_excluding_this_stage']}",
+)
+check(
+    "captions.json is named as unexamined -- it is the whole product of stage 6",
+    "captions.json" in _order_report["unchecked"],
+    str(_order_report["unchecked"]),
+)
+_order_expected, _order_rejected = glro.expected_frames(tmp / "order_bundle")
+check(
+    "every frame count_frames verified is absent from the unexamined list",
+    not ({f"images/{name}" for name in _order_expected} & set(_order_report["unchecked"])),
+    f"expected {sorted(_order_expected)}, rejected {sorted(_order_rejected)}, "
+    f"unexamined frames {[n for n in _order_report['unchecked'] if n.startswith('images/')]}",
+)
+# The opposite is true and correct: stage 5 moves every produced frame into `images/` and then
+# decides which pass, so a rejected frame stays on disk, is subtracted from `frames_expected`,
+# and is therefore never examined by anything. It belongs in the list. The first version of the
+# check above asserted it was absent, which was a claim about the code rather than a measurement.
+check(
+    "a frame the gate rejected is listed as unexamined, because nothing checks it",
+    _order_rejected
+    and all(f"images/{name}" in _order_report["unchecked"] for name in _order_rejected),
+    f"rejected {sorted(_order_rejected)}; unexamined "
+    f"{[n for n in _order_report['unchecked'] if n.startswith('images/')]}",
+)
+check(
+    "report.json does not claim to have verified itself",
+    glro.REPORT_NAME not in _order_report["unchecked"],
+    str(_order_report["unchecked"]),
+)
+
+# The stage-5 gate was a no-op in the real pipeline (#82). `Bundle.publish` moves, so the
+# work-dir quality.json stage 5 wrote was dangling by the time stage 6 read it; `align` treats a
+# missing file as "no gate information", which makes `if alignment.quality_gate and ...` false
+# for every frame, so nothing was ever gated out. `publish` returns a non-existent source path
+# unchanged rather than raising, so no run reported it.
+#
+# Read the *published* captions.json rather than calling `align()` directly. Calling `align()`
+# with a quality file that exists is what the rest of this file does, and it passed throughout
+# while the wiring was broken.
+_order_caps = json.loads((tmp / "order_bundle" / "captions.json").read_text(encoding="utf-8"))
+_order_by_name = {a["frame"]: a for a in _order_caps["alignments"]}
+check(
+    "the gate verdict survives into the published captions.json",
+    _order_by_name.get("f_1.png", {}).get("quality_gate") == "FAIL",
+    str({k: v.get("quality_gate") for k, v in _order_by_name.items()}),
+)
+check(
+    "and the frame stage 5 rejected is GATED_OUT, not captioned anyway",
+    _order_by_name.get("f_1.png", {}).get("caption_status") == "GATED_OUT",
+    str({k: v.get("caption_status") for k, v in _order_by_name.items()}),
+)
+check(
+    # Empty strings on all 58 frames is the exact signature of the bug, and a weaker version of
+    # this check is what would have caught it: `""` is falsy, so the guard silently passed.
+    "no frame carries an empty gate while stage 5 recorded one",
+    all(a["quality_gate"] for a in _order_caps["alignments"]),
+    str([a["frame"] for a in _order_caps["alignments"] if not a["quality_gate"]]),
+)
+check(
+    # Stage 12's `count_frames` walks the manifest and stats each row. Stage 5 only moves the
+    # frames that *passed* into `images/`, so a correctly gated bundle holds fewer PNGs than the
+    # manifest has rows. Counting the manifest alone made the correct outcome read as
+    # `frames 57/58` and exit 1. Reachable only since #82 -- before it, the gate never fired and
+    # the two counts always agreed.
+    "stage 12 counts the gate's rejections as expected, not as missing",
+    glro.count_frames(tmp / "order_bundle")[0] == 1
+    and glro.count_frames(tmp / "order_bundle")[1] == 1,
+    f"expected/found = {glro.count_frames(tmp / 'order_bundle')}, want (1, 1) for 1 pass + 1 fail",
+)
+check(
+    # And the rejection must be visible rather than merely subtracted, or ADR-0005 D2's "N
+    # states, M uncaptioned" has nowhere to live.
+    "the rejected frame is recorded in captions.json, not silently dropped",
+    _order_by_name.get("f_1.png", {}).get("reason", "").startswith("stage 5"),
+    repr(_order_by_name.get("f_1.png", {}).get("reason")),
+)
+check(
+    "the frame stage 5 passed still carries PASS",
+    _order_by_name.get("f_0.png", {}).get("quality_gate") == "PASS",
+    str(_order_by_name.get("f_0.png", {}).get("quality_gate")),
 )
 
 # --- 11. stage 5 quality: MEGE, the full-frame fallback, and a derived gate ------------
@@ -2571,13 +3109,17 @@ check(
     "source selection is not reaching observe()",
 )
 try:
-    glq.VLMEstimator().estimate(dark_canvas, qs)
+    glq.resolve_estimator("vlm")
     vlm_raised = None
-except glq.NotConfiguredError as exc:
+except KeyError as exc:
     vlm_raised = exc
 check(
-    "an unconfigured VLM bbox source raises NotConfiguredError rather than guessing",
-    vlm_raised is not None,
+    # `vlm` was registered and raised NotConfiguredError on both branches, so setting
+    # GLIMPSE_BBOX_SOURCE=vlm failed at the crop rather than being refused as the unknown
+    # name it is. A vision bbox source is unbuilt; an unbuilt option must be absent from the
+    # registry, not present and broken (#67).
+    "the unbuilt `vlm` bbox source is not registered at all",
+    vlm_raised is not None and "vlm" in str(vlm_raised),
     f"raised={vlm_raised!r}",
 )
 try:
@@ -2896,7 +3438,7 @@ check(
 
 # The artefact.
 cdest = ctmp / "out"
-crun = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
+creport, coutcome = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
 check(
     "run() writes the report",
     (cdest / glcap.REPORT_NAME).is_file(),
@@ -2909,19 +3451,34 @@ check(
 )
 cpayload = json.loads((cdest / glcap.REPORT_NAME).read_text(encoding="utf-8"))
 check(
-    "provenance says this stage needs no model",
-    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is False,
+    "provenance says this stage needs a model",
+    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is True,
     (cdest / glcap.PROVENANCE_NAME).read_text(),
 )
 check(
-    "provenance names the caption gap rather than hiding it",
-    "NOT_CONFIGURED" in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"],
+    # The old assertion was that provenance names the caption gap via a `NOT_CONFIGURED`
+    # string. The string is gone by design -- it read like content. What has to survive is
+    # the gap being *recorded*: an absent endpoint must still be visible in the artefact,
+    # with the count of frames it cost.
+    "provenance records that no frame was captioned, without a placeholder string",
+    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["captioned"] == 0
+    and "NOT_CONFIGURED"
+    not in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["model"],
     (cdest / glcap.PROVENANCE_NAME).read_text(),
+)
+check(
+    "an unconfigured endpoint marks each frame NO_ENDPOINT rather than leaving a caption slot",
+    all(
+        a["caption_status"] == "NO_ENDPOINT"
+        for a in cpayload["alignments"]
+        if a["caption_status"] != "GATED_OUT"
+    ),
+    str([a["caption_status"] for a in cpayload["alignments"]]),
 )
 check(
     "every alignment round-trips through the artefact",
-    [a["frame"] for a in cpayload["alignments"]] == [a.frame for a in crun.alignments]
-    and cpayload["alignments"][0]["on_screen_ms"] == list(crun.alignments[0].on_screen_ms),
+    [a["frame"] for a in cpayload["alignments"]] == [a.frame for a in creport.alignments]
+    and cpayload["alignments"][0]["on_screen_ms"] == list(creport.alignments[0].on_screen_ms),
     str(cpayload["alignments"][0]),
 )
 check(
@@ -2929,6 +3486,261 @@ check(
     "uncovered_share" in cpayload["provenance"],
     str(cpayload["provenance"]),
 )
+
+
+# --- 12a. stage 6 captioning: the half that calls a model -------------------------
+# The tests above cover alignment and the no-endpoint degradation. These cover the path
+# that actually exists now: a caption comes back, the cache is keyed correctly, and a
+# refusing endpoint is recorded rather than swallowed.
+#
+# `llm.chat` is replaced rather than `urlopen`, so these assert what this stage owns -- the
+# message it builds, the status it records, the cache key it uses -- and not the transport,
+# which `test_llm.py` and the FakeHTTP block already cover.
+_real_chat = glle.chat
+
+
+def _caption_reply(text="$\\dot{x} = Ax$, state feedback"):
+    return glle.Reply(
+        text=text,
+        model="fake-vision",
+        prompt_tokens=10,
+        completion_tokens=10,
+        seconds=0.01,
+        attempts=1,
+        served_model="fake-vision",
+    )
+
+
+_seen_messages: list = []
+# The alignment tests above never needed the frames to exist -- `align` reads only the
+# manifest and the quality report. Captioning opens the file, so they have to be present.
+# The bytes are arbitrary and deliberately not a real PNG: nothing decodes them, and
+# `image_data_uri` picks the media type from the suffix, which is the part under test.
+_FAKE_FRAME = b"\x89PNG\r\n\x1a\n" + b"frame-bytes-for-stage-6"
+for _name in ("f_0000000000.png", "f_0000100000.png", "f_0000200000.png"):
+    (cimg / _name).write_bytes(_FAKE_FRAME)
+
+_leftovers = os.environ.pop("GLIMPSE_VLM_MODEL", None) or os.environ.pop("GLIMPSE_LLM_MODEL", None)
+os.environ.pop("GLIMPSE_VLM_ENDPOINT", None)
+os.environ.pop("GLIMPSE_LLM_ENDPOINT", None)
+os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+
+
+def _fake_vision_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    _seen_messages.append((messages, config))
+    return _caption_reply()
+
+
+glle.chat = _fake_vision_chat
+try:
+    vdest = ctmp / "vision_out"
+    vreport, voutcome = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    vcache = json.loads((vdest / glcap.REPORT_NAME).read_text())["captions"]
+    # Guard first: `all()` over an empty sequence is True, and three of these assertions
+    # were vacuously green before the frames existed. Every check below states how many
+    # things it looked at, so a zero reads as a failure rather than as a pass.
+    check(
+        "there is at least one frame to caption, and one was",
+        len(vreport.considered) >= 2 and voutcome.captioned == len(vreport.considered),
+        f"considered={len(vreport.considered)} captioned={voutcome.captioned}",
+    )
+    check(
+        "every captioned frame carries status OK and non-empty text",
+        vreport.considered
+        and all(a.caption_status == "OK" and a.caption for a in vreport.considered),
+        str([(a.frame, a.caption_status) for a in vreport.considered]),
+    )
+    check(
+        "the caption lands in the artefact, not just in memory",
+        len(vcache) == voutcome.captioned
+        and all(
+            a["caption"] == "$\\dot{x} = Ax$, state feedback"
+            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            if a["caption_status"] == "OK"
+        ),
+        f"cache entries={len(vcache)} captioned={voutcome.captioned}",
+    )
+    _traces = [a.caption_trace for a in vreport.considered]
+    check(
+        # Stage 6 makes 58 calls per lecture -- the largest consumer in the pipeline -- and
+        # recorded none of them (#76). A summary per frame, not the `messages` array:
+        # `audit-llm-transcript.json` averages ~190 KiB per call, so the full form here would
+        # be ~11 MiB per run. ADR-0004 D4 needs enough to attribute, not the prompts.
+        "every captioned frame records what produced it",
+        len(_traces) >= 2 and all(tr.get("source") == "called" for tr in _traces),
+        str([tr.get("source") for tr in _traces]),
+    )
+    check(
+        "and the trace carries model, tokens and timing, not just a yes",
+        all(
+            tr.get("model") == "fake-vision"
+            and tr.get("served_model") is not None
+            and isinstance(tr.get("prompt_tokens"), int)
+            and tr.get("seconds") is not None
+            for tr in _traces
+        ),
+        str(_traces[:1]),
+    )
+    check(
+        "the trace survives into captions.json, not only in memory",
+        all(
+            a.get("caption_trace", {}).get("source") == "called"
+            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            if a["caption_status"] == "OK"
+        ),
+        "captions.json alignments lack caption_trace",
+    )
+    _warm = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())[0]
+    check(
+        # The cache is keyed by (fingerprint, model), so a warm re-run makes zero requests.
+        # An empty trace there would read as "stage 6 did not run" rather than "nothing to
+        # do", which is the whole reason the field says `cached` instead of staying blank.
+        "a cached frame says cached, not called and not nothing",
+        len(_warm.considered) >= 2
+        and all(a.caption_trace.get("source") == "cached" for a in _warm.considered),
+        str([a.caption_trace.get("source") for a in _warm.considered]),
+    )
+    check(
+        "a cached frame still names the model it came from",
+        all(a.caption_trace.get("model") == "fake-vision" for a in _warm.considered),
+        str([a.caption_trace.get("model") for a in _warm.considered]),
+    )
+    check(
+        "the trace is not shared between frames",
+        vreport.considered[0].caption_trace is not vreport.considered[-1].caption_trace,
+        "two frames share one caption_trace dict",
+    )
+    check(
+        "the request carries the frame as an image part",
+        len(_seen_messages) == voutcome.captioned
+        and all(
+            [part["type"] for part in m[0]["content"]] == ["text", "image_url"]
+            and m[0]["content"][1]["image_url"]["url"]
+            == "data:image/png;base64," + base64.b64encode(_FAKE_FRAME).decode("ascii")
+            for m, _ in _seen_messages
+        ),
+        f"messages={len(_seen_messages)}",
+    )
+    # `caption.run` writes into a scratch directory, so reading the cache from `destination`
+    # found nothing on every run. Run 10 reported `0 from cache` immediately after run 9 had
+    # captioned the same 58 frames from the same bytes. `source: "cached"` in `caption_trace`
+    # was unreachable in the real pipeline for the same reason `GATED_OUT` was (#82): the code
+    # existed, the unit test passed, and nothing ever supplied it with a real cache.
+    _bucket = ctmp / "cache_bucket"
+    _bucket.mkdir()
+    (_bucket / glcap.REPORT_NAME).write_text(
+        (vdest / glcap.REPORT_NAME).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _seen_messages.clear()
+    _warm = glcap.run(
+        cmanifest,
+        ctrans,
+        cquality,
+        cimg,
+        ctmp / "warm_out",
+        cache_source=_bucket / glcap.REPORT_NAME,
+        stream=io.StringIO(),
+    )
+    check(
+        "the cache is read from cache_source, not from the scratch destination",
+        _warm[1].reused == len(_warm[0].considered) and _warm[1].captioned == 0,
+        f"captioned={_warm[1].captioned} reused={_warm[1].reused} of {len(_warm[0].considered)}",
+    )
+    check(
+        "and a warm run issues no requests at all, which is the whole point of the cache",
+        len(_seen_messages) == 0,
+        f"{len(_seen_messages)} vision requests on a fully cached run",
+    )
+    check(
+        "a missing cache_source falls back to calling every frame, not to reusing nothing",
+        glcap.run(
+            cmanifest,
+            ctrans,
+            cquality,
+            cimg,
+            ctmp / "nocache_out",
+            cache_source=_bucket / "no-such-file.json",
+            stream=io.StringIO(),
+        )[1].reused
+        == 0,
+        "a missing cache_source still reported reuse",
+    )
+    check(
+        # The frames in this fixture all carry transcript, so the no-transcript branch of
+        # `vision_message` is asserted on the helper rather than through a fixture that
+        # would have to manufacture an uncovered frame. The point is that nothing is
+        # concatenated when there is nothing to concatenate.
+        "a frame with no transcript sends the prompt alone, with no invented context",
+        glle.vision_message("PROMPT", cimg / "f_0000000000.png")["content"][0]["text"] == "PROMPT"
+        and glle.vision_message("PROMPT", cimg / "f_0000000000.png", text="spoken")["content"][0][
+            "text"
+        ]
+        == "PROMPT\n\nspoken",
+        "vision_message text branch",
+    )
+    check(
+        "the cache is keyed by frame fingerprint and model id",
+        len(vcache) == voutcome.captioned
+        and all(
+            entry["model"] == "fake-vision" and len(entry["fingerprint"]) == 64
+            for entry in vcache.values()
+        ),
+        f"entries={len(vcache)}",
+    )
+
+    # Second run: the cache must serve it, and the model must not be called again.
+    _seen_messages.clear()
+    _, voutcome2 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    check(
+        "a second run over the same frames reuses every caption and calls nothing",
+        voutcome2.reused == voutcome.captioned and not _seen_messages,
+        f"reused={voutcome2.reused} calls={len(_seen_messages)}",
+    )
+
+    # A changed model must not be served the previous model's cache.
+    os.environ["GLIMPSE_VLM_MODEL"] = "other-vision"
+    os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision2.invalid/v1"
+    _seen_messages.clear()
+    _, voutcome3 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    check(
+        "a different model id invalidates the cache rather than inheriting it",
+        voutcome3.reused == 0 and voutcome3.captioned == len(vreport.considered),
+        f"reused={voutcome3.reused} captioned={voutcome3.captioned}",
+    )
+
+    # A refusing endpoint is recorded per frame, and the run says it captioned nothing.
+    def _refusing_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        raise glle.EndpointError("vision refused: 400 unsupported")
+
+    glle.chat = _refusing_chat
+    rreport, routcome = glcap.run(
+        cmanifest, ctrans, cquality, cimg, ctmp / "refused_out", stream=io.StringIO()
+    )
+    check(
+        "a refusing endpoint is recorded per frame, not swallowed",
+        all(
+            a.caption_status == "ERROR" and "vision endpoint refused" in a.reason
+            for a in rreport.considered
+        ),
+        str([(a.frame, a.caption_status, a.reason) for a in rreport.considered]),
+    )
+    check(
+        "a run that captioned nothing says so",
+        not routcome.ok and routcome.captioned == 0,
+        routcome.as_dict(),
+    )
+finally:
+    glle.chat = _real_chat
+    for _k in (
+        "GLIMPSE_VLM_ENDPOINT",
+        "GLIMPSE_VLM_MODEL",
+        "GLIMPSE_LLM_ENDPOINT",
+        "GLIMPSE_LLM_MODEL",
+    ):
+        os.environ.pop(_k, None)
+    if _leftovers:
+        os.environ["GLIMPSE_LLM_MODEL"] = _leftovers
 
 
 # --- 13. stage 7 synth: structure, degradation, model independence ------------------
@@ -2997,6 +3809,235 @@ check(
 )
 check("no alignments is no sections", glsy.build_sections([]) == [], "produced sections")
 
+
+# --- 14. a refusal is a status, not a caption ---------------------------------------
+# #83. `NO NEW INFORMATION.` was `caption_status: OK` with a non-empty string, so a frame the
+# model declined to describe was indistinguishable from one it described. Three properties
+# have to hold at once, and only the first is obvious:
+#
+#   * it is its own status;
+#   * it is NOT a failure -- the call happened and came back, and counting 16 refusals as
+#     errors would push them into the count `cli.py` reports and, at the extreme, make an
+#     all-refusal run exit 3;
+#   * a warm re-run reports it identically. The cache path used to hardcode `OK`, which made
+#     a warm bundle claim all 57 frames described while the cold run before it said 16 were
+#     not -- same input, contradictory artefact.
+def _refusal_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    _seen_messages.append((messages, config))
+    return _caption_reply(text=glcap.NO_NEW_INFORMATION)
+
+
+# The stage-6 block above popped these and restored whatever was there before it. Without
+# them the `NO_ENDPOINT` path runs and reports 2 considered / 2 failed, which every assertion
+# below would read as "the refusal was counted as a failure" -- a false pass on the one bug
+# this block exists to catch.
+_refusal_saved = {
+    _k: os.environ.pop(_k, None) for _k in ("GLIMPSE_VLM_ENDPOINT", "GLIMPSE_VLM_MODEL")
+}
+os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+
+glle.chat = _refusal_chat
+try:
+    rdest = ctmp / "refusal_out"
+    rreport, routcome = glcap.run(cmanifest, ctrans, cquality, cimg, rdest, stream=io.StringIO())
+finally:
+    glle.chat = _fake_vision_chat
+
+check(
+    "a refusal is not a failure",
+    len(rreport.considered) >= 2 and routcome.failed == 0,
+    f"considered={len(rreport.considered)} failed={routcome.failed}",
+)
+check(
+    "a refusal is still a success -- the call happened and returned",
+    routcome.ok and routcome.refused == len(rreport.considered),
+    f"ok={routcome.ok} refused={routcome.refused} of {len(rreport.considered)}",
+)
+check(
+    "a refusal carries its own status and a reason",
+    all(a.caption_status == "NO_NEW_INFORMATION" and a.reason for a in rreport.considered),
+    str([(a.frame, a.caption_status, a.reason) for a in rreport.considered]),
+)
+check(
+    "the status is recorded in the artefact, not only in memory",
+    all(
+        a["caption_status"] == "NO_NEW_INFORMATION"
+        for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+        if a["caption_status"] != "GATED_OUT"
+    ),
+    str(
+        [
+            a["caption_status"]
+            for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+        ]
+    ),
+)
+check(
+    "the refusal count is in the outcome the report is written from",
+    json.loads((rdest / glcap.PROVENANCE_NAME).read_text().rsplit("\n{", 1)[0] + "") is not None
+    and routcome.as_dict()["refused"] == routcome.refused,
+    str(routcome.as_dict()),
+)
+
+# Warm re-run over the refusal cache: the same frames, zero calls, and the same statuses.
+_seen_messages.clear()
+glle.chat = _refusal_chat
+try:
+    wdest = ctmp / "refusal_warm"
+    wreport, woutcome = glcap.run(
+        cmanifest,
+        ctrans,
+        cquality,
+        cimg,
+        wdest,
+        cache_source=rdest / glcap.REPORT_NAME,
+        stream=io.StringIO(),
+    )
+finally:
+    glle.chat = _fake_vision_chat
+
+check(
+    "a warm re-run makes no calls",
+    not _seen_messages and woutcome.reused == len(wreport.considered),
+    f"calls={len(_seen_messages)} reused={woutcome.reused}",
+)
+check(
+    "a warm re-run reports the refusals the cold run reported",
+    [a.caption_status for a in wreport.considered] == [a.caption_status for a in rreport.considered]
+    and woutcome.refused == routcome.refused,
+    f"warm={[a.caption_status for a in wreport.considered]} "
+    f"cold={[a.caption_status for a in rreport.considered]}",
+)
+check(
+    "a warm re-run does not turn refusals into failures",
+    woutcome.failed == 0 and woutcome.ok,
+    f"failed={woutcome.failed} ok={woutcome.ok}",
+)
+
+for _k, _v in _refusal_saved.items():
+    os.environ.pop(_k, None)
+    if _v is not None:
+        os.environ[_k] = _v
+
+# --- 14. stage 7 gets the captions, not the filenames ---------------------------------
+# #84. Stage 6 computed 57 captions (55 404 chars) on lecture 1 and stage 7 was handed
+# `section.frames` -- filenames like `f_0000180000.png`, which say nothing about the slide.
+# The writer described a lecture it could not see. These assert the wiring, including the
+# part that is easy to get wrong: a refusal is another model's judgement, and passing the
+# 19-character English sentinel through as if it were a description would be worse than
+# sending nothing.
+_WIRE = [
+    {
+        "frame": "f_a.png",
+        "text": "производная",
+        "word_count": 2,
+        "caption_status": "OK",
+        "caption": r"$\dot{x} = Ax$, матрица состояния",
+        "on_screen_ms": [0, 1000],
+    },
+    {
+        "frame": "f_b.png",
+        "text": "дальше",
+        "word_count": 1,
+        "caption_status": "OK",
+        "caption": "NO NEW INFORMATION.",
+        "on_screen_ms": [1000, 2000],
+    },
+    {
+        "frame": "f_c.png",
+        "text": "ещё",
+        "word_count": 1,
+        "caption_status": "GATED_OUT",
+        "on_screen_ms": [2000, 3000],
+    },
+]
+_wsec = glsy.build_sections(_WIRE, limit=1)[0]
+check(
+    "a real caption rides along with the section",
+    ("f_a.png", r"$\dot{x} = Ax$, матрица состояния") in _wsec.captions,
+    str(_wsec.captions),
+)
+check(
+    "a refusal is stated in the writer's language, not passed as content",
+    ("f_b.png", glsy.CAPTION_REFUSED) in _wsec.captions
+    and not any("NO NEW INFORMATION" in t for _, t in _wsec.captions),
+    str(_wsec.captions),
+)
+check(
+    "a frame with no caption is omitted rather than sent as a blank line",
+    all(name != "f_c.png" for name, _ in _wsec.captions),
+    str(_wsec.captions),
+)
+check(
+    "the section report records how many captions it carries",
+    _wsec.as_dict()["captions"] == 2 and len(_wsec.as_dict()["frames"]) == 2,
+    str(_wsec.as_dict()),
+)
+
+# The assertion #84 asks for: the caption text is in the message that goes to the model.
+# `glle.chat` is stubbed, so this reads what stage 7 *builds* -- the transport is covered
+# elsewhere -- but unlike a mock of stage 7's own output it cannot pass while the wiring is
+# missing.
+_wprompts: list = []
+
+
+def _wire_chat(messages, config):
+    _wprompts.append(messages)
+
+    class _R:
+        text = "тело"
+        raw: dict = {}
+        attempts = 1
+
+    return _R()
+
+
+class _WireTranscript:
+    def record(self, *a, **k):
+        pass
+
+
+glle.chat = _wire_chat
+try:
+    _wsyn = glsy.LLMSynthesizer(glle.Config(endpoint="http://e/v1", model="m"), _WireTranscript())
+    _wsyn.section(_wsec, _wsec.text)
+finally:
+    glle.chat = _real_chat
+
+_wp = _wprompts[0][1]["content"]
+check(
+    "the caption text is in the recorded prompt, not just the section",
+    r"$\dot{x} = Ax$, матрица состояния" in _wp,
+    _wp[:400],
+)
+check(
+    "the sentinel never reaches the writer",
+    "NO NEW INFORMATION." not in _wp,
+    _wp[:400],
+)
+check(
+    "captions are told apart from speech, so the writer cannot quote the screen as the lecturer",
+    "не цитата лектора" in _wp,
+    _wp[:400],
+)
+
+# A section with no captions still names its frames: the fallback the pre-#84 prompt used.
+_nocap = glsy.build_sections([{"frame": "f_z.png", "text": "t", "caption_status": "OK"}], limit=1)[
+    0
+]
+_wprompts.clear()
+glle.chat = _wire_chat
+try:
+    _wsyn.section(_nocap, _nocap.text)
+finally:
+    glle.chat = _real_chat
+check(
+    "a section with no captions still reports which frames were on screen",
+    "Кадры на экране: f_z.png" in _wprompts[0][1]["content"],
+    _wprompts[0][1]["content"][:300],
+)
+
 # The eight headings are the model's to write nothing about.
 note = glsy.synthesise(json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth())
 check(
@@ -3058,9 +4099,61 @@ check(
     glsy.normalise("# Фрагмент\n\nтекст"),
 )
 check(
-    "an h2 is a legitimate subsection and stays",
-    "## Подраздел" in glsy.normalise("## Подраздел"),
-    "h2 was touched",
+    # This one asserted the opposite, and the assertion is what produced 29 unnumbered `##`
+    # headings as siblings of the eight `## N.` sections on lecture 1. "##" is not a
+    # legitimate subsection here: `##` IS the subsection level inside the note, because the
+    # sections themselves are `##`. A body heading at that level makes `## N. Title` stop
+    # being the top of anything.
+    "a synthesized h2 is pushed below the section level too",
+    glsy.normalise("## Подраздел\n\nтекст") == "### Подраздел\n\nтекст",
+    glsy.normalise("## Подраздел\n\nтекст"),
+)
+check(
+    "nothing in a section body is left at or above the section level",
+    not any(
+        re.match(r"^#{1,2}\s", line)
+        for body in (
+            "## A\n### B\n#### C",
+            "# A\n## B\n### C",
+            "# A\n###### B",
+            "## A",
+        )
+        for line in glsy.normalise(body).splitlines()
+        if line.lstrip("#").startswith((" ", "")) and line.lstrip().startswith("#")
+    ),
+    "  ".join(glsy.normalise(b) for b in ("## A\n### B", "# A\n## B")),
+)
+check(
+    "relative nesting survives the shift",
+    glsy.normalise("## A\n### B\n#### C") == "### A\n#### B\n##### C",
+    glsy.normalise("## A\n### B\n#### C"),
+)
+check(
+    # Mapping every heading to `###` collapsed a body mixing `##` and `####` into a flat
+    # one, losing the model's own structure along with its level.
+    "a deeper heading does not collapse onto a shallower sibling",
+    glsy.normalise("# T\n###### D") == "### T\n###### D",
+    glsy.normalise("# T\n###### D"),
+)
+check(
+    # `########` is not a heading in Markdown, it is a paragraph. Clamping keeps the note
+    # renderable instead of silently turning a heading into text.
+    "a shift cannot produce more than six hashes",
+    max(len(m.group(1)) for m in re.finditer(r"^(#+) ", glsy.normalise("###### D\n# T"), re.M))
+    <= 6,
+    glsy.normalise("###### D\n# T"),
+)
+check(
+    # A body that starts at `###` is already correct, and shifting it to `#####` would
+    # invent depth the model did not claim.
+    "a body already below the section level is left alone",
+    glsy.normalise("### A\n#### B") == "### A\n#### B",
+    glsy.normalise("### A\n#### B"),
+)
+check(
+    "a body with no headings is returned unchanged",
+    glsy.normalise("просто текст\n\nи ещё") == "просто текст\n\nи ещё",
+    glsy.normalise("просто текст\n\nи ещё"),
 )
 
 # The template synthesizer is the oracle: it must run with nothing configured and must not
@@ -3219,6 +4312,83 @@ check(
     not rules(note(*["в лекции не затрагивается"] * 8), "structure/claims-empty-but-is-not"),
     "a real empty section was flagged",
 )
+check(
+    # The rule matched `NOT_COVERED in body`, a substring test. Measured on lecture 1,
+    # 2026-10-04: the LLM wrote a scoped deferral inside a 29-line section --
+    # "в лекции не затрагивается: конкретные формулы функционала качества." -- which the
+    # substring test read as a declaration of emptiness and reported as a blocking ERROR.
+    # The pipeline then refused to finish a run whose note was correct.
+    "a scoped deferral inside a filled section is not a declaration of emptiness",
+    not rules(
+        note(*["в лекции не затрагивается: конкретные формулы функционала качества."] * 8),
+        "structure/claims-empty-but-is-not",
+    ),
+    "substring match on a sentence fired",
+)
+check(
+    "the sentinel mid-sentence is not a declaration of emptiness either",
+    not rules(
+        note(*["Это в лекции не затрагивается, разберём позже."] * 8),
+        "structure/claims-empty-but-is-not",
+    ),
+    "substring match inside prose fired",
+)
+check(
+    # ...and the reading that motivated the rule still holds: a bare sentinel line beside
+    # content is a template bug, and must still be reported. Shaped like the test above --
+    # the sentinel and the content are one multi-line body, not separate arguments.
+    "a bare sentinel beside content is still an error",
+    rules(
+        note(
+            *["заполнено"] * 7 + [f"{glsy.NOT_COVERED}\n\nА на самом деле три абзаца."],
+        ),
+        "structure/claims-empty-but-is-not",
+    ),
+    "the whole-line rule lost the detection",
+)
+check(
+    "a filler in prose still fires after the whole-line rewrite",
+    rules(note(*["ну, как же без этого"] * 8), "style/filler"),
+    "the filler rule stopped detecting prose",
+)
+check(
+    "the same words inside a lecture quote are left alone",
+    not rules(note(*["«ну, как же без этого» сказал лектор"] * 8), "style/filler"),
+    "quoted filler was reported",
+)
+check(
+    # Run 6 flagged `ну` at line 120 of lecture 1, inside a stage-7 marker:
+    #     Адаптивное управление — отдельный курс; ... (какие-то базы --
+    #     [неразборчиво: ну, какие-то базы]).
+    # Stage 10 declined to repair it -- "not a mechanical fix" -- which was correct: the
+    # skill defines that payload as "буквально что услышали". But the warning stayed, and
+    # a warning that can never be actioned teaches the reader to ignore warnings.
+    "a filler inside an unverifiable-span marker is left alone",
+    not rules(
+        note(
+            *[
+                "Адаптивное управление — отдельный курс (какие-то базы — "
+                "⚠️ [неразборчиво: ну, какие-то базы])."
+            ]
+            * 8
+        ),
+        "style/filler",
+    ),
+    "filler inside a [неразборчиво: ...] marker was reported",
+)
+check(
+    "a filler outside the marker on the same line is still found",
+    rules(
+        note(*["Ну вот, а потом [неразборчиво: ну, что-то] и всё."] * 8),
+        "style/filler",
+    ),
+    "stripping the marker blanked the whole line",
+)
+check(
+    "a bare [неразборчиво] with no payload is stripped too",
+    not rules(note(*["Голый маркер [неразборчиво] тут."] * 8), "style/filler"),
+    "the bare marker form was not matched",
+)
 
 # Mathematics. An unclosed `$` turns the rest of the note into math -- the most damaging
 # thing a synthesis model does to a technical note, and trivially detectable.
@@ -3280,6 +4450,47 @@ check(
     "false positive",
 )
 
+# The vault default. `GLIMPSE_VAULT` and `DEFAULT_VAULT` used to live only inside
+# `check_vault`, so `doctor` reported a directory the run never consulted. Measured on
+# lecture 1: doctor named ~/Documents/obs_notes, the run carried `vault_path=None`, stage 11
+# resolved no terms directory, and stage 12 had the same gap -- on a machine where
+# `mscs/_terms` held 34 term notes.
+_saved_vault_env = os.environ.pop(gld.VAULT_ENV, None)
+try:
+    os.environ[gld.VAULT_ENV] = str(tmp / "vault-fixture")
+    (tmp / "vault-fixture").mkdir()
+    (tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME).mkdir(parents=True)
+    check(
+        "doctor and the run resolve the same vault",
+        gld.resolve_vault() == gld.Path(str(tmp / "vault-fixture")),
+        str(gld.resolve_vault()),
+    )
+    check(
+        "stage 11 finds the terms directory under the resolved vault, with no flag passed",
+        gllk.resolve_terms_dir(None, gld.resolve_vault())
+        == tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME,
+        str(gllk.resolve_terms_dir(None, gld.resolve_vault())),
+    )
+    check(
+        "an explicit --terms-dir still wins over the vault",
+        gllk.resolve_terms_dir(str(tmp), gld.resolve_vault()) == tmp,
+        "explicit argument was ignored",
+    )
+    check(
+        "an explicit --vault still wins over the environment",
+        gld.resolve_vault(str(tmp)) == tmp and gld.resolve_vault(str(tmp)) != gld.resolve_vault(),
+        "explicit argument was ignored",
+    )
+    os.environ.pop(gld.VAULT_ENV, None)
+    check(
+        "with nothing set, the default vault is used rather than None",
+        gld.resolve_vault() == gld.DEFAULT_VAULT,
+        str(gld.resolve_vault()),
+    )
+finally:
+    if _saved_vault_env is not None:
+        os.environ[gld.VAULT_ENV] = _saved_vault_env
+
 # Filler.
 bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
 check("filler is a warning, not an error", rules(note(*bodies), "style/filler"), "no finding")
@@ -3291,6 +4502,52 @@ check(
     "«ну» inside «нулевой» is not filler",
     not rules(note(*bodies), "style/filler"),
     "substring match fired",
+)
+bodies[4] = "Метод линеаризуют, как правило, вокруг рабочей точки."
+check(
+    # The rule was `word == filler or (filler == "как бы" and f"{word} бы" == filler)`, and
+    # that second clause reduces to `word == "как"`: it never checked a "бы" followed. So
+    # every ordinary use of "как" was reported as "как бы" -- 17 findings against 0
+    # instances on lecture 1, and stage 10 spent its budget repairing clean prose.
+    "«как» is not «как бы» when no «бы» follows",
+    not rules(note(*bodies), "style/filler"),
+    "single token matched a two-token filler",
+)
+bodies[4] = "В методе «как бы» не употребляется."
+check(
+    "«нужно» is not «ну»",
+    not rules(note(*bodies), "style/filler"),
+    "single token matched a one-token filler",
+)
+bodies[4] = "Приём, который лектор называл «ну да», к сожалению, работает."
+check(
+    # A quoted span is verbatim by definition. Stage 9 checks citations against the
+    # transcript, so "repairing" a filler inside a quote falsifies the very record the
+    # audit exists to verify.
+    "a filler inside a lecture quote is the lecturer's speech, not debris",
+    not rules(note(*bodies), "style/filler"),
+    "quote was not excluded",
+)
+bodies[4] = "Ну, метод сходится, «как бы», и работает."
+check(
+    "a filler outside the quote in the same line is still found",
+    rules(note(*bodies), "style/filler"),
+    "quote-stripping swallowed the whole line",
+)
+bodies[4] = "Только «как бы», всё."
+check(
+    # ...and the converse: a line whose only filler is quoted really is clean. Otherwise the
+    # previous check would pass for the wrong reason -- an over-eager stripper also reports
+    # nothing on every line.
+    "a line whose only filler is quoted is clean",
+    not rules(note(*bodies), "style/filler"),
+    "quoted filler still reported",
+)
+bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
+check(
+    "the filler control still fires after both fixes",
+    rules(note(*bodies), "style/filler"),
+    "rewrite lost the original detection",
 )
 
 # Assets.
@@ -4209,7 +5466,17 @@ if real_workdir_env is None:
     os.environ.pop(glw.WORKDIR_ENV, None)
 else:
     os.environ[glw.WORKDIR_ENV] = real_workdir_env
+if real_settings_env is None:
+    os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+else:
+    os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
+if real_vault_env is None:
+    os.environ.pop(gld.VAULT_ENV, None)
+else:
+    os.environ[gld.VAULT_ENV] = real_vault_env
 shutil.rmtree(tmp, ignore_errors=True)
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

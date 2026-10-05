@@ -265,15 +265,85 @@ def check_links_in_math(markdown: str, report: Report) -> None:
                 return
 
 
+# The stage-7 marker for an ASR span that could not be verified. Its payload is, by the
+# skill's own wording, "буквально что услышали" -- literally what was heard. So a filler
+# inside it is the transcriber's, not the note author's, exactly as with «...».
+_UNREADABLE_RE = re.compile(r"\[неразборчиво[^\]]*\]?")
+
+
+def _strip_quotes(line: str) -> str:
+    """Blank out verbatim spans, preserving line numbers and column positions.
+
+    A quoted span is verbatim by definition. The stage-9 audit requires verbatim citations
+    to be checkable against the transcript, so a filler word inside a quote is not debris in
+    the note -- it is the lecturer's speech, faithfully reproduced, and "repairing" it would
+    falsify the record the audit exists to check. Measured on lecture 1, 2026-10-04:
+    `«если вы понимаете одно, то очень легко понять другое»` was reported as
+    `«вы понимаете» appears 1 times`.
+
+    The same argument covers `[неразборчиво: ...]`, the stage-7 marker for a span the ASR
+    could not verify, whose payload the skill defines as "буквально что услышали". Run 6
+    flagged `ну` at line 120 of lecture 1:
+
+        Адаптивное управление — отдельный курс; ... (какие-то базы —
+        ⚠️ [неразборчиво: ну, какие-то базы]).
+
+    and stage 10 declined to repair it: `"reason": "not a mechanical fix"`. The pipeline was
+    right and the warning was noise -- a warning that can never be actioned teaches the
+    reader to ignore warnings.
+
+    An unclosed « on a line blanks to the end of that line only. A quote opened on one line
+    and closed on another is the lecturer's paragraph break, and the debris after it is
+    still the note author's.
+    """
+    line = _UNREADABLE_RE.sub(lambda m: " " * len(m.group()), line)
+    out, inside, start = [], False, 0
+    for index, char in enumerate(line):
+        if char == "«":
+            if not inside:
+                start, inside = index, True
+            out.append(" ")
+        elif char == "»" and inside:
+            inside = False
+            out.append(" ")
+        elif inside:
+            out.append(" ")
+        else:
+            out.append(char)
+    if inside:
+        out = list(line[:start] + " " * (len(line) - start))
+    return "".join(out)
+
+
 def check_filler(markdown: str, report: Report) -> None:
-    """Conversational debris that survived ASR into the prose."""
+    """Conversational debris that survived ASR into the prose.
+
+    Fillers are matched as **token sequences**, not as substrings of the line, because most
+    of `FILLER` is multi-word ("как бы", "вы поняли") and `_WORD` splits those into separate
+    tokens. A single-word filler must still be a whole token: "ну" is debris, "нужно" is not.
+
+    This was `word == filler or (filler == "как бы" and f"{word} бы" == filler)`, and the
+    second clause reduces to `word == "как"` -- it never checked that a "бы" followed. So
+    every occurrence of the ordinary Russian word "как" was reported as "как бы". Measured on
+    lecture 1, 2026-10-04: 17 findings against 0 instances of "как бы" and 17 instances of
+    "как" in correct constructions ("как и все", "как правило", "как задачу"). Stage 10 then
+    spent its budget trying to repair clean prose.
+    """
     report.checked += 1
+    by_length: dict[int, list[tuple[str, ...]]] = {}
+    for filler in FILLER:
+        by_length.setdefault(len(filler.split()), []).append(tuple(filler.split()))
+    widest = max(by_length)
+
     hits: dict[str, list[int]] = {}
     for number, line in _outside_code(markdown):
-        for word in _WORD.findall(line.lower()):
-            for filler in FILLER:
-                if word == filler or (filler == "как бы" and f"{word} бы" == filler):
-                    hits.setdefault(filler, []).append(number)
+        words = [word.lower() for word in _WORD.findall(_strip_quotes(line))]
+        for start in range(len(words)):
+            for width in range(min(widest, len(words) - start), 0, -1):
+                window = tuple(words[start : start + width])
+                for candidate in by_length.get(width, ()):
+                    if window == candidate:
+                        hits.setdefault(" ".join(candidate), []).append(number)
     for filler, numbers in hits.items():
         report.add(
             "style/filler",
@@ -288,25 +358,44 @@ def check_empty_section_claims(markdown: str, report: Report) -> None:
 
     This is the check that catches a model padding the document to look complete, which is
     the single most damaging failure mode for a note whose purpose is to be trustworthy.
+
+    The sentinel is matched as a **whole line**, which is the contract
+    `TemplateSynthesizer` writes to (`parts.append(NOT_COVERED)` when a body is empty) --
+    not as a substring anywhere in the section. Substring matching fired on the LLM
+    synthesizer's own scoped deferral, which is honest and specific:
+
+        ## 3. Карта источников
+        ... 29 lines of content ...
+        в лекции не затрагивается: конкретные формулы функционала качества.
+
+    Measured on lecture 1, 2026-10-04: that line produced "«3. Карта источников» declares
+    itself not covered and then has 29 more line(s)" as an ERROR. It is a blocking
+    severity, so the pipeline refused to finish a run whose note was correct. The section
+    says one narrow thing is out of scope; it does not declare itself empty.
+
+    Both readings still work after the change: a template section carrying the bare sentinel
+    *and* content is a real bug and is still reported; a bare sentinel alone is not.
     """
     report.checked += 1
     parts = re.split(r"^## ", markdown, flags=re.M)[1:]
     for part in parts:
         heading, _, body = part.partition("\n")
-        if synth.NOT_COVERED in body:
-            extra = [
-                line
-                for line in body.splitlines()
-                if line.strip() and line.strip() != synth.NOT_COVERED and not line.startswith("#")
-            ]
-            if extra:
-                report.add(
-                    "structure/claims-empty-but-is-not",
-                    ERROR,
-                    0,
-                    f"«{heading.strip()}» declares itself not covered and then has "
-                    f"{len(extra)} more line(s)",
-                )
+        lines = body.splitlines()
+        if not any(line.strip() == synth.NOT_COVERED for line in lines):
+            continue
+        extra = [
+            line
+            for line in lines
+            if line.strip() and line.strip() != synth.NOT_COVERED and not line.startswith("#")
+        ]
+        if extra:
+            report.add(
+                "structure/claims-empty-but-is-not",
+                ERROR,
+                0,
+                f"«{heading.strip()}» declares itself not covered and then has "
+                f"{len(extra)} more line(s)",
+            )
 
 
 def check_assets(markdown: str, images: Path, report: Report) -> None:

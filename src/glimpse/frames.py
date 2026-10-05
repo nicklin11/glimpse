@@ -1,11 +1,11 @@
 """Stage 4 — frames: two-pass extraction of distinct on-screen states (ADR-0001 D3).
 
 The screen of a lecture changes slowly; the cursor moves constantly. Sampling every N
-minutes yields ~99% duplicates, and running `mpdecimate` on a raw frame catches the cursor
+minutes yields ~99% duplicates, and scoring a raw frame for change catches the cursor
 — tens of frames per second. Hence the split:
 
-  1. `detect()` — full decode at reduced width, blur, `mpdecimate`, `select` on change.
-     The blur here is **only** a detector pre-filter.
+  1. `detect()` — full decode at reduced width, blur, then a single `select` carrying both
+     selection conditions. The blur here is **only** a detector pre-filter.
   2. `extract_at()` — seek the **original source** per timestamp, emit one frame.
 
 The blur physically cannot reach the output files, because pass 1 writes only timestamps
@@ -60,30 +60,44 @@ class Settings:
     max_gap: float = 180.0  # guarantee a frame at least this often, 0 disables
     blur: int = 16  # boxblur radius at 640 px, 0 disables
     detect_width: int = 640  # detector width; does not affect output
-    hi: int = 60  # mpdecimate hi, multiplied by 64
-    lo: int = 30  # mpdecimate lo, multiplied by 64
+    scene: float = 0.3  # `select`'s scene score threshold, 0 disables dedup
     width: int = 1600  # output frame width
 
 
 def detect_filter(settings: Settings) -> str:
-    """The detector filter chain. Applied only in `detect()`, never to output frames."""
+    """The detector filter chain. Applied only in `detect()`, never to output frames.
+
+    The two selection conditions live in **one** `select` expression, and that is the whole
+    point of this function (#70). It used to be `mpdecimate` followed by `select`: a frame
+    had to survive `mpdecimate` before `select` could apply the `max_gap` guarantee to it,
+    and `mpdecimate` drops every frame of a static stretch. Nine minutes of unchanged slide
+    therefore produced zero frames for nine minutes, against a field documented as
+    "guarantee a frame at least this often" -- measured worst gap 580.9 s on lecture 1.
+
+    Reordering is not the fix either: `select` then `mpdecimate` measured 1080 s, because
+    `mpdecimate` then discards exactly the frames `select` guaranteed. ORing `scene` into
+    the same expression means neither condition can suppress the other.
+    """
     parts = [f"scale={settings.detect_width}:-2:flags=lanczos"]
     if settings.mode == "interval":
         parts.append(f"fps=1/{settings.every:g}")
-    else:
-        # mpdecimate thresholds are absolute sums over 8x8 blocks, so a blur radius tuned
-        # for 640 px is wrong at another width. Scale it with the detector width.
-        blur = max(1, round(settings.blur * settings.detect_width / 640)) if settings.blur else 0
-        if blur:
-            parts.append(f"boxblur={blur}:{max(1, blur // 4)}")
-        parts.append(f"mpdecimate=hi=64*{settings.hi}:lo=64*{settings.lo}:frac=0.1")
-        if settings.max_gap:
-            # `isnan(prev_selected_t)` is not optional. prev_selected_t initialises to NaN,
-            # `t - NaN` is NaN, `gte(NaN, GAP)` is false — so without it **zero** frames are
-            # selected, and ffmpeg does not fail: it writes an empty file and exits 0.
-            parts.append(
-                f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{settings.max_gap:g})'"
-            )
+        return ",".join(parts)
+
+    # A blur before `scene` so the score reacts to layout changes, not to video noise. It
+    # is a scene-detection aid here, not a dedup aid.
+    blur = max(1, round(settings.blur * settings.detect_width / 640)) if settings.blur else 0
+    if blur:
+        parts.append(f"boxblur={blur}:{max(1, blur // 4)}")
+
+    terms = ["isnan(prev_selected_t)"]
+    if settings.max_gap:
+        # `isnan(prev_selected_t)` is not optional. prev_selected_t initialises to NaN,
+        # `t - NaN` is NaN, `gte(NaN, GAP)` is false -- so without it **zero** frames are
+        # selected, and ffmpeg does not fail: it writes an empty file and exits 0.
+        terms.append(f"gte(t-prev_selected_t\\,{settings.max_gap:g})")
+    if settings.scene:
+        terms.append(f"gt(scene\\,{settings.scene:g})")
+    parts.append("select='" + "+".join(terms) + "'")
     return ",".join(parts)
 
 
@@ -161,6 +175,15 @@ def detect(source: Path, settings: Settings = Settings()) -> list[int]:
                 detect_filter(settings),
                 "-fps_mode",
                 "passthrough",
+                # `-frame_pts 1` writes the PTS **in the output timebase**. After
+                # `-fps_mode passthrough` that is the input's frame rate -- 1/30 for a
+                # 30 fps lecture -- so without this flag the filename is a frame *index* and
+                # every number below is 30x too small. Pass 2 then seeks to index/1000
+                # seconds and every frame comes from the first thirtieth of the lecture.
+                # Measured: last file `f_0000135437` (135.4 s) as shipped, `d_0004514567`
+                # (4514.6 s) with this flag. #70.
+                "-enc_time_base",
+                "1/1000",
                 "-q:v",
                 "6",
                 "-frame_pts",
@@ -230,14 +253,14 @@ def provenance(out: Path, settings: Settings, reused: bool) -> None:
         "filter": detect_filter(settings),
         "settings": asdict(settings),
         "reused_manifest": reused,
-        "ffmpeg": _ffmpeg_version(),
+        "ffmpeg": ffmpeg_version(),
     }
     (out / "detect.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
 
-def _ffmpeg_version() -> str:
+def ffmpeg_version() -> str:
     try:
         raw = runner.run("ffmpeg", ["-version"], remediation=REMEDIATION, timeout=30.0)
         return raw.decode("utf-8", "replace").splitlines()[0]

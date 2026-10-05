@@ -21,3 +21,16 @@ frames/
 *.mp4
 *.opus
 *.wav
+
+# run outputs. `Bundle.open` falls back to `./output/<lecture>` when
+# $XDG_STATE_HOME is unset, so a run started in this working tree drops 29
+# artefacts and 58 PNGs into the repository with nothing ignoring them. A test
+# run with `--output-dir` puts the same flat set under any name given.
+output/
+*.log
+
+# a bundle written into the tree carries its frames in `images/`, not `frames/`
+images/
+
+# the zipapp the README's single-file build writes with `-o glimpse`
+/glimpse

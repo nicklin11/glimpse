@@ -22,13 +22,72 @@ from pathlib import Path
 from . import exitcodes as ec
 from . import runner, stt
 
-GATEWAY_ENV = "GLIMPSE_GATEWAY_URL"
 VAULT_ENV = "GLIMPSE_VAULT"
 LLM_ENV = "GLIMPSE_LLM_ENDPOINT"
 LLM_MODEL_ENV = "GLIMPSE_LLM_MODEL"
 LLM_KEY_ENV = "GLIMPSE_LLM_KEY"
 DEFAULT_VAULT = Path.home() / "Documents/obs_notes"
 PROBE_TIMEOUT = 10.0
+
+SETTINGS_PATH_ENV = "GLIMPSE_SETTINGS"
+SETTINGS_KEY = "vault"
+#: Written by `write_settings`, read by `resolve_vault`. One key, one file.
+SETTINGS_TEMPLATE = "# glimpse settings. Written on first run; edit by hand.\n"
+
+
+def settings_path() -> Path:
+    """The settings file: `$GLIMPSE_SETTINGS` if set, else `$XDG_CONFIG_HOME/glimpse/settings.toml`.
+
+    The env var names the *file*, not a directory, which is what the name says and what
+    testing needs. Issue #52 wants a real config file with a real precedence resolver; this
+    is the file that will hold it, carrying exactly one key until then, so #52 extends
+    something rather than replacing a default someone is already relying on.
+    """
+    configured = os.environ.get(SETTINGS_PATH_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    base = Path(
+        os.environ.get("XDG_CONFIG_HOME", "").strip() or Path.home() / ".config"
+    ).expanduser()
+    return base / "glimpse" / "settings.toml"
+
+
+def read_settings() -> dict[str, str]:
+    """Top-level `key = "value"` pairs from the settings file. Never raises.
+
+    Deliberately a flat scan rather than `tomllib`: there is exactly one key, and a
+    dependency on a parser format would outlast the thing being parsed. A malformed line is
+    skipped and the rest of the file is still read, because a typo in a config file must not
+    take the pipeline down at stage 0.
+    """
+    path = settings_path()
+    if not path.is_file():
+        return {}
+    found: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        found[key.strip()] = value.strip().strip('"').strip("'")
+    return found
+
+
+def write_settings(vault: Path) -> Path:
+    """Persist the vault, creating the file on first use. Returns the path written.
+
+    Writing is the whole point of the first run: without it, "settable at setup" means the
+    user has to guess that `GLIMPSE_VAULT` exists, and a default nobody can discover is a
+    default nobody will change.
+    """
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'{SETTINGS_TEMPLATE}{SETTINGS_KEY} = "{vault}"\n', encoding="utf-8")
+    return path
 
 
 @dataclass
@@ -170,9 +229,37 @@ def check_stt() -> Check:
     return Check(name="stt", ok=True, detail=detail)
 
 
+def resolve_vault(explicit: str | Path | None = None) -> Path:
+    """The vault ADR-0001 D9 names, from the most specific source available.
+
+    Precedence: explicit argument, then `$GLIMPSE_VAULT`, then the persisted `vault` key in
+    the settings file, then the built-in default directory.
+
+    The result is a path, not a judgement about it: a vault that does not exist is still what
+    the user named, and whether that is fatal is `check_vault`'s question, not this one's.
+
+    This exists because the default lived only inside `check_vault`, so `glimpse doctor`
+    reported a vault that `glimpse process` never consulted. Measured on lecture 1,
+    2026-10-04: doctor named `~/Documents/obs_notes`, the process ran with `vault_path=None`
+    throughout, and stage 11 resolved no terms directory -- while `~/Documents/obs_notes/
+    mcs/_terms` existed with 34 term notes. Stage 12 had the same gap.
+
+    Two code paths, one documented default, and they disagreed.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    configured = os.environ.get(VAULT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    stored = read_settings().get(SETTINGS_KEY, "").strip()
+    if stored:
+        return Path(stored).expanduser()
+    return DEFAULT_VAULT
+
+
 def check_vault() -> Check:
     """ADR-0001 D9: artefacts live in the vault, never in this repository."""
-    vault = Path(os.environ.get(VAULT_ENV, str(DEFAULT_VAULT))).expanduser()
+    vault = resolve_vault()
     if not vault.exists():
         return Check(
             name="vault",
@@ -208,47 +295,6 @@ def check_vault() -> Check:
         detail="writable",
         path=str(vault),
         version="ok",
-    )
-
-
-def check_gateway() -> Check:
-    """ADR-0001 D8: the vision/audit backend. Unconfigured is not a failure."""
-    url = os.environ.get(GATEWAY_ENV, "").strip()
-    if not url:
-        # ok=False because nothing was actually verified; fatal=False because an
-        # unconfigured gateway is a state, not a fault. `failed` requires both.
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"not configured (set {GATEWAY_ENV} to enable the vision/audit stages)",
-            version="skipped",
-            fatal=False,
-        )
-    try:
-        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT) as resp:
-            code = resp.status
-    except urllib.error.HTTPError as exc:
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"{url} returned HTTP {exc.code}",
-            remediation="check the gateway is up and the model name is declared",
-            code=ec.DEPENDENCY_FAILED,
-        )
-    except (urllib.error.URLError, OSError) as exc:
-        return Check(
-            name="gateway",
-            ok=False,
-            detail=f"{url} unreachable: {exc}",
-            remediation="check the gateway is running and reachable from this host",
-            code=ec.DEPENDENCY_FAILED,
-        )
-    return Check(
-        name="gateway",
-        ok=True,
-        detail="reachable",
-        path=url,
-        version=f"HTTP {code}",
     )
 
 
@@ -325,16 +371,23 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     that dependency" are different questions. `glimpse process` stages 0-4 use
     ffmpeg, ffprobe and an STT endpoint, and write nothing outside the managed work
     dir, so refusing to transcribe because the *vault* is missing -- a directory
-    stage 12 will need in a later milestone -- is the wrong answer, and so is
-    refusing because the stage-5 vision gateway is offline. Without this the
-    preflight gate is broader than the run it guards.
+    stage 12 will need -- is the wrong answer. Without this the preflight gate is
+    broader than the run it guards.
     """
+    # There is no `check_gateway`. It read `GLIMPSE_GATEWAY_URL`, a name nothing in
+    # the codebase ever wrote and nothing in the docs ever told a user to set, and it
+    # reported the *model* gateway under the name `gateway` while the endpoint the
+    # pipeline actually uses is `GLIMPSE_LLM_ENDPOINT` / `GLIMPSE_VLM_ENDPOINT` --
+    # checked by `check_llm`. So a fully working run still printed
+    #
+    #     glimpse: note: gateway is unavailable, but stages 0-12 do not use it
+    #
+    # which was false in both halves: the gateway was up, and stage 6 uses it (#68).
     checks = [
         check_ffmpeg(),
         check_ffprobe(),
         check_numpy(),
         check_stt(),
-        check_gateway(),
         check_llm(),
         check_vault(),
     ]

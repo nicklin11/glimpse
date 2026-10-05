@@ -98,7 +98,6 @@ silently dropped and not silently passed through.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -427,10 +426,12 @@ class GeometricEstimator:
     qualifying rows and columns separately also makes the result tolerant of a single dark
     band inside the document, which a largest-component search would split on.
 
-    ADR-0001 D4 assigns this to a VLM. There is no vision client in this codebase, and a
-    plausible-looking box from a stub would be worse than none: stage 6 would caption the
-    wrong region and the error would be invisible. `name` lands in the report so a later VLM
-    source is distinguishable in provenance rather than silently assumed.
+    ADR-0001 D4 assigns this to a VLM. The vision client stage 6 now uses (#67) exists, but
+    it captions; it does not produce boxes, so the geometric substitute stands until a bbox
+    source is written. A plausible-looking box from a stub would be worse than none: stage 6
+    would caption the wrong region and the error would be invisible. `name` lands in the
+    report so a real VLM source is distinguishable in provenance rather than silently
+    assumed.
     """
 
     name: str = "geometric"
@@ -497,36 +498,17 @@ class NullEstimator:
         return None
 
 
-@dataclass(frozen=True)
-class VLMEstimator:
-    """Document pane from a vision model.
-
-    Raises `NotConfiguredError` rather than guessing. Callers treat that as "no box",
-    measure the full frame, and record the fallback -- which is the honest outcome, since a
-    fabricated box would silently mis-caption the frame downstream.
-    """
-
-    name: str = "vlm"
-    endpoint_env: str = "GLIMPSE_VLM_ENDPOINT"
-    key_env: str = "GLIMPSE_VLM_KEY"
-    model_env: str = "GLIMPSE_VLM_MODEL"
-
-    def estimate(self, source: Path, settings: Settings) -> Box | None:
-        if not os.environ.get(self.endpoint_env):
-            raise NotConfiguredError(
-                f"{self.name} bbox source needs ${self.endpoint_env}; "
-                "falling back to the full frame"
-            )
-        raise NotConfiguredError(
-            f"{self.name} bbox source is not implemented in this codebase; "
-            "falling back to the full frame"
-        )
-
-
+#: `vlm` was registered here until stage 6 gained a vision client (#67). It raised
+#: `NotConfiguredError` on both branches and was never reachable by a run that worked, so
+#: it was a name that promised a capability and could not deliver one: `GLIMPSE_BBOX_SOURCE=vlm`
+#: failed at the crop instead of being rejected up front as the unknown name it is.
+#:
+#: A vision bbox source is still the right idea -- ADR-0001 D4 asked for one, and
+#: `GeometricEstimator` documents at length why it is the substitute. It is not built, and
+#: an unbuilt option should be absent from the registry rather than present and broken.
 ESTIMATORS: dict[str, BBoxEstimator] = {
     "geometric": GeometricEstimator(),
     "null": NullEstimator(),
-    "vlm": VLMEstimator(),
 }
 
 

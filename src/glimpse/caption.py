@@ -13,21 +13,31 @@ for a 180 s slide gap is most of the lecture.
 
 ## What this stage does not do
 
-It does not caption. ADR-0001 D4 assigns captioning to a VLM, and there is no vision client here.
-A frame that cannot be described still gets its transcript window, its word timings and its
-quality verdict, which is everything stage 7 needs to place it in the note. The absence is
-recorded in provenance as `caption: null` with a reason, so a later consumer can tell the
-difference between "not captioned" and "nothing there".
+It does not OCR. Recovering text from the frame is a separate concern from captioning it,
+and adding a binary dependency for it would make stage 6 unable to run at all on hosts that
+only need the alignment.
 
-It also does not OCR. Recovering text from the frame is a separate concern from aligning
-it, and adding a binary dependency for it would make stage 6 unable to run at all on hosts
-that only need the alignment.
+## Captioning
+
+Captioning is inference, so it is separated from alignment in three ways: it runs after the
+deterministic half has already produced its answer, it never feeds back into the alignment,
+and its results are cached by `(frame fingerprint, model id)` so a re-run that changed the
+transcript but not the slides does not pay for the same caption twice.
+
+A stage that cannot run must say so rather than write a string that reads like content. If
+no vision endpoint is configured, `run()` raises `NotConfiguredError`; it does not produce
+`caption: null` in the artefact and call the run clean.
+
+The vision endpoint has its own configuration names (`GLIMPSE_VLM_*`) and falls back to the
+text ones, per ADR-0004 D3: separate names because the roles are separate, not because they
+have to be separate places.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from . import llm
 from . import stages  # noqa: F401 -- the progress line's denominator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +52,47 @@ UNCOVERED = "no_transcript_coverage"
 #: Above this share of uncovered frames the audio and the video are not describing the same
 #: lecture, which is a muxing problem, not a captioning problem. ADR-0001 D5 exit 4.
 UNCOVERED_SHARE_LIMIT = 0.30
+
+#: What the model returns when it judges the frame to carry nothing the excerpt does not
+#: already state. It is a **finding, not content**: 16 of the 57 captions on lecture 1 are
+#: this string (#83). It was a bare literal inside the prompt until this constant existed,
+#: which is why every consumer had to string-match it and why a refusal was indistinguishable
+#: from a caption -- both were `caption_status: OK` with a non-empty string. The stage-7 status
+#: that separates them is #83; this is only the name to compare against.
+NO_NEW_INFORMATION = "NO NEW INFORMATION."
+
+#: Statuses that mean stage 6 produced a description. `NO_NEW_INFORMATION` belongs here and is
+#: deliberately *not* `OK`: a refusal is a finding, not a caption, and collapsing the two is
+#: what made 16 of 57 captions on lecture 1 indistinguishable from content (#83). It is still
+#: a **success** -- the frame cost a call and came back with an answer -- so it counts towards
+#: `captioned` and never towards `failed`. Making it a failure would drop 16 frames into the
+#: error count that `cli.py` reports and, at the extreme, turn an all-refusal run into exit 3.
+DESCRIBED = ("OK", "NO_NEW_INFORMATION")
+
+#: What the model is asked for. A slide in a technical lecture is mostly equations, and a
+#: generic "describe this image" returns "a slide with text on it" -- content-free, and worse
+#: than nothing because stage 7 will treat it as material. So the prompt asks for the things
+#: the note needs and that the audio does not contain.
+CAPTION_PROMPT = (
+    """\
+You are reading one frame from a university lecture recording. The transcript excerpt below \
+is what the lecturer was saying while this frame was on screen.
+
+Describe ONLY what is visible in the frame, in the language the frame itself is written in:
+
+1. Every equation or formula, transcribed exactly as written, in LaTeX. Do not solve, do not \
+correct, do not simplify, do not guess a symbol you cannot read. If a symbol is illegible, \
+write [illegible] in its place.
+2. Any definition, theorem, or named object stated on screen, quoted.
+3. The structure of a diagram or graph: what is plotted against what, the axes with their \
+labels and ranges, curves and their names, and the direction of any arrows.
+4. Anything on screen that the transcript excerpt does not mention.
+
+Do not comment on the lecturer, the conferencing UI, window chrome, or the room. Do not \
+describe what the excerpt already says. If the frame carries no content beyond what the \
+excerpt states, answer with exactly: """
+    + NO_NEW_INFORMATION
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +129,20 @@ class Alignment:
     #: Always None until a VLM exists. Present as a key so consumers do not have to guess.
     caption: str | None = None
     caption_status: str = "NOT_CONFIGURED"
+    #: What produced `caption` -- model, tokens, seconds, attempts, fingerprint, and whether
+    #: this run called the endpoint or took the answer from the cache. Stage 6 makes 58 calls
+    #: per lecture, the largest consumer in the pipeline, and recorded none of them (#76).
+    #:
+    #: A summary, not the `messages` array. `audit-llm-transcript.json` averages ~190 KiB per
+    #: call because each entry carries the whole section text, so the equivalent here would be
+    #: ~11 MiB per run -- more than the rest of the bundle put together. ADR-0004 D4 asks the
+    #: artefact to carry enough to attribute a difference, and this does: which model, how many
+    #: tokens, how long, how many attempts, and **called vs cached**.
+    #:
+    #: That last field is not decoration. `caption_frames` caches by `(fingerprint, model)`, so
+    #: a warm re-run makes zero calls. Without an explicit marker the bundle after such a run
+    #: would show no caption evidence at all, which reads as an omission rather than a hit.
+    caption_trace: dict = field(default_factory=dict)
     quality_gate: str = ""
     content_type: str = ""
     crop_state: str = ""
@@ -100,6 +165,7 @@ class Alignment:
             "text": self.text,
             "caption": self.caption,
             "caption_status": self.caption_status,
+            "caption_trace": self.caption_trace,
             "quality_gate": self.quality_gate,
             "content_type": self.content_type,
             "crop_state": self.crop_state,
@@ -358,6 +424,187 @@ def _raw_segments(payload: dict, indices: list[int]) -> list[dict]:
     ]
 
 
+def load_cache(target: Path, model: str) -> dict[str, dict]:
+    """Captions from a previous run, keyed by frame name, that this model may reuse.
+
+    An entry survives only if the model id matches. The frame fingerprint is checked later,
+    against the bytes on disk, because that is the half that cannot be known until the file
+    is opened. A cache from a different model is discarded whole rather than merged: a mixed
+    cache would make "which model wrote this caption" unanswerable per frame.
+    """
+    if not target.is_file():
+        return {}
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    entries = payload.get("captions")
+    if not isinstance(entries, dict):
+        return {}
+    return {
+        name: entry
+        for name, entry in entries.items()
+        if isinstance(entry, dict) and entry.get("model") == model
+    }
+
+
+def caption_frames(
+    report: Report,
+    images: Path,
+    config: llm.Config,
+    *,
+    cache: dict[str, dict] | None = None,
+    stream=None,
+) -> dict[str, dict]:
+    """Caption every frame stage 5 passed. Returns the cache entries to persist.
+
+    A frame that fails is recorded with its own `caption_status` and does not abort the
+    stage: eleven captions and one failure is a useful run, and losing the eleven to report
+    the one would not be. A stage where *every* frame failed is different, and
+    `CaptionOutcome.ok` is what makes that visible.
+    """
+    out = stream if stream is not None else sys.stdout
+    cache = cache if cache is not None else {}
+    produced: dict[str, dict] = {}
+    reused = 0
+    failed = 0
+    refused = 0
+
+    for alignment in report.considered:
+        source = alignment.enhanced or alignment.image
+        path = images / source
+        if not path.is_file():
+            alignment.caption_status = "FRAME_MISSING"
+            alignment.reason = f"{source} is not in the bundle"
+            alignment.caption_trace = {"source": "missing", "image": source}
+            failed += 1
+            continue
+
+        fingerprint = llm.frame_fingerprint(path)
+        prior = cache.get(alignment.frame)
+        if prior and prior.get("fingerprint") == fingerprint and prior.get("text"):
+            alignment.caption = str(prior["text"])
+            # The same mapping the cold path applies. A cache hit that hardcoded `OK` would
+            # make a warm re-run report all 57 frames described when 16 of them are refusals --
+            # a bundle that contradicts the run before it, from the same input.
+            is_refusal = alignment.caption == NO_NEW_INFORMATION
+            alignment.caption_status = "NO_NEW_INFORMATION" if is_refusal else "OK"
+            alignment.reason = (
+                "the model found nothing on screen that the excerpt does not already state"
+                if is_refusal
+                else ""
+            )
+            if is_refusal:
+                refused += 1
+            # `cached`, not `called`. A warm re-run makes zero requests, and the bundle has to
+            # say so -- an empty trace here would read as "stage 6 did not run".
+            alignment.caption_trace = {
+                "source": "cached",
+                "fingerprint": fingerprint,
+                "model": prior.get("model"),
+                "served_model": prior.get("served_model"),
+            }
+            reused += 1
+            continue
+
+        try:
+            reply = llm.chat(
+                [llm.vision_message(CAPTION_PROMPT, path, text=alignment.text)],
+                config,
+                max_tokens=1024,
+            )
+        except llm.NotConfiguredError:
+            raise
+        except llm.EndpointError as exc:
+            alignment.caption_status = "ERROR"
+            alignment.reason = f"vision endpoint refused: {exc}"
+            alignment.caption_trace = {
+                "source": "error",
+                "fingerprint": fingerprint,
+                "model": config.model,
+                "detail": str(exc),
+            }
+            failed += 1
+            continue
+
+        text = reply.text.strip()
+        if not text:
+            alignment.caption_status = "EMPTY"
+            alignment.reason = "vision model returned nothing"
+            alignment.caption_trace = {
+                "source": "empty",
+                "fingerprint": fingerprint,
+                "model": config.model,
+                "served_model": reply.served_model,
+                "attempts": reply.attempts,
+            }
+            failed += 1
+            continue
+
+        alignment.caption = text
+        is_refusal = text == NO_NEW_INFORMATION
+        alignment.caption_status = "NO_NEW_INFORMATION" if is_refusal else "OK"
+        alignment.reason = (
+            "the model found nothing on screen that the excerpt does not already state"
+            if is_refusal
+            else ""
+        )
+        if is_refusal:
+            refused += 1
+        alignment.caption_trace = {
+            "source": "called",
+            "fingerprint": fingerprint,
+            **reply.as_dict(),
+        }
+        produced[alignment.frame] = {
+            "fingerprint": fingerprint,
+            "model": config.model,
+            "served_model": reply.served_model,
+            "text": text,
+        }
+        out.write(f"         {alignment.frame}: {len(text)} chars\n")
+
+    out.write(
+        f"         {len(produced)} captioned, {reused} from cache, {failed} failed, "
+        f"{refused} refused\n"
+    )
+    return produced
+
+
+@dataclass(frozen=True)
+class CaptionOutcome:
+    """What the captioning half actually did."""
+
+    captioned: int
+    reused: int
+    failed: int
+    model: str
+    served_model: str | None
+    #: Frames the vision model reported as carrying nothing beyond the excerpt. Counted out of
+    #: `captioned`, not into `failed`. Read before trusting a note's coverage: a run with a high
+    #: refusal share is a run whose screens were not read, whatever the exit code says.
+    refused: int = 0
+
+    @property
+    def ok(self) -> bool:
+        """False when nothing came back -- a run that captioned nothing did not caption.
+
+        Distinct from `Report.ok`, which gates transcript coverage. Both matter and they
+        fail for different reasons.
+        """
+        return self.captioned + self.reused > 0
+
+    def as_dict(self) -> dict:
+        return {
+            "captioned": self.captioned,
+            "reused": self.reused,
+            "failed": self.failed,
+            "refused": self.refused,
+            "model": self.model,
+            "served_model": self.served_model,
+        }
+
+
 def run(
     manifest: Path,
     transcript: Path,
@@ -366,37 +613,106 @@ def run(
     destination: Path,
     *,
     settings: Settings | None = None,
+    cache_source: Path | None = None,
     stream=None,
-) -> Report:
+) -> tuple[Report, CaptionOutcome]:
+    """Align, then caption.
+
+    `cache_source` is a previous run's `captions.json` to reuse from, and it is **not**
+    `destination`. The pipeline passes a scratch directory as `destination`, which is empty on
+    every run, so reading the cache from it yields nothing and every frame is re-called. Run 10
+    reported `0 from cache` immediately after run 9 produced the same 58 frames from the same
+    bytes -- the cache exists in the bundle and was never opened. `source: "cached"` in
+    `caption_trace` was unreachable in the real pipeline for the same reason `GATED_OUT` was
+    (#82), and fixing the wiring is what makes that field mean anything.
+
+    Two failure modes, handled differently on purpose, because the pipeline already has a
+    contract about which one stops a run.
+
+    **No vision endpoint at all** degrades, exactly as stage 7 does without a text endpoint.
+    The pipeline is required to run end to end with no model configured --
+    `TemplateSynthesizer` is what makes that true for the note, and stage 6 must not be the
+    stage that breaks it. So every frame is marked `NO_ENDPOINT`, the run continues, and
+    `outcome.ok` is False so the CLI reports the degradation and exits non-zero. A note
+    written without slide content is a worse note, not no note.
+
+    **An endpoint that is configured and refuses** is a dependency failure. That one is not
+    swallowed: `caption_frames` records it per frame and `outcome.ok` stays False, so the
+    CLI reports it as exit 3 rather than as a content verdict.
+
+    What this never does is write `caption: null` into the artefact and exit 0, which put a
+    string that reads like content where a caption belonged and let the run report itself
+    clean.
+    """
     settings = settings or Settings()
     out = stream if stream is not None else sys.stdout
     report = align(manifest, transcript, quality_report, images, settings)
     destination.mkdir(parents=True, exist_ok=True)
-    write(report, destination / REPORT_NAME, settings)
-    (destination / PROVENANCE_NAME).write_text(provenance(settings) + "\n", encoding="utf-8")
+
+    target = destination / REPORT_NAME
+    try:
+        config = llm.Config.vision_from_env()
+    except llm.NotConfiguredError as exc:
+        config = llm.Config(endpoint="", model="")
+        prior: dict[str, dict] = {}
+        produced: dict[str, dict] = {}
+        for alignment in report.considered:
+            alignment.caption_status = "NO_ENDPOINT"
+            alignment.reason = str(exc)
+        outcome = CaptionOutcome(
+            captioned=0,
+            reused=0,
+            failed=len(report.considered),
+            model="",
+            served_model=None,
+        )
+        out.write(f"         no vision endpoint: {exc}\n")
+    else:
+        prior = load_cache(cache_source or target, config.model)
+        produced = caption_frames(report, images, config, cache=prior, stream=out)
+        outcome = CaptionOutcome(
+            captioned=len(produced),
+            reused=sum(1 for a in report.considered if a.caption_status in DESCRIBED)
+            - len(produced),
+            failed=sum(1 for a in report.considered if a.caption_status not in DESCRIBED),
+            refused=sum(1 for a in report.considered if a.caption_status == "NO_NEW_INFORMATION"),
+            model=config.model,
+            served_model=next(
+                (e.get("served_model") for e in produced.values() if e.get("served_model")), None
+            ),
+        )
+
+    write(report, target, settings, outcome, {**prior, **produced})
+    (destination / PROVENANCE_NAME).write_text(
+        provenance(settings, config, outcome) + "\n", encoding="utf-8"
+    )
     out.write(f"  [6/{stages.IMPLEMENTED}] caption  {report.summary()}\n")
     if report.uncovered:
         for line in report.explain().splitlines():
             out.write(f"         {line.strip()}\n")
-    out.write(
-        "         alignment is deterministic (segment overlap, word-timed boundary); "
-        "captioning is NOT_CONFIGURED -- no vision client in this codebase\n"
-    )
-    return report
+    if not outcome.ok:
+        out.write(f"         no frame was captioned -- see {PROVENANCE_NAME}\n")
+    return report, outcome
 
 
-def write(report: Report, target: Path, settings: Settings) -> None:
+def write(
+    report: Report,
+    target: Path,
+    settings: Settings,
+    outcome: CaptionOutcome | None = None,
+    captions: dict[str, dict] | None = None,
+) -> None:
     target.write_text(
         json.dumps(
             {
                 "provenance": {
                     "stage": 6,
-                    "tool": "glimpse-align-v1",
+                    "tool": "glimpse-caption-v2",
                     "alignment": "segment overlap with word-timed boundary",
-                    "caption": None,
-                    "caption_status": "NOT_CONFIGURED",
+                    "caption": outcome.as_dict() if outcome else None,
                     "uncovered_share": round(report.uncovered_share, 4),
                 },
+                "captions": captions or {},
                 "alignments": [a.as_dict() for a in report.alignments],
             },
             ensure_ascii=False,
@@ -407,15 +723,18 @@ def write(report: Report, target: Path, settings: Settings) -> None:
     )
 
 
-def provenance(settings: Settings) -> str:
+def provenance(settings: Settings, config: llm.Config, outcome: CaptionOutcome) -> str:
     return json.dumps(
         {
             "stage": 6,
-            "tool": "glimpse-align-v1",
+            "tool": "glimpse-caption-v2",
             "method": "segment overlap; boundary at first word >= frame display start",
-            "requires_model": False,
-            "caption": "NOT_CONFIGURED (ADR-0001 D4 assigns this to a VLM; none is configured)",
-            "ocr": "not attempted (no dependency; alignment does not need it)",
+            "requires_model": True,
+            "caption": outcome.as_dict(),
+            "model": config.redacted() | {"served_model": outcome.served_model},
+            "inherited_text_endpoint": config.is_vision_default,
+            "cache_key": "sha256(frame bytes) + model id",
+            "ocr": "not attempted (no dependency; the vision endpoint reads the frame)",
             "uncovered_share_limit": settings.uncovered_share_limit,
             "max_chars": settings.max_chars,
         },

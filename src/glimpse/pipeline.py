@@ -15,6 +15,7 @@ of every run states what is still missing and which issue tracks it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -26,6 +27,7 @@ from . import (
     audio,
     audit,
     caption,
+    deps,
     frames,
     lint,
     link,
@@ -80,6 +82,10 @@ class RunResult:
     #: ADR-0001 D5's coverage verdict. `caption.ok` false means the audio and the video are not
     #: describing the same lecture, which is exit 4 rather than a note with holes in it.
     caption: caption.Report
+    #: What the captioning half actually did. Separate from the coverage verdict because they
+    #: fail for different reasons: `caption.ok` is about A/V sync, `caption_outcome.ok` is
+    #: about the vision endpoint. Only the second one is new since stage 6 gained a model.
+    caption_outcome: caption.CaptionOutcome
     #: The note. `synth.degraded` is reported, not hidden: a note written by the template
     #: synthesizer is a skeleton, and a reader has to be able to tell.
     note: synth.Note
@@ -105,6 +111,53 @@ class RunResult:
     @property
     def seconds(self) -> float:
         return sum(r.seconds for r in self.reports)
+
+
+#: Per-stage wall clock, written after stage 12. Every `StageReport` already carries its own
+#: seconds and `RunResult.seconds` already sums them -- all of it in memory, all of it printed
+#: to a terminal that closes. Nothing reached the bundle, so the one number the bundle could
+#: not answer was "what did this run cost": stage 3 transcribes 4520 s of audio in ~297 s and
+#: no artefact said so. Stages 6, 7 and 9 record per-call seconds (`caption_trace`, the two
+#: `*-llm-transcript.json`), which made the omission look like a stage-3 gap. It was not --
+#: stages 1, 2, 4, 5, 8, 10, 11 and 12 recorded nothing either, and stages 5-12 do not even
+#: print the seconds they had.
+#:
+#: A sidecar, not an artefact: written straight to `bundle.root` and deliberately **not**
+#: registered through `Bundle.record`, so `bundle.summary()` and stage 12's REQUIRED/OPTIONAL
+#: verification do not move. It is a record of the run, not a product of a stage.
+TIMINGS_NAME = "timings.json"
+
+
+def write_timings(bundle: Bundle, reports: list[StageReport]) -> Path:
+    """Per-stage seconds into the bundle. Best effort: never fail a run over a log."""
+    target = bundle.root / TIMINGS_NAME
+    try:
+        target.write_text(
+            json.dumps(
+                {
+                    "tool": "glimpse-timings-v1",
+                    "total_seconds": round(sum(r.seconds for r in reports), 1),
+                    "stages": [
+                        {
+                            "stage": r.index,
+                            "name": r.name,
+                            "seconds": round(r.seconds, 1),
+                            "summary": r.summary,
+                        }
+                        for r in reports
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # A run that produced a verified note does not become a failure because a diagnostic
+        # file could not be written. The exit code is about the note.
+        pass
+    return target
 
 
 def _interval(lo: float, hi: float) -> str:
@@ -137,6 +190,28 @@ def _estimate(audio_seconds: float) -> tuple[float, float]:
     fast, slow = stt.RATE_RANGE
     floor = slow if audio_seconds < stt.WARMUP_SECONDS else fast
     return audio_seconds * floor, audio_seconds * slow * HEADROOM
+
+
+def publishes_stage7_transcript(sdir: Path, bundle: Bundle) -> dict[str, Path]:
+    """Publish stage 7's artefacts out of its work directory, into the bundle.
+
+    `synth-llm-transcript.json` is conditional on the LLM synthesizer having run -- the
+    template one makes no calls and writes no transcript -- so the guard is `.is_file()`,
+    the same shape stage 9 uses for its equivalent.
+
+    The transcript used to be missing from this list entirely. `synth.py` has written it
+    since #38, into `work.dir("synth")`, and the list named three files, so the 8 calls that
+    wrote the note were recorded and then deleted with the work directory. Measured on run 6:
+    the bundle held `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7
+    equivalent. ADR-0004 D4 -- a regression gate that cannot attribute a difference is not a
+    gate -- so this returns what it published rather than returning nothing, which lets the
+    caller record it in the run's artefact registry.
+    """
+    artefacts = {extra: bundle.publish(extra, sdir / extra) for extra in synth.STAGE7_ARTEFACTS}
+    transcript = sdir / synth.LLM_TRANSCRIPT_NAME
+    if transcript.is_file():
+        artefacts[synth.LLM_TRANSCRIPT_NAME] = bundle.publish(synth.LLM_TRANSCRIPT_NAME, transcript)
+    return artefacts
 
 
 def run(
@@ -182,6 +257,15 @@ def run(
         summary += f"  [warn] {warning}"
     reports.append(StageReport(2, "audio", time.monotonic() - began, summary))
     out.write(reports[-1].line() + "\n")
+    # Stages 1 and 2 record one document between them; see probe.provenance for why it
+    # is one and not two. Published here because the bundle exists by now.
+    if bundle is not None:
+        source_prov = work.sub(probe.PROVENANCE_NAME)
+        source_prov.write_text(
+            probe.provenance(info, artefact, ffmpeg_version=frames.ffmpeg_version()) + "\n",
+            encoding="utf-8",
+        )
+        bundle.publish(source_prov.name, source_prov)
 
     # --- stage 3: stt ---------------------------------------------------------
     began = time.monotonic()
@@ -198,8 +282,11 @@ def run(
     transcript = stt.transcribe(wav, audio_duration=artefact.duration)
     paths = stt.write(transcript, work.path)
     if bundle is not None:
+        # Every stage that writes to the work dir has to name what it publishes here, or the
+        # document dies with the work dir. That is how stage 7's transcript went missing for
+        # its whole life (#76) and how stage 3 had no provenance at all (#80).
         for key, path in paths.items():
-            paths[key] = bundle.publish(key, path)
+            paths[key] = bundle.publish(path.name, path)
     reports.append(StageReport(3, "stt", time.monotonic() - began, transcript.summary()))
     out.write(reports[-1].line() + "\n")
 
@@ -246,13 +333,17 @@ def run(
     quality.resolve_estimator(bbox_source)
     qreport = quality.run(produced, work.path, settings=qs, bbox_source=bbox_source, stream=out)
 
-    # Publish the gated frames only now, so stage 5 read real files.
+    # Publish the gated frames only now, so stage 5 read real files. Empty `images/` first:
+    # the bundle is opened with overwrite=False, so without this the directory is the union
+    # of every run that has ever touched it. See `Bundle.clear_images`.
+    bundle.clear_images()
     for index, path in enumerate(produced):
         target = bundle.images / path.name
         shutil.move(str(path), str(target))
         bundle.record(f"frame{index}", target)
         artefacts[f"frame{index}"] = target
     reports.append(StageReport(5, "quality", time.monotonic() - began, qreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     qdir = work.dir("quality")
     quality.write(qreport, qdir / quality.REPORT_NAME, qs)
@@ -277,23 +368,36 @@ def run(
 
     # --- stage 6: caption -----------------------------------------------------
     # Deterministic. Runs on the frames stage 5 passed and the transcript stage 3 wrote;
-    # there is no model in this stage, by design, so the alignment can be checked against
-    # the artefact rather than believed.
+    # there is no model in the alignment half, by design, so that half can be checked against
+    # the artefact rather than believed. The captioning half does call one.
+    #
+    # The quality report comes from `artefacts`, not `qdir`, and that is the whole fix:
+    # `Bundle.publish` *moves*, so the work-dir path stage 5 wrote is dangling by the time
+    # stage 6 reads it. `align` treats a missing file as "no gate information", which makes
+    # the guard `if alignment.quality_gate and ...` vacuously false -- stage 5's gate became a
+    # no-op in the real pipeline, and all 58 frames were captioned including the one stage 5
+    # rejected. `publish` returns the source path unchanged when it does not exist rather than
+    # raising, so no run ever reported it. The signature in the artefact was `quality_gate: ""`
+    # on all 58 frames where stage 5 had recorded one FAIL. #82.
     began = time.monotonic()
     capdir = work.dir("caption")
-    creport = caption.run(
+    creport, coutcome = caption.run(
         # The bundle's copies, not the work dir's. `publish` moved both, so the work-dir
         # paths are dangling -- the same move-then-read ordering bug stage 5 had.
         artefacts["manifest"],
         paths["json"],
-        qdir / quality.REPORT_NAME,
+        artefacts[quality.REPORT_NAME],
         bundle.images,
         capdir,
+        # The bundle's copy from the previous run, not `capdir`: `capdir` is scratch and
+        # empty on every run, so caching from it re-called all 58 frames on run 10 (#83).
+        cache_source=bundle.root / caption.REPORT_NAME,
         stream=out,
     )
     for extra in (caption.REPORT_NAME, caption.PROVENANCE_NAME):
         artefacts[extra] = bundle.publish(extra, capdir / extra)
     reports.append(StageReport(6, "caption", time.monotonic() - began, creport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 7: synth ------------------------------------------------------
     # The first stage that may need a model. Two implementations of one Protocol; the
@@ -314,8 +418,9 @@ def run(
         title=note_title,
         stream=out,
     )
-    for extra in (synth.NOTE_NAME, synth.REPORT_NAME, synth.PROVENANCE_NAME):
-        artefacts[extra] = bundle.publish(extra, sdir / extra)
+    # The transcript is conditional: it exists only when the LLM synthesizer ran, and the
+    # template one makes no calls to record. Stage 9 guards its equivalent the same way.
+    artefacts.update(publishes_stage7_transcript(sdir, bundle))
     reports.append(
         StageReport(
             7,
@@ -324,6 +429,7 @@ def run(
             f"{note.synthesizer}, {note.markdown.count(chr(10))} lines",
         )
     )
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 8: lint --------------------------------------------------------
     # Deterministic, and every rule is a delimiter count or a string match. A model asked
@@ -334,6 +440,7 @@ def run(
     for extra in (lint.REPORT_NAME, lint.PROVENANCE_NAME):
         artefacts[extra] = bundle.publish(extra, ldir / extra)
     reports.append(StageReport(8, "lint", time.monotonic() - began, lreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 9: audit --------------------------------------------------------
     # Tier 1 is deterministic and carries the load. Tier 2 is a zero-shot critic that sees
@@ -353,6 +460,7 @@ def run(
         if (adir / extra).is_file():
             artefacts[f"audit/{extra}"] = bundle.publish(f"audit/{extra}", adir / extra)
     reports.append(StageReport(9, "audit", time.monotonic() - began, areport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 10: repair -----------------------------------------------------
     began = time.monotonic()
@@ -368,6 +476,7 @@ def run(
     for extra in (repair.REPAIRED_NOTE, repair.REPORT_NAME, repair.PROVENANCE_NAME):
         artefacts[f"repair/{extra}"] = bundle.publish(f"repair/{extra}", rdir / extra)
     reports.append(StageReport(10, "repair", time.monotonic() - began, rreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 11: link --------------------------------------------------------
     # Links are injected into the REPAIRED note, not the stage-7 original: the repair stage
@@ -375,7 +484,11 @@ def run(
     # would give a wikilink to a defect that stage 10 just declined to fix.
     began = time.monotonic()
     ldir2 = work.dir("link")
-    tdir = link.resolve_terms_dir(terms_dir, vault_path)
+    # The vault is resolved the same way `doctor` resolves it, not only when `--vault` was
+    # passed. Otherwise stage 11 looks for `mscs/_terms` under a `None` vault and reports
+    # "not configured" on a machine where `glimpse doctor` just named the directory that
+    # holds them.
+    tdir = link.resolve_terms_dir(terms_dir, deps.resolve_vault(vault_path))
     lreport2 = link.run(
         rdir / repair.REPAIRED_NOTE
         if (rdir / repair.REPAIRED_NOTE).is_file()
@@ -388,6 +501,7 @@ def run(
         if (ldir2 / extra).is_file():
             artefacts[f"link/{extra}"] = bundle.publish(f"link/{extra}", ldir2 / extra)
     reports.append(StageReport(11, "link", time.monotonic() - began, lreport2.summary()))
+    out.write(reports[-1].line() + "\n")
     note_artefact = ldir2 / link.LINKED_NOTE
 
     # --- stage 12: report --------------------------------------------------------
@@ -404,6 +518,13 @@ def run(
     artefacts["note"] = bundle.root / synth.NOTE_NAME
     artefacts[report.REPORT_NAME] = bundle.root / report.REPORT_NAME
     reports.append(StageReport(12, "report", time.monotonic() - began, rreport2.summary()))
+    # No `out.write(reports[-1].line())` here, and that is deliberate: `report.run` has already
+    # printed its own `[12/12] report OK: ...` (`report.py`), immediately followed by the MISSING
+    # lines it exists to justify. A second line would repeat the stage and carry the same
+    # seconds. Stage 12 is therefore the one stage whose seconds reach `timings.json` and not
+    # the terminal -- it takes under 0.1 s, and `report.json` carries its verdict. #97.
+
+    write_timings(bundle, reports)
 
     return RunResult(
         source=Path(source),
@@ -417,6 +538,7 @@ def run(
         quality=qreport,
         enhanced=enhanced,
         caption=creport,
+        caption_outcome=coutcome,
         note=note,
         lint=lreport,
         audit=areport,

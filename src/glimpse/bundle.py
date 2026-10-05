@@ -27,6 +27,9 @@ from pathlib import Path
 NOTE_NAME = "note.md"
 AUDIT_NAME = "audit.md"
 IMAGES = "images"
+#: Where a bundle lands inside a vault unless told otherwise. Its own directory, because the
+#: alternative is writing ~188 files into the directory the user's own notes live in.
+DEFAULT_EXPORT_SUBDIR = "glimpse"
 
 
 def state_root() -> Path:
@@ -90,6 +93,36 @@ class Bundle:
         target.mkdir(parents=True, exist_ok=True)
         return target
 
+    def clear_images(self) -> int:
+        """Empty `images/` before this run's frames land in it. Returns files removed.
+
+        The directory accumulated across runs. `Bundle.open` is called with
+        `overwrite=False` and `images` only ever `mkdir(exist_ok=True)`, so nothing removed
+        what a previous run left. Measured on lecture 1 after three runs: `images/` held 73
+        PNGs where the manifest listed 58, and the 15 extras were all at timestamps below
+        135.5 s -- exactly the first run's range, before the `-frame_pts` timebase fix made
+        every frame come from the opening minutes.
+
+        Three consequences, none of them visible from any artefact:
+
+        - `images/` is not a record of this run. A frame the current gate never saw sits
+          beside the frames it did, indistinguishable by name.
+        - stage 12 verifies the registered artefacts, so those 15 were never checked and
+          never failed.
+        - `export_to_vault` copies by registry, so they were skipped there too -- but the
+          bundle's own `summary()` count disagreed with the directory by the same 32 files.
+
+        `frames.run` clears its own output directory every run; this is the same rule for the
+        directory the frames end up in.
+        """
+        target = self.images
+        removed = 0
+        for stale in target.iterdir():
+            if stale.is_file():
+                stale.unlink()
+                removed += 1
+        return removed
+
     def path(self, name: str) -> Path:
         return self.root / name
 
@@ -128,18 +161,41 @@ class Bundle:
                 continue
         return f"{len(self.artefacts)} artefacts, {total / 1_048_576:.1f} MiB"
 
-    def export_to_vault(self, vault: Path, *, subdir: str | None = None) -> list[Path]:
+    def export_to_vault(
+        self, vault: Path, *, subdir: str | None = None, images: bool = False
+    ) -> list[Path]:
         """Copy finished files into the vault, verifying each one arrived.
 
         A copy, never a move: the bundle stays the single writer, and a failed export
         leaves an intact bundle rather than a half-consumed one.
+
+        `subdir` is not decoration. A lecture bundle is ~138 artefacts, 23 of which land in
+        the bundle root and 115 in `images/`, so exporting with `subdir=None` scatters ~138
+        files into the vault root -- which for an Obsidian vault is the directory holding the
+        user's own notes. The CLI therefore always passes a subdir; this default is the
+        fallback for direct callers, and it is a directory of its own for the same reason.
+
+        `images` defaults to **False**, and the frames are 84% of the bytes. Measured on
+        lecture 1 exported to the vault: 59 MiB total, of which 50 MiB was `images/` and
+        9.5 MiB everything else. And the note refers to no frame at all -- zero `![[...]]`
+        embeds, zero frame filenames, only time ranges like `### Фрагмент 1 (0–414 с)`.
+
+        So by default the export was copying 50 MiB per lecture into a directory that
+        Obsidian indexes and that obsidian-git synchronises, for files nothing reads. The
+        frames are the pipeline's evidence and they stay in the bundle, which is where the
+        audit and a later re-run both look for them. `--vault-images` copies them too, for
+        someone who wants the frames beside the note.
         """
-        root = Path(vault).expanduser() / subdir if subdir else Path(vault).expanduser()
+        subdir = subdir or DEFAULT_EXPORT_SUBDIR
+        root = Path(vault).expanduser() / subdir
         copied: list[Path] = []
         for key, source in sorted(self.artefacts.items()):
             if not source.is_file():
                 continue
-            target_dir = root / IMAGES if source.parent.name == IMAGES else root
+            is_image = source.parent.name == IMAGES
+            if is_image and not images:
+                continue
+            target_dir = root / IMAGES if is_image else root
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / source.name
             shutil.copy2(str(source), str(target))

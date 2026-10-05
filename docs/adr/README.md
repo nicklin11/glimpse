@@ -26,7 +26,7 @@ itself, `D4` is fine.
 | 0002 | [distribution](0002-distribution.md) | Packaging, zipapps, and where the STT backend lives | ~220 | Packaging, install, or the "no runtime dependencies" rule |
 | 0003 | [events](0003-events.md) | The pipeline emits events instead of rendering; progress semantics | ~95 | Working on progress, the event stream, or the terminal renderer |
 | 0004 | [endpoints](0004-endpoints.md) | Model endpoint configuration and artefact provenance | ~90 | Configuring models. Defines the `GLIMPSE_*` surface. |
-| 0005 | [caption-budget](0005-caption-budget.md) | Why stage 6 captions screen states, not frames | ~85 | Working on captions or on cost |
+| 0005 | [caption-budget](0005-caption-budget.md) | Why stage 6 captions screen states, not frames | ~160 | Working on captions or on cost |
 
 ## Reading order
 
@@ -64,8 +64,15 @@ Not every ADR is independent. These are the couplings that matter:
   promised and nobody built. See issue #67.
 - **ADR-0002 D3 depends on ADR-0001 D2**, which is superseded. The dependency chain
   terminated at the bottom; `D3`'s premise no longer holds.
-- **ADR-0005 assumes stage 4 deduplicates to ~17 states.** If that measurement does not
-  hold on another lecture, the cost argument in ADR-0005 does not either.
+- **ADR-0005 assumed stage 4 deduplicates to ~17 states. It produces 58.** The 17 was a
+  hand-made selection from the baseline note's frames directory, not a pipeline measurement,
+  and the decoded-frame figure it was divided into was also wrong (131 880 against a real
+  135 602). Corrected in *Amendment 2026-10-05*; the decision survives, the arithmetic does
+  not. Two lectures remain unmeasured, which is what D4 asks for.
+- **ADR-0005 D2 was satisfied vacuously.** Its acceptance -- that a gate failure is visible --
+  held for eight runs while the gate never fired in the pipeline (#82). An ADR criterion can
+  be met by the unit under test and missed by the thing it governs; both are true and only
+  one of them is the requirement.
 - **ADR-0003 D4** assumes blocking work stays blocking. The endpoint backend that replaced
   shipboard may behave differently; re-measure before relying on it.
 

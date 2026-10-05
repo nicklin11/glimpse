@@ -17,11 +17,16 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _env  # noqa: E402
+
+SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
 from glimpse import cli as glc  # noqa: E402
 from glimpse import deps as gld  # noqa: E402
@@ -69,10 +74,10 @@ import glimpse.stt.whispercpp as glwsc  # noqa: E402
 gld.shutil.which = fake_which
 gld.subprocess.run = fake_run
 
-# The gateway must never be probed against the real network in this test, and neither
-# must the STT endpoint. Before this pin, `doctor` reached whatever was listening on
-# 127.0.0.1:10302, so the suite's verdict depended on container state.
-os.environ.pop(gld.GATEWAY_ENV, None)
+# The model endpoint must never be probed against the real network in this test, and
+# neither must the STT endpoint. Before this pin, `doctor` reached whatever was listening
+# on 127.0.0.1:10302, so the suite's verdict depended on container state.
+os.environ.pop(gld.LLM_ENV, None)
 real_stt_backend = os.environ.pop(gld_stt.ENV_BACKEND, None)
 os.environ[gld_stt.ENV_BACKEND] = "whispercpp"
 real_stt_urlopen = glwsc.urllib.request.urlopen
@@ -100,6 +105,10 @@ class _HealthResponse:
 glwsc.urllib.request.urlopen = fake_stt_urlopen
 tmp = Path(tempfile.mkdtemp())
 os.environ[gld.VAULT_ENV] = str(tmp)
+# `glimpse process` on a first run writes the vault it used to the settings file. Keep that
+# inside the temp dir: a suite must not create files in the developer's home.
+real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
+os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
 
 
 def restore():
@@ -110,6 +119,10 @@ def restore():
         os.environ.pop(gld_stt.ENV_BACKEND, None)
     else:
         os.environ[gld_stt.ENV_BACKEND] = real_stt_backend
+    if real_settings_env is None:
+        os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+    else:
+        os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
 
 
 # --- 1. everything present -> 0, with path and version listed -----------------
@@ -120,13 +133,16 @@ text = out.getvalue()
 check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
 check(
-    "every dependency is listed",
-    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "gateway", "vault")),
+    # `gateway` was here until #68. The list is what `doctor` exists to be: an
+    # environment report naming a dependency the pipeline does not have is the same
+    # failure as omitting one it does.
+    "every dependency is listed, and none that does not exist",
+    all(n in text for n in ("ffmpeg", "ffprobe", "stt", "llm", "vault")) and "gateway" not in text,
     text,
 )
 check("resolved path is reported", "/usr/bin/ffmpeg" in text, text)
 check("version is reported", "ffmpeg version 7.1.1-1" in text, text)
-check("unconfigured gateway is skipped, not failed", "[skip]" in text, text)
+check("an unconfigured model endpoint is skipped, not failed", "[skip]" in text, text)
 
 # --- 2. the STT endpoint is unreachable -> 3, named, with remediation ---------
 # This replaced the old "shipboard is not on PATH -> exit 2" case. A PATH check could not
@@ -244,13 +260,19 @@ def boom_urlopen(url, timeout=None):
 
 real_urlopen = gld.urllib.request.urlopen
 gld.urllib.request.urlopen = boom_urlopen
-os.environ[gld.GATEWAY_ENV] = "http://127.0.0.1:1/inference"
-c = gld.check_gateway()
-check("unreachable gateway -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code}")
-check("unreachable gateway explains itself", "unreachable" in c.detail, c.detail)
-check("unreachable gateway has a remediation", bool(c.remediation), str(c.remediation))
+# This checked `check_gateway()` against `GLIMPSE_GATEWAY_URL`, a variable nothing wrote.
+# The endpoint the pipeline actually uses is `GLIMPSE_LLM_ENDPOINT`, and `check_llm` is
+# the check that observes it -- so the unreachability assertions moved onto the check that
+# is real (#68). Same behaviour under test, no phantom dependency.
+os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
+os.environ[gld.LLM_MODEL_ENV] = "some/model"
+c = gld.check_llm()
+check("unreachable endpoint -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code}")
+check("unreachable endpoint explains itself", "unreachable" in c.detail, c.detail)
+check("unreachable endpoint has a remediation", bool(c.remediation), str(c.remediation))
 gld.urllib.request.urlopen = real_urlopen
-os.environ.pop(gld.GATEWAY_ENV, None)
+os.environ.pop(gld.LLM_ENV, None)
+os.environ.pop(gld.LLM_MODEL_ENV, None)
 
 # --- 7. a tool with no --version must not report usage text AS a version -----
 # shipboard has no --version flag; `shipboard --help` prints argparse usage.
@@ -311,6 +333,46 @@ except SystemExit as exc:
     check("unknown subcommand -> exit 1, not 2", False, f"argparse exited {exc.code} uncaught")
 
 restore()
+
+# --- a redirected log is live, not flushed at exit ----------------------------
+# `pipeline` flushes exactly once, at `pipeline.py:281`, immediately before stage 3.
+# Every line after that rides on the stream's own buffering, and CPython block-buffers
+# `sys.stdout` in 8192-byte chunks whenever fd 1 is not a tty. Measured on run 14: the
+# log sat at `[3/12] stt starting` for 16m18s while stages 1-8 were finished on disk
+# and the process was in stage 9.
+#
+# Block-buffered output is discarded when a process dies without flushing, so this
+# test kills it. Letting it exit normally cannot tell the two apart -- the flush at exit
+# happens either way, which is exactly why the bug survived thirteen runs.
+KILL_SCRIPT = (
+    "import sys, time\n"
+    "from glimpse.cli import _line_buffer\n"
+    "_line_buffer()\n"
+    "sys.stdout.write('[1/12] probe  0.3s\\n')\n"
+    "time.sleep(60)\n"
+)
+size_while_running = -1
+with tempfile.TemporaryDirectory() as td:
+    log = Path(td) / "run.log"
+    child_env = dict(os.environ, PYTHONPATH=str(REPO / "src"))
+    with log.open("wb") as handle:
+        proc = subprocess.Popen([sys.executable, "-c", KILL_SCRIPT], stdout=handle, env=child_env)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            size_while_running = log.stat().st_size
+            if size_while_running:
+                break
+            time.sleep(0.05)
+        proc.kill()
+        proc.wait()
+    landed = log.read_text(encoding="utf-8", errors="replace")
+check(
+    "a redirected log is written before the process exits",
+    "[1/12] probe" in landed,
+    f"size while running={size_while_running}B, after SIGKILL={len(landed)}B",
+)
+
+_env.restore(SAVED_ENV)
 
 print()
 if failures:

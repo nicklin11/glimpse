@@ -54,11 +54,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from . import llm, stages
+from . import caption, llm, stages
 
 REPORT_NAME = "synth.json"
 PROVENANCE_NAME = "synth-provenance.json"
 NOTE_NAME = "note.md"
+#: The stage-7 calls, verbatim. Written to the stage's own directory since #38 and never
+#: promoted from it until #76 -- so the note in the bundle was written by 8 calls the bundle
+#: did not record. ADR-0004 D4: a regression gate that cannot attribute a difference is not
+#: a gate. Stage 9 names its equivalent `audit-llm-transcript.json`.
+LLM_TRANSCRIPT_NAME = "synth-llm-transcript.json"
+#: What `pipeline.publishes_stage7_transcript` promotes when stage 7 runs.
+STAGE7_ARTEFACTS = (NOTE_NAME, REPORT_NAME, PROVENANCE_NAME)
 
 #: the skill's document structure. `(number, title, one line on what belongs here)`. The lint stage checks
 #: the note against this list, so a section title that drifts here drifts in two places.
@@ -105,6 +112,12 @@ class Section:
     text: str
     frames: tuple[str, ...] = ()
     word_count: int = 0
+    #: `(frame filename, caption)` per frame, in order. Stage 6 computed these and stage 7 was
+    #: given only `frames` -- the filenames, which carry no information about the slide. 57
+    #: captions / 55 404 characters reached no one, and the writer described a lecture it could
+    #: not see (#84). Refusals are replaced at build time with prose, so the sentinel string
+    #: never reaches a writer as if it were content.
+    captions: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -114,6 +127,10 @@ class Section:
             "start_ms": self.start_ms,
             "end_ms": self.end_ms,
             "frames": list(self.frames),
+            # The count, not the texts: `captions.json` already holds the texts, and duplicating
+            # 55 kB into `synth.json` would put two copies of the same prose in one bundle with
+            # no rule about which is authoritative.
+            "captions": len(self.captions),
             "word_count": self.word_count,
         }
 
@@ -156,6 +173,31 @@ class Synthesizer(Protocol):
 
 # --- section cutting ---------------------------------------------------------------
 
+#: What stage 7 is told about a frame the captioner refused. The sentinel itself is a claim
+#: by a different model ("nothing here that the excerpt does not already state"), and passing
+#: it through verbatim would hand a Russian writer an English 19-character string in the
+#: position where a slide description belongs. 16 of the 57 captions on lecture 1 are refusals
+#: (#83). The wording says what the frame is -- the lecturer was on something already covered
+#: -- and does not ask the writer to conclude the lecture has a gap.
+CAPTION_REFUSED = "на экране нет содержания сверх стенограммы"
+
+
+def caption_text(alignment: dict) -> str | None:
+    """Stage 6's description of one frame, in a form a writer can use, or None if there is
+    nothing to send.
+
+    None means the frame carries no caption at all: either it was gated out, or stage 6
+    recorded a status without a string. Both are omitted rather than sent as an empty line,
+    because a blank under a filename reads as "nothing was on screen" -- a claim, and an
+    unsupported one.
+    """
+    raw = (alignment.get("caption") or "").strip()
+    if not raw:
+        return None
+    if raw == caption.NO_NEW_INFORMATION:
+        return CAPTION_REFUSED
+    return raw
+
 
 def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
     """Cut the lecture into bounded slices on frame boundaries.
@@ -179,6 +221,11 @@ def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
         chunk = usable[cursor : cursor + per]
         text = " ".join((c.get("text") or "").strip() for c in chunk).strip()
         frames = tuple(c["frame"] for c in chunk)
+        described: list[tuple[str, str]] = []
+        for c in chunk:
+            text_of_frame = caption_text(c)
+            if text_of_frame is not None:
+                described.append((c["frame"], text_of_frame))
         out.append(
             Section(
                 number=number,
@@ -188,6 +235,7 @@ def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
                 end_ms=chunk[-1].get("on_screen_ms", [0, 0])[-1],
                 text=text,
                 frames=frames,
+                captions=tuple(described),
                 word_count=sum((c.get("word_count") or 0) for c in chunk),
             )
         )
@@ -247,6 +295,22 @@ class LLMSynthesizer:
         # silent content loss.
         budget = 12_000
         body = transcript if len(transcript) <= budget else transcript[:budget] + "\n[…]\n"
+        if section.captions:
+            # Before the transcript, not after it: `body` is the only thing `budget` bounds,
+            # so anything above it survives truncation. The alternative -- captions last --
+            # makes the captions the first thing a long section loses, which is the same
+            # defect #84 describes, reached from the other direction.
+            described = "\n".join(f"{name} — {text}" for name, text in section.captions)
+            on_screen = (
+                "Описания кадров (стадия 6): что было на экране, пока шёл этот фрагмент.\n"
+                "Это не цитата лектора. Описание экрана не даёт права добавить в конспект "
+                "утверждение, которого нет в стенограмме: бери отсюда термин, формулу, "
+                "название или структуру слайда, а утверждения о том, что было сказано, "
+                "только из стенограммы.\n\n"
+                f"{described}\n\n"
+            )
+        else:
+            on_screen = f"Кадры на экране: {', '.join(section.frames) or 'нет'}.\n\n"
         messages = [
             {"role": "system", "content": SYSTEM},
             {
@@ -254,8 +318,8 @@ class LLMSynthesizer:
                 "content": (
                     f"Раздел {section.number} из 8: «{section.title}».\n"
                     f"Что в нём должно быть: {section.brief}\n\n"
-                    f"Тайминг: {section.start_ms / 1000:.0f}–{section.end_ms / 1000:.0f} с. "
-                    f"Кадры на экране: {', '.join(section.frames) or 'нет'}.\n\n"
+                    f"Тайминг: {section.start_ms / 1000:.0f}–{section.end_ms / 1000:.0f} с.\n\n"
+                    f"{on_screen}"
                     f"Стенограмма этого фрагмента:\n\n{body}\n"
                 ),
             },
@@ -301,23 +365,44 @@ def assemble(note_title: str, bodies: dict[int, str], sections: list[Section]) -
 #: A heading that only exists in the document's own table of contents.
 _TOC = re.compile(r"^\s{0,3}#{1,6}\s*(содержание|оглавление)\b", re.IGNORECASE)
 
-#: `#` at any level, which the skill does not permit inside a section. The eight section headings
-#: are emitted by `assemble`; a model adding its own top level reshapes the document so the
-#: structure lint then checks a different thing than it was written to check.
-_H1 = re.compile(r"^(\s{0,3})#(?!#)\s+(.*)$")
+#: `#` at any level. The eight section headings are emitted by `assemble` as `## N. Title`;
+#: nothing inside a section body may sit at that level or above, or the document outline
+#: gains unnumbered siblings of the sections and the eight-section structure stops being
+#: the top level of anything.
+_HEADING = re.compile(r"^(\s{0,3})(#{1,6})(\s+.*)$")
 
 
 def normalise(body: str) -> str:
-    """Demote a model's top-level headings to third level. `##` is left alone.
+    """Push every heading in a section body below `##`, preserving relative nesting.
+
+    The shallowest heading in the body becomes `###`; the rest keep their distance from it.
+    Working from the minimum rather than demoting a fixed level keeps `####` under a `###`
+    from climbing above it -- mapping every `#` to `###`, as this did before, collapsed a
+    body that mixed `##` and `####` into a flat one.
 
     Demoting rather than deleting: the heading usually carries real information -- which
     slide the fragment was -- and the failure to preserve it is worse than the extra level.
     Stripping it would leave a note with unexplained structural breaks in it.
+
+    Measured on lecture 1, 2026-10-04: leaving `##` alone produced 29 unnumbered `##`
+    headings as siblings of the eight `## N.` sections, so `## N.` stopped being the top
+    level of the document and stage 8's structural rules checked a different outline than
+    the one a reader sees.
     """
-    out = []
-    for line in body.splitlines():
-        out.append(_H1.sub(r"\1### \2", line))
-    return "\n".join(out)
+    levels = [len(m.group(2)) for line in body.splitlines() if (m := _HEADING.match(line))]
+    if not levels:
+        return body
+    # `##` is the section level; a body heading may not be at or above it. The shift is
+    # 3 - min, clamped at 0 so a body that starts at `####` is not *promoted*, and the
+    # result is clamped at 6 so a deep body cannot produce `########`, which is not a
+    # heading in Markdown, it is a paragraph.
+    shift = max(0, 3 - min(levels))
+
+    def demote(match: re.Match[str]) -> str:
+        indent, hashes, rest = match.group(1), match.group(2), match.group(3)
+        return f"{indent}{'#' * min(6, len(hashes) + shift)}{rest}"
+
+    return "\n".join(_HEADING.sub(demote, line) for line in body.splitlines())
 
 
 def synthesise(
@@ -440,7 +525,7 @@ def run(
     write(note, destination / REPORT_NAME)
     (destination / PROVENANCE_NAME).write_text(provenance(note, config) + "\n", encoding="utf-8")
     if isinstance(synthesizer, LLMSynthesizer):
-        synthesizer.transcript.write(destination / "synth-llm-transcript.json")
+        synthesizer.transcript.write(destination / LLM_TRANSCRIPT_NAME)
 
     out.write(
         f"  [7/{stages.IMPLEMENTED}] synth    {note.synthesizer}, "
