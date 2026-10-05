@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from . import llm, stages
+from . import caption, llm, stages
 
 REPORT_NAME = "synth.json"
 PROVENANCE_NAME = "synth-provenance.json"
@@ -112,6 +112,12 @@ class Section:
     text: str
     frames: tuple[str, ...] = ()
     word_count: int = 0
+    #: `(frame filename, caption)` per frame, in order. Stage 6 computed these and stage 7 was
+    #: given only `frames` -- the filenames, which carry no information about the slide. 57
+    #: captions / 55 404 characters reached no one, and the writer described a lecture it could
+    #: not see (#84). Refusals are replaced at build time with prose, so the sentinel string
+    #: never reaches a writer as if it were content.
+    captions: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -121,6 +127,10 @@ class Section:
             "start_ms": self.start_ms,
             "end_ms": self.end_ms,
             "frames": list(self.frames),
+            # The count, not the texts: `captions.json` already holds the texts, and duplicating
+            # 55 kB into `synth.json` would put two copies of the same prose in one bundle with
+            # no rule about which is authoritative.
+            "captions": len(self.captions),
             "word_count": self.word_count,
         }
 
@@ -163,6 +173,31 @@ class Synthesizer(Protocol):
 
 # --- section cutting ---------------------------------------------------------------
 
+#: What stage 7 is told about a frame the captioner refused. The sentinel itself is a claim
+#: by a different model ("nothing here that the excerpt does not already state"), and passing
+#: it through verbatim would hand a Russian writer an English 19-character string in the
+#: position where a slide description belongs. 16 of the 57 captions on lecture 1 are refusals
+#: (#83). The wording says what the frame is -- the lecturer was on something already covered
+#: -- and does not ask the writer to conclude the lecture has a gap.
+CAPTION_REFUSED = "на экране нет содержания сверх стенограммы"
+
+
+def caption_text(alignment: dict) -> str | None:
+    """Stage 6's description of one frame, in a form a writer can use, or None if there is
+    nothing to send.
+
+    None means the frame carries no caption at all: either it was gated out, or stage 6
+    recorded a status without a string. Both are omitted rather than sent as an empty line,
+    because a blank under a filename reads as "nothing was on screen" -- a claim, and an
+    unsupported one.
+    """
+    raw = (alignment.get("caption") or "").strip()
+    if not raw:
+        return None
+    if raw == caption.NO_NEW_INFORMATION:
+        return CAPTION_REFUSED
+    return raw
+
 
 def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
     """Cut the lecture into bounded slices on frame boundaries.
@@ -186,6 +221,11 @@ def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
         chunk = usable[cursor : cursor + per]
         text = " ".join((c.get("text") or "").strip() for c in chunk).strip()
         frames = tuple(c["frame"] for c in chunk)
+        described: list[tuple[str, str]] = []
+        for c in chunk:
+            text_of_frame = caption_text(c)
+            if text_of_frame is not None:
+                described.append((c["frame"], text_of_frame))
         out.append(
             Section(
                 number=number,
@@ -195,6 +235,7 @@ def build_sections(alignments: list[dict], limit: int = 12) -> list[Section]:
                 end_ms=chunk[-1].get("on_screen_ms", [0, 0])[-1],
                 text=text,
                 frames=frames,
+                captions=tuple(described),
                 word_count=sum((c.get("word_count") or 0) for c in chunk),
             )
         )
@@ -254,6 +295,22 @@ class LLMSynthesizer:
         # silent content loss.
         budget = 12_000
         body = transcript if len(transcript) <= budget else transcript[:budget] + "\n[…]\n"
+        if section.captions:
+            # Before the transcript, not after it: `body` is the only thing `budget` bounds,
+            # so anything above it survives truncation. The alternative -- captions last --
+            # makes the captions the first thing a long section loses, which is the same
+            # defect #84 describes, reached from the other direction.
+            described = "\n".join(f"{name} — {text}" for name, text in section.captions)
+            on_screen = (
+                "Описания кадров (стадия 6): что было на экране, пока шёл этот фрагмент.\n"
+                "Это не цитата лектора. Описание экрана не даёт права добавить в конспект "
+                "утверждение, которого нет в стенограмме: бери отсюда термин, формулу, "
+                "название или структуру слайда, а утверждения о том, что было сказано, "
+                "только из стенограммы.\n\n"
+                f"{described}\n\n"
+            )
+        else:
+            on_screen = f"Кадры на экране: {', '.join(section.frames) or 'нет'}.\n\n"
         messages = [
             {"role": "system", "content": SYSTEM},
             {
@@ -261,8 +318,8 @@ class LLMSynthesizer:
                 "content": (
                     f"Раздел {section.number} из 8: «{section.title}».\n"
                     f"Что в нём должно быть: {section.brief}\n\n"
-                    f"Тайминг: {section.start_ms / 1000:.0f}–{section.end_ms / 1000:.0f} с. "
-                    f"Кадры на экране: {', '.join(section.frames) or 'нет'}.\n\n"
+                    f"Тайминг: {section.start_ms / 1000:.0f}–{section.end_ms / 1000:.0f} с.\n\n"
+                    f"{on_screen}"
                     f"Стенограмма этого фрагмента:\n\n{body}\n"
                 ),
             },

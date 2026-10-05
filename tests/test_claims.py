@@ -65,19 +65,32 @@ check(
     f"IMPLEMENTED={gst.IMPLEMENTED}, pipeline reports {len(reported)}",
 )
 
-# The README status table must have one row per stage plus doctor, and no stage
-# number may appear twice. A duplicate is how "6" ended up on two rows.
+# The README status table, *if it exists*, must have one row per stage plus doctor, and no
+# stage number may appear twice. A duplicate is how "6" ended up on two rows.
+#
+# The check is conditional because the README no longer carries per-stage status. `c4aab27`
+# cut it on the grounds that development state belongs in the issues, and this assertion was
+# never updated to match -- it kept failing against a table that had been deleted on purpose,
+# and a permanently red suite is a guard nobody reads. The invariant it protects still holds
+# wherever such a table appears; what it no longer asserts is that one must appear.
 #
 # Scoped to the section: `^\| (\d+) \| ` matches the exit-code table too, and an
 # unscoped scan of a document with three numeric tables reports all three.
-status_start = README.index("| stage |")
-status_end = README.index("\n## ", status_start)
-status_rows = re.findall(r"^\| (\d+) \| ", README[status_start:status_end], flags=re.MULTILINE)
-check(
-    "the README status table has one row per stage, plus doctor",
-    sorted(int(n) for n in status_rows) == list(range(0, gst.IMPLEMENTED + 1)),
-    f"stage column reads {status_rows}",
-)
+if "| stage |" in README:
+    status_start = README.index("| stage |")
+    status_end = README.index("\n## ", status_start)
+    status_rows = re.findall(r"^\| (\d+) \| ", README[status_start:status_end], flags=re.MULTILINE)
+    check(
+        "the README status table has one row per stage, plus doctor",
+        sorted(int(n) for n in status_rows) == list(range(0, gst.IMPLEMENTED + 1)),
+        f"stage column reads {status_rows}",
+    )
+else:
+    check(
+        "the README carries no per-stage status table, which the issues own",
+        True,
+        "the table exists and the conditional branch above will judge it",
+    )
 
 # --- 3. exit-code table -------------------------------------------------------
 # The table is prose next to code. `DESCRIPTIONS` exists so the comparison does

@@ -53,11 +53,20 @@ UNCOVERED = "no_transcript_coverage"
 #: lecture, which is a muxing problem, not a captioning problem. ADR-0001 D5 exit 4.
 UNCOVERED_SHARE_LIMIT = 0.30
 
+#: What the model returns when it judges the frame to carry nothing the excerpt does not
+#: already state. It is a **finding, not content**: 16 of the 57 captions on lecture 1 are
+#: this string (#83). It was a bare literal inside the prompt until this constant existed,
+#: which is why every consumer had to string-match it and why a refusal was indistinguishable
+#: from a caption -- both were `caption_status: OK` with a non-empty string. The stage-7 status
+#: that separates them is #83; this is only the name to compare against.
+NO_NEW_INFORMATION = "NO NEW INFORMATION."
+
 #: What the model is asked for. A slide in a technical lecture is mostly equations, and a
 #: generic "describe this image" returns "a slide with text on it" -- content-free, and worse
 #: than nothing because stage 7 will treat it as material. So the prompt asks for the things
 #: the note needs and that the audio does not contain.
-CAPTION_PROMPT = """\
+CAPTION_PROMPT = (
+    """\
 You are reading one frame from a university lecture recording. The transcript excerpt below \
 is what the lecturer was saying while this frame was on screen.
 
@@ -73,8 +82,9 @@ labels and ranges, curves and their names, and the direction of any arrows.
 
 Do not comment on the lecturer, the conferencing UI, window chrome, or the room. Do not \
 describe what the excerpt already says. If the frame carries no content beyond what the \
-excerpt states, answer with exactly: NO NEW INFORMATION.
-"""
+excerpt states, answer with exactly: """
+    + NO_NEW_INFORMATION
+)
 
 
 @dataclass(frozen=True)

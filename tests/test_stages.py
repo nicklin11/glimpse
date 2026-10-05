@@ -3680,6 +3680,124 @@ check(
 )
 check("no alignments is no sections", glsy.build_sections([]) == [], "produced sections")
 
+# --- 14. stage 7 gets the captions, not the filenames ---------------------------------
+# #84. Stage 6 computed 57 captions (55 404 chars) on lecture 1 and stage 7 was handed
+# `section.frames` -- filenames like `f_0000180000.png`, which say nothing about the slide.
+# The writer described a lecture it could not see. These assert the wiring, including the
+# part that is easy to get wrong: a refusal is another model's judgement, and passing the
+# 19-character English sentinel through as if it were a description would be worse than
+# sending nothing.
+_WIRE = [
+    {
+        "frame": "f_a.png",
+        "text": "производная",
+        "word_count": 2,
+        "caption_status": "OK",
+        "caption": r"$\dot{x} = Ax$, матрица состояния",
+        "on_screen_ms": [0, 1000],
+    },
+    {
+        "frame": "f_b.png",
+        "text": "дальше",
+        "word_count": 1,
+        "caption_status": "OK",
+        "caption": "NO NEW INFORMATION.",
+        "on_screen_ms": [1000, 2000],
+    },
+    {
+        "frame": "f_c.png",
+        "text": "ещё",
+        "word_count": 1,
+        "caption_status": "GATED_OUT",
+        "on_screen_ms": [2000, 3000],
+    },
+]
+_wsec = glsy.build_sections(_WIRE, limit=1)[0]
+check(
+    "a real caption rides along with the section",
+    ("f_a.png", r"$\dot{x} = Ax$, матрица состояния") in _wsec.captions,
+    str(_wsec.captions),
+)
+check(
+    "a refusal is stated in the writer's language, not passed as content",
+    ("f_b.png", glsy.CAPTION_REFUSED) in _wsec.captions
+    and not any("NO NEW INFORMATION" in t for _, t in _wsec.captions),
+    str(_wsec.captions),
+)
+check(
+    "a frame with no caption is omitted rather than sent as a blank line",
+    all(name != "f_c.png" for name, _ in _wsec.captions),
+    str(_wsec.captions),
+)
+check(
+    "the section report records how many captions it carries",
+    _wsec.as_dict()["captions"] == 2 and len(_wsec.as_dict()["frames"]) == 2,
+    str(_wsec.as_dict()),
+)
+
+# The assertion #84 asks for: the caption text is in the message that goes to the model.
+# `glle.chat` is stubbed, so this reads what stage 7 *builds* -- the transport is covered
+# elsewhere -- but unlike a mock of stage 7's own output it cannot pass while the wiring is
+# missing.
+_wprompts: list = []
+
+
+def _wire_chat(messages, config):
+    _wprompts.append(messages)
+
+    class _R:
+        text = "тело"
+        raw: dict = {}
+        attempts = 1
+
+    return _R()
+
+
+class _WireTranscript:
+    def record(self, *a, **k):
+        pass
+
+
+glle.chat = _wire_chat
+try:
+    _wsyn = glsy.LLMSynthesizer(glle.Config(endpoint="http://e/v1", model="m"), _WireTranscript())
+    _wsyn.section(_wsec, _wsec.text)
+finally:
+    glle.chat = _real_chat
+
+_wp = _wprompts[0][1]["content"]
+check(
+    "the caption text is in the recorded prompt, not just the section",
+    r"$\dot{x} = Ax$, матрица состояния" in _wp,
+    _wp[:400],
+)
+check(
+    "the sentinel never reaches the writer",
+    "NO NEW INFORMATION." not in _wp,
+    _wp[:400],
+)
+check(
+    "captions are told apart from speech, so the writer cannot quote the screen as the lecturer",
+    "не цитата лектора" in _wp,
+    _wp[:400],
+)
+
+# A section with no captions still names its frames: the fallback the pre-#84 prompt used.
+_nocap = glsy.build_sections([{"frame": "f_z.png", "text": "t", "caption_status": "OK"}], limit=1)[
+    0
+]
+_wprompts.clear()
+glle.chat = _wire_chat
+try:
+    _wsyn.section(_nocap, _nocap.text)
+finally:
+    glle.chat = _real_chat
+check(
+    "a section with no captions still reports which frames were on screen",
+    "Кадры на экране: f_z.png" in _wprompts[0][1]["content"],
+    _wprompts[0][1]["content"][:300],
+)
+
 # The eight headings are the model's to write nothing about.
 note = glsy.synthesise(json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth())
 check(

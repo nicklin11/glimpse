@@ -169,17 +169,18 @@ Cold: ~6.8 k input tokens per frame, almost all of it the image.
 | 3 | a dependency is installed and failing |
 | 4 | a quality gate rejected the output |
 | 5 | the audit found error-tier findings in the note |
+| 130 | interrupted (Ctrl-C); the work dir is kept |
 
 ## What exit 0 does not tell you
 
 A reachable model is not implied by exit 0. Three cases degrade instead of failing, and each
 leaves evidence in the bundle:
 
-| stage | condition | what you see |
+| where | condition | what you see |
 |---|---|---|
-| 6 | vision endpoint down | **exit 3.** `caption_outcome.ok` is `captioned + reused > 0`, checked before the quality gate so a dead endpoint is not reported as soft crops |
-| 9 | tier-2 critic down | **exit 0** with a `critic/unavailable` WARN; the audit degrades to tier 1 |
-| 6 | some frames failed | **exit 0**; per-frame `caption_status: ERROR` with the endpoint error in `caption_trace.detail` |
+| stage 6 | vision endpoint down | **exit 3.** `caption_outcome.ok` is `captioned + reused > 0`, checked before the quality gate so a dead endpoint is not reported as soft crops |
+| stage 9 | tier-2 critic down | **exit 0** with a `critic/unavailable` WARN; the audit degrades to tier 1 |
+| stage 6 | some frames failed | **exit 0**; per-frame `caption_status: ERROR` with the endpoint error in `caption_trace.detail` |
 
 The third is the one to check for. `CaptionOutcome.ok` is a zero test, not a threshold, so 56 of
 57 captioned is a success. Read the counts on the `[6/12] caption` line, or count `caption_trace`
