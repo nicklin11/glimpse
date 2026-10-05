@@ -31,16 +31,17 @@ python -m zipapp src -m glimpse.cli:main -o glimpse -p "/usr/bin/env python3"
 
 ## Configure
 
-Stage 3 transcribes through an endpoint. Three backends:
+Stage 3 transcribes through an endpoint. Two backends:
 
 | backend | selected by | speaks | where the audio goes |
 |---|---|---|---|
 | `whispercpp` | autodetected, preferred | whisper.cpp native `POST /inference` | **stays on this machine** |
 | `openai` | `GLIMPSE_STT=openai` | OpenAI-compatible `/v1/audio/transcriptions` | **leaves this machine** |
 
-`GLIMPSE_STT=auto` prefers a local whisper.cpp and falls back to the OpenAI-compatible
-endpoint, so with both configured the local one keeps the recording on the host.
-`glimpse doctor` states which was selected and whether it answers.
+The default, `GLIMPSE_STT=auto`, is a selection mode rather than a third backend: it probes
+whisper.cpp first and takes the first that answers, so with both configured the local one keeps the
+recording on the host. With neither reachable it exits 2. `glimpse doctor` states which was
+selected and whether it answers.
 
 | variable | purpose |
 |---|---|
@@ -71,16 +72,20 @@ worth knowing before debugging:
 
 A 404 on `/health` is tolerated; some builds serve `/inference` without a health route.
 
-### Transcripts are not reproducible
+### Transcripts are not reproducible across configurations
 
-Two runs over the same audio produce different text, including `threads=1` and after a
-container restart. Do not diff transcripts between runs.
+Consecutive runs on the same server, with the same environment and the same language pin, give
+byte-identical transcripts — verified by the sha256 in `stt-provenance.json`, matching across
+runs. Change something and they are not: two runs of a 120 s excerpt under different
+`threads` settings agreed on **94.7%–99.4%** of words, with numeric and symbol tokens identical
+and differences falling on singular/plural, dropped function words and proper nouns.
 
-What is stable is the timings, which is what the pipeline consumes, and frame extraction,
-which is deterministic. Measured word-level agreement across runs of a 120 s excerpt:
-**94.7%–99.4%**, with numeric and symbol tokens identical. Differences are singular/plural,
-dropped function words, and proper nouns — and proper nouns in a technical lecture are the
-course terms a note is built on. That is what the glossary and the audit stage are for.
+Frame extraction is deterministic. Timings are stable. The text is a function of the
+configuration, so `stt-provenance.json` records the parameters next to the digest — check
+`parameters` before blaming a model for a transcript difference.
+
+Proper nouns in a technical lecture are the course terms a note is built on, which is what the
+glossary and the audit stage are for.
 
 ## Output
 
@@ -129,20 +134,30 @@ The vault is a **copy target**, not the output root. Every file is verified afte
 that lands short is an error rather than a silent success. Your bundle is left intact. A vault
 path that does not exist is reported and named, not created.
 
+## What the note is made of
+
+The note is built from the transcript. Per-frame captions are written to `captions.json` in the
+bundle; `stage 7` receives the frame filenames for each section, not their descriptions, so no
+caption text and no image appears in the note. `images/` stays in the bundle.
+
 ## Cost
 
-Measured on `1_lecture_OCS.mp4` (AV1 1080p, 4520 s):
+Measured on `1_lecture_OCS.mp4` (AV1 1080p, 4520 s). Two runs of the same file, the second
+after the first:
 
-| | wall |
-|---|---|
-| transcription | 306 s (0.068x realtime) |
-| frame extraction | 313 s (0.069x realtime) |
-| frame captioning | 447 s for 58 frames, 396 k input tokens |
-| everything else | 252 s |
-| **total** | **1318 s** |
+| | cold | warm |
+|---|---|---|
+| transcription | 298 s (0.066x realtime) | 298 s |
+| frame extraction | 319 s (0.071x realtime) | 319 s |
+| frame captioning | 447 s, 58 vision calls, 396 k input tokens | ~0 s, 0 calls |
+| everything else | ~252 s | ~364 s |
+| **total** | **1318 s** | **981 s** |
 
-Frame captioning is the one stage whose cost scales with model pricing: 58 vision calls,
-~6.8 k input tokens each. Everything else is fixed by the length of the recording.
+Transcription and extraction are deterministic. Captioning is cached on `(frame bytes, model
+id)`, so a second run over unchanged frames and the same model makes zero vision requests --
+`captions.json` records `source: cached` per frame. A different model id is a different cache.
+
+Cold: ~6.8 k input tokens per frame, almost all of it the image.
 
 ## Exit codes
 
