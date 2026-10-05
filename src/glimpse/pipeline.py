@@ -343,6 +343,7 @@ def run(
         bundle.record(f"frame{index}", target)
         artefacts[f"frame{index}"] = target
     reports.append(StageReport(5, "quality", time.monotonic() - began, qreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     qdir = work.dir("quality")
     quality.write(qreport, qdir / quality.REPORT_NAME, qs)
@@ -396,6 +397,7 @@ def run(
     for extra in (caption.REPORT_NAME, caption.PROVENANCE_NAME):
         artefacts[extra] = bundle.publish(extra, capdir / extra)
     reports.append(StageReport(6, "caption", time.monotonic() - began, creport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 7: synth ------------------------------------------------------
     # The first stage that may need a model. Two implementations of one Protocol; the
@@ -427,6 +429,7 @@ def run(
             f"{note.synthesizer}, {note.markdown.count(chr(10))} lines",
         )
     )
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 8: lint --------------------------------------------------------
     # Deterministic, and every rule is a delimiter count or a string match. A model asked
@@ -437,6 +440,7 @@ def run(
     for extra in (lint.REPORT_NAME, lint.PROVENANCE_NAME):
         artefacts[extra] = bundle.publish(extra, ldir / extra)
     reports.append(StageReport(8, "lint", time.monotonic() - began, lreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 9: audit --------------------------------------------------------
     # Tier 1 is deterministic and carries the load. Tier 2 is a zero-shot critic that sees
@@ -456,6 +460,7 @@ def run(
         if (adir / extra).is_file():
             artefacts[f"audit/{extra}"] = bundle.publish(f"audit/{extra}", adir / extra)
     reports.append(StageReport(9, "audit", time.monotonic() - began, areport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 10: repair -----------------------------------------------------
     began = time.monotonic()
@@ -471,6 +476,7 @@ def run(
     for extra in (repair.REPAIRED_NOTE, repair.REPORT_NAME, repair.PROVENANCE_NAME):
         artefacts[f"repair/{extra}"] = bundle.publish(f"repair/{extra}", rdir / extra)
     reports.append(StageReport(10, "repair", time.monotonic() - began, rreport.summary()))
+    out.write(reports[-1].line() + "\n")
 
     # --- stage 11: link --------------------------------------------------------
     # Links are injected into the REPAIRED note, not the stage-7 original: the repair stage
@@ -495,6 +501,7 @@ def run(
         if (ldir2 / extra).is_file():
             artefacts[f"link/{extra}"] = bundle.publish(f"link/{extra}", ldir2 / extra)
     reports.append(StageReport(11, "link", time.monotonic() - began, lreport2.summary()))
+    out.write(reports[-1].line() + "\n")
     note_artefact = ldir2 / link.LINKED_NOTE
 
     # --- stage 12: report --------------------------------------------------------
@@ -511,6 +518,11 @@ def run(
     artefacts["note"] = bundle.root / synth.NOTE_NAME
     artefacts[report.REPORT_NAME] = bundle.root / report.REPORT_NAME
     reports.append(StageReport(12, "report", time.monotonic() - began, rreport2.summary()))
+    # No `out.write(reports[-1].line())` here, and that is deliberate: `report.run` has already
+    # printed its own `[12/12] report OK: ...` (`report.py`), immediately followed by the MISSING
+    # lines it exists to justify. A second line would repeat the stage and carry the same
+    # seconds. Stage 12 is therefore the one stage whose seconds reach `timings.json` and not
+    # the terminal -- it takes under 0.1 s, and `report.json` carries its verdict. #97.
 
     write_timings(bundle, reports)
 

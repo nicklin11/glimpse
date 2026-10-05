@@ -11,11 +11,13 @@ import os
 import sys
 from pathlib import Path
 
+from . import audit as gla
 from . import deps as gld
 from . import exitcodes as ec
 from . import bundle as glb
 from . import link as gllnk
 from . import pipeline as glp
+from . import repair as glr
 from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
 from .workspace import WorkDir
@@ -291,13 +293,22 @@ def _process(args: argparse.Namespace) -> int:
             )
         if len(audit_errors) > 10:
             print(
-                f"glimpse:   ... and {len(audit_errors) - 10} more in audit/audit.json",
+                f"glimpse:   ... and {len(audit_errors) - 10} more in "
+                f"{result.bundle.root / gla.REPORT_NAME}",
                 file=sys.stderr,
             )
+        # Built from the constant the stage publishes with and the bundle root the run wrote
+        # to, rather than typed as prose. These two strings said `audit/audit.json` and
+        # `repair/repair.json` for as long as they existed: `Bundle.publish` ignores the
+        # registry key when choosing a filename (`bundle.py:144`), so `audit/audit.json` and
+        # `repair/repair.json` are registry keys and the files sit in the bundle root. The
+        # bundle has no `audit/` or `repair/` directory. Both branches are exit 5 and exit 1,
+        # and thirteen runs have exited 0, so the wrong path was never shown to anyone. #91.
         print(
-            "glimpse:   remediation: read the quoted line in audit/audit.json and check it "
-            "against the recording -- stage 10 repaired what was mechanical and declined "
-            "the rest, by name, in repair/repair.json",
+            "glimpse:   remediation: read the quoted line in "
+            f"{result.bundle.root / gla.REPORT_NAME} and check it against the recording -- "
+            f"stage 10 repaired what was mechanical and declined the rest, by name, in "
+            f"{result.bundle.root / glr.REPORT_NAME}",
             file=sys.stderr,
         )
     print(f"glimpse: {work.note()}")

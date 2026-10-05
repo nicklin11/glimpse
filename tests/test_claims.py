@@ -32,8 +32,20 @@ import _env  # noqa: E402
 SAVED_ENV = _env.isolate()
 
 
+from glimpse import audit  # noqa: E402
+from glimpse import bundle as glb  # noqa: E402
+from glimpse import caption  # noqa: E402
 from glimpse import exitcodes as ec  # noqa: E402
+from glimpse import frames  # noqa: E402
+from glimpse import lint  # noqa: E402
+from glimpse import link  # noqa: E402
+from glimpse import pipeline as glp  # noqa: E402
+from glimpse import quality  # noqa: E402
+from glimpse import repair  # noqa: E402
+from glimpse import report as glro  # noqa: E402
 from glimpse import stages as gst  # noqa: E402
+from glimpse import synth  # noqa: E402
+from glimpse.stt import core as sttcore  # noqa: E402
 
 README = (REPO / "README.md").read_text(encoding="utf-8")
 PIPELINE = (REPO / "src" / "glimpse" / "pipeline.py").read_text(encoding="utf-8")
@@ -162,6 +174,134 @@ check(
     "nothing imports the removed backend",
     not offenders,
     "; ".join(f"{p}:{ln}" for p, ln in offenders),
+)
+
+# --- 6. paths named in messages exist ------------------------------------------
+# Three strings in `cli.py` named `audit/audit.json` and `repair/repair.json` for as long as
+# they existed. Those are registry *keys*; `Bundle.publish` builds the destination from the
+# source basename (`bundle.py:144`), so both files sit in the bundle root. The bundle has no
+# `audit/` or `repair/` directory -- `ls` on the run-12 bundle confirms it. Both branches are
+# exit 5 and exit 1, and thirteen runs exited 0, so the message was never shown. #91.
+#
+# The invariant, stated from the source rather than from a list of files: **the bundle root is
+# flat, and `images/` is the only subdirectory.** Everything is published through
+# `Bundle.publish`, which lands each file in the root under its own basename; only the frames
+# are moved into `bundle.images` explicitly. So a message naming `<dir>/<artefact>` is wrong
+# unless `<dir>` is `images/`.
+CLI_SRC = REPO / "src" / "glimpse" / "cli.py"
+CLI_TREE = ast.parse(CLI_SRC.read_text(encoding="utf-8"), filename=str(CLI_SRC))
+
+ARTEFACTS: set[str] = set()
+for _mod in (audit, caption, frames, lint, link, quality, repair, glro, synth):
+    for _value in vars(_mod).values():
+        if isinstance(_value, str) and _value.endswith((".json", ".md", ".tsv", ".txt")):
+            ARTEFACTS.add(_value)
+        elif isinstance(_value, (tuple, list, set, frozenset)):
+            ARTEFACTS.update(
+                v
+                for v in _value
+                if isinstance(v, str) and v.endswith((".json", ".md", ".tsv", ".txt"))
+            )
+ARTEFACTS |= set(glro.REQUIRED) | set(glro.OPTIONAL) | {sttcore.PROVENANCE_NAME, glp.TIMINGS_NAME}
+
+nested: list[str] = []
+for _node in ast.walk(CLI_TREE):
+    if isinstance(_node, ast.Constant) and isinstance(_node.value, str):
+        for _prefix, _base in re.findall(r"([\w.]+)/([\w.-]+\.(?:json|md|tsv|txt))", _node.value):
+            if _base in ARTEFACTS and _prefix != glb.IMAGES:
+                nested.append(f"cli.py:{_node.lineno} names {_prefix}/{_base}")
+
+check(
+    "no message names an artefact under a directory the bundle does not have",
+    not nested,
+    "; ".join(nested),
+)
+
+# The names themselves must exist, not just be flat: a message may not name an artefact no
+# stage produces. Without this, an empty `ARTEFACTS` would make the check above vacuously true
+# -- the same failure as the `total == sum` assertion that passed against a hardcoded zero.
+check(
+    "the artefact-name set the flatness check runs against is populated",
+    len(ARTEFACTS) >= 20,
+    f"only {len(ARTEFACTS)} names known, so the check above guards nothing: {sorted(ARTEFACTS)}",
+)
+
+# --- 7. every stage announces itself -------------------------------------------
+# ADR-0001 D7 rejected a progress bar that sits still through the dominant stage as "a lie
+# about where the time went". **Seven** stages had no `[n/12]` line at all: 5, 6, 7, 8, 9, 10
+# and 11 held their seconds in memory and printed nothing, so 700+ s of run 12's 1028 s produced
+# no line. #97.
+#
+# Stage 12 is the one deliberate exception: `report.run` prints its own line immediately before
+# the MISSING details it exists to justify, so a second line would repeat it. Both halves of
+# that are asserted here, because "the exception" and "the bug" look identical from outside.
+#
+# Parsed, not grepped. A regex over the source matched the sentence inside the comment at
+# stage 12 that explains the exception -- so the first version of this check believed stage 12
+# printed a line and stage 8 did not. Stage 8 had not printed since it was written; the check
+# found it, and a comment would not have. Comments are not in the AST.
+PIPELINE_TREE = ast.parse(PIPELINE, filename="pipeline.py")
+
+_stages: list[tuple[int, int]] = []
+for _node in ast.walk(PIPELINE_TREE):
+    if (
+        isinstance(_node, ast.Call)
+        and isinstance(_node.func, ast.Name)
+        and _node.func.id == "StageReport"
+        and _node.args
+        and isinstance(_node.args[0], ast.Constant)
+        and isinstance(_node.args[0].value, int)
+    ):
+        _stages.append((_node.lineno, int(_node.args[0].value)))
+_stages.sort()
+
+
+def _is_line(node: ast.AST) -> bool:
+    """`reports[-1].line()` -- an Attribute call on a Subscript of `reports`."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr != "line":
+        return False
+    inner = node.func.value
+    return (
+        isinstance(inner, ast.Subscript)
+        and isinstance(inner.value, ast.Name)
+        and inner.value.id == "reports"
+    )
+
+
+announced: set[int] = set()
+for _node in ast.walk(PIPELINE_TREE):
+    if not _is_line(_node):
+        continue
+    _prior = [n for ln, n in _stages if ln <= _node.lineno]
+    if _prior:
+        announced.add(_prior[-1])
+
+expected = set(range(gst.FIRST_STAGE, gst.IMPLEMENTED + 1))
+#: The one documented exception, asserted as a literal so that removing the comment in
+#: `pipeline.run` that explains it fails here rather than silently reintroducing a duplicate.
+SILENT_BY_DESIGN = {gst.IMPLEMENTED}
+check(
+    "the pipeline prints a stage line for every stage but the documented exception",
+    announced == expected - SILENT_BY_DESIGN,
+    f"pipeline announces {sorted(announced)}, stages are {sorted(expected)}, "
+    f"expected {sorted(expected - SILENT_BY_DESIGN)}",
+)
+
+REPORT_SRC = (REPO / "src" / "glimpse" / "report.py").read_text(encoding="utf-8")
+STAGE12_LINE = "[{stages.IMPLEMENTED}/{stages.IMPLEMENTED}] report"
+check(
+    "stage 12 announces itself from report.run, so no stage is silent",
+    STAGE12_LINE in REPORT_SRC and announced | SILENT_BY_DESIGN == expected,
+    f"report.py announces stage 12: {STAGE12_LINE in REPORT_SRC}; "
+    f"covered {sorted(announced | SILENT_BY_DESIGN)} of {sorted(expected)}",
+)
+
+check(
+    "every stage reaches the bundle's timings, silent or not",
+    "write_timings(bundle, reports)" in PIPELINE,
+    f"write_timings called after stage 12: {'write_timings(bundle, reports)' in PIPELINE}",
 )
 
 _env.restore(SAVED_ENV)
