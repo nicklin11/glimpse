@@ -27,6 +27,7 @@ constants, not provenance.
 | 4 | `detect.json` | the full filter chain, every setting, the ffmpeg version |
 | 5–12 | `*-provenance.json` | the tool, its rule set, and what it changed |
 | 6 | per-frame `caption_trace` in `captions.json` | which model captioned this frame, tokens, timing, called or cached |
+| 6 | `caption_status` per frame | `NO_NEW_INFORMATION` says the model declined; it is a success, not an error, and a high share means the screens went unread |
 | 7, 9 | `synth-`/`audit-llm-transcript.json` | every call: full messages, model, tokens, seconds, attempts |
 
 The three LLM stages keep different amounts on purpose. Stages 7 and 9 make 8 calls each and
@@ -45,13 +46,13 @@ attempts, fingerprint, and whether the frame was called or taken from cache.
 | 3 | `stt` | `stt/` — `core`, `backends`, `whispercpp`, `openai_compat` | yes | **yes** — 4520 s, 4901 segments via the proxy |
 | 4 | `frames` | `frames.py` | yes | **yes** — 58 frames, deterministic |
 | 5 | `quality` | `quality.py` — `GeometricEstimator` | yes | **yes** — 57/58 pass, threshold 37320 |
-| 6 | `caption` | `caption.py`, `llm.py` | yes | **yes** — 58 frames, per-frame `caption_trace` |
-| 7 | `synth` | `synth.py` | yes | **yes** — 8/8 sections, 8 LLM calls recorded |
+| 6 | `caption` | `caption.py`, `llm.py` | yes | **yes** — 57 frames captioned, 16 refusals, per-frame `caption_trace` |
+| 7 | `synth` | `synth.py` | yes | **yes** — 8/8 sections, 8 LLM calls recorded, stage 6 captions in every prompt |
 | 8 | `lint` | `lint.py` | yes | **yes** — 9 checks, clean |
 | 9 | `audit` | `audit.py` | yes | **yes** — 4 rules, tier 2 ran, 8 LLM calls recorded |
 | 10 | `repair` | `repair.py` | yes | **yes** — deterministic, nothing to repair |
 | 11 | `link` | `link.py` | yes | **yes** — 34 terms, 96 links |
-| 12 | `report` | `report.py` | yes | **yes** — 8 verified, frames 58/58 |
+| 12 | `report` | `report.py` | yes | **yes** — 8 verified, frames 57/57 |
 
 Stages 7–10 and 1–2 are not "broken" or "missing". They are written, imported by
 `pipeline.run`, and covered by `tests/test_stages.py`. What they lack is a **verified run

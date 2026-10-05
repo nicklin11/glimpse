@@ -137,8 +137,22 @@ path that does not exist is reported and named, not created.
 ## What the note is made of
 
 The note is built from the transcript. Per-frame captions are written to `captions.json` in the
-bundle; `stage 7` receives the frame filenames for each section, not their descriptions, so no
-caption text and no image appears in the note. `images/` stays in the bundle.
+bundle, and stage 7 also receives each caption in the prompt for the section that frame falls
+in — as a description of what was on screen, explicitly not as something the lecturer said. No
+image appears in the note; `images/` stays in the bundle.
+
+Measured over one lecture, same captions both times, the only difference being whether stage 7
+was given them:
+
+| | stage 7 given filenames only | stage 7 given captions |
+|---|---|---|
+| note size | 46 963 bytes | 56 978 bytes |
+| words | 3 468 | 4 301 |
+| captions reproduced verbatim | 0 of 41 | 0 of 41 |
+| distinctive caption words present in the note | 325 of 1 674 (19%) | 488 of 1 674 (29%) |
+
+The writer paraphrases: it takes the vocabulary and the structure of the slide, not the
+sentence.
 
 ## Cost
 
