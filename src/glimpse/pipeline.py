@@ -125,6 +125,11 @@ class RunResult:
 #: A sidecar, not an artefact: written straight to `bundle.root` and deliberately **not**
 #: registered through `Bundle.record`, so `bundle.summary()` and stage 12's REQUIRED/OPTIONAL
 #: verification do not move. It is a record of the run, not a product of a stage.
+#:
+#: #90 recorded what that costs, because the decision was written down without it: an
+#: unregistered artefact is not exported, so `timings.json` stays in the bundle and does not
+#: travel to the vault, and `bundle.summary()` counts one file fewer than the directory
+#: holds. That is the whole of the remaining gap between the bundle and the vault.
 TIMINGS_NAME = "timings.json"
 
 
@@ -533,6 +538,12 @@ def run(
     )
     artefacts["note"] = bundle.root / synth.NOTE_NAME
     artefacts[report.REPORT_NAME] = bundle.root / report.REPORT_NAME
+    # #90: stage 12's two artefacts were written straight into `bundle.root` and never
+    # registered, and `export_to_vault` copies by registry. The vault therefore received the
+    # note and every input to it, and not the verdict that approved it. `timings.json` is the
+    # one file that stays out, and it stays out on purpose: see `TIMINGS_NAME` above.
+    for stage12_artefact in report.ALL_ARTEFACTS:
+        bundle.record(stage12_artefact, bundle.root / stage12_artefact)
     reports.append(StageReport(12, "report", time.monotonic() - began, rreport2.summary()))
     # No `out.write(reports[-1].line())` here, and that is deliberate: `report.run` has already
     # printed its own `[12/12] report OK: ...` (`report.py`), immediately followed by the MISSING
