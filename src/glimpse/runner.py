@@ -73,6 +73,13 @@ def emit_verbatim(data: bytes) -> bool:
 
     Falls back to a lossy decode only when our stderr has no binary buffer
     (a redirected StringIO, i.e. the test harness).
+
+    The two flushes in this module are not redundant with the line buffering #100 added.
+    #100 reconfigured the *text* streams at the CLI entrypoint; this writes through
+    `sys.stderr.buffer`, the raw binary layer underneath the TextIOWrapper, which line
+    buffering does not cover. #100's problem was a buffered *progress* log going silent for
+    16 minutes; this is a dependency's stderr, printed at the moment it fails and followed
+    immediately by a process exit.
     """
     if not data:
         return False
@@ -86,7 +93,11 @@ def emit_verbatim(data: bytes) -> bool:
 
 
 def report(exc: DependencyError) -> None:
-    """Print a DependencyError in the ADR-0001 shape: our lines, then its bytes."""
+    """Print a DependencyError in the ADR-0001 shape: our lines, then its bytes.
+
+    The trailing `sys.stderr.flush()` covers the `print()` calls above, which go through the
+    text layer that `emit_verbatim` bypasses. See its docstring for why this flush remains.
+    """
     print(f"glimpse: {exc.message}", file=sys.stderr)
     if exc.remediation:
         print(f"glimpse:   remediation: {exc.remediation}", file=sys.stderr)
