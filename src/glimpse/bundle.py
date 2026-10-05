@@ -232,6 +232,14 @@ class Bundle:
         return destination
 
     def summary(self) -> str:
+        """Size of what is registered, which is not the same as what is on disk.
+
+        #90: this counted the registry while reading like a directory listing, and the two
+        disagreed by however many files a run writes without `Bundle.record`. It said
+        "141 artefacts" beside a directory holding 144. The wording now names the registry,
+        because the difference is deliberate and one file wide: `timings.json` is a sidecar
+        (see `TIMINGS_NAME` in `pipeline.py`) and is not registered.
+        """
         if not self.artefacts:
             return "bundle empty"
         total = 0
@@ -240,7 +248,7 @@ class Bundle:
                 total += path.stat().st_size
             except OSError:
                 continue
-        return f"{len(self.artefacts)} artefacts, {total / 1_048_576:.1f} MiB"
+        return f"{len(self.artefacts)} artefacts registered, {total / 1_048_576:.1f} MiB"
 
     def export_to_vault(
         self, vault: Path, *, subdir: str | None = None, images: bool = False

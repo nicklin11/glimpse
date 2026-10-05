@@ -2516,6 +2516,7 @@ glp.stt.write = lambda tr, dest: {
 }
 work_probe = tmp / "order_work"
 work_probe.mkdir(parents=True, exist_ok=True)
+_r = None
 try:
     _r = glp.run(
         src,
@@ -2544,6 +2545,71 @@ check(
     "the frames still reach the bundle afterwards",
     len(list((tmp / "order_bundle" / "images").glob("*.png"))) == 2,
     str(sorted(q.name for q in (tmp / "order_bundle" / "images").glob("*"))),
+)
+
+# --- 14b. the bundle reaches the vault, and names what it leaves behind ----------------
+# #90: `export_to_vault` copies by registry, so a file written straight into `bundle.root`
+# never leaves the bundle. Stage 12 wrote `report.json` and `report-provenance.json` that
+# way, so the vault received the note and every input to it and not the verdict that
+# approved it. Measured on the lecture-1 bundle, the difference between the bundle root and
+# the vault was exactly those two names -- and `timings.json`, which is a sidecar on purpose.
+#
+# The general form is what matters, so that is what is asserted: every file in the bundle
+# root is registered, except a named sidecar. A new artefact written straight to the root
+# fails here rather than quietly not being exported.
+_r_registered = {Path(p).name for p in _r.bundle.artefacts.values()} if _r is not None else set()
+_r_root_files = (
+    {p.name for p in _r.bundle.root.iterdir() if p.is_file()} if _r is not None else set()
+)
+#: The one declared exception. `TIMINGS_NAME` in `pipeline.py` says why it is not
+#: registered; if that decision is reversed, this list is what has to change with it.
+SIDECARS = {glp.TIMINGS_NAME}
+
+check(
+    "stage 12's artefacts are registered, so they can be exported",
+    _r is not None and set(glro.ALL_ARTEFACTS) <= _r_registered,
+    f"registered {sorted(_r_registered)}; stage 12 writes {list(glro.ALL_ARTEFACTS)}",
+)
+check(
+    "every file in the bundle root is registered, except a declared sidecar",
+    _r is not None and not (_r_root_files - _r_registered - SIDECARS),
+    f"in the root but not registered: {sorted(_r_root_files - _r_registered - SIDECARS)}",
+)
+check(
+    "the sidecar really is unregistered, so the check above is not passing for free",
+    glp.TIMINGS_NAME in _r_root_files and glp.TIMINGS_NAME not in _r_registered,
+    f"root has it: {glp.TIMINGS_NAME in _r_root_files}; "
+    f"registered: {glp.TIMINGS_NAME in _r_registered}",
+)
+_r_vault = tmp / "order_vault"
+#: The frames are registered too, and `export_to_vault` skips them unless `--vault-images`
+#: is passed, so they are excluded from both sides of the comparison below.
+_r_registered_off_images = (
+    {Path(p).name for p in _r.bundle.artefacts.values() if Path(p).parent.name != glb.IMAGES}
+    if _r is not None
+    else set()
+)
+if _r is not None:
+    _r.bundle.export_to_vault(_r_vault)
+_r_vault_files = (
+    {p.name for p in (_r_vault / glb.DEFAULT_EXPORT_SUBDIR).iterdir() if p.is_file()}
+    if _r is not None
+    else set()
+)
+check(
+    "the vault carries the verdict, not only the note",
+    _r is not None and set(glro.ALL_ARTEFACTS) <= _r_vault_files,
+    f"vault holds {sorted(_r_vault_files)}",
+)
+check(
+    "the vault is the registered bundle minus the sidecars and the frames",
+    _r is not None and _r_vault_files == _r_registered_off_images - SIDECARS,
+    f"vault {sorted(_r_vault_files)} vs registered off-images {sorted(_r_registered_off_images)}",
+)
+check(
+    "and summary() now says what it counts",
+    _r is not None and "registered" in _r.bundle.summary(),
+    _r.bundle.summary() if _r is not None else "no result",
 )
 
 # --- 15. the run leaves a timing record ---------------------------------------------
