@@ -232,9 +232,14 @@ streaming and no per-segment callback. A per-segment progress bar is not availab
 without a change on the whisper server side.
 
 So MVP shows stage-level progress with weights derived from measured cost, and the
-audit stage dominates: ~20 minutes and ~106k context tokens, versus ~$0.01 for
-vision. A progress bar that showed 90% during STT and then sat still for 20 minutes
-would be a lie about where the time goes.
+audit stage dominates: ~20 minutes and ~106k context tokens, against 396 k input
+tokens for the whole of stage 6. A progress bar that showed 90% during STT and then
+sat still for 20 minutes would be a lie about where the time goes.
+
+No dollar figure is quoted for either stage. No price for this gateway is recorded
+anywhere in the repository, so this comparison is in tokens and seconds because those
+are what was measured. An earlier revision read "versus ~$0.01 for vision"; that
+number was never measured. #96.
 
 ### D8 — The vision backend is pluggable; local is deferred
 
@@ -258,9 +263,13 @@ What is still not built is the **vision bbox source** this decision originally d
 stage 5. The geometric substitute stands, and `GeometricEstimator` documents why.
 
 Default backend is the gateway (`opencode-go/deepseek-v4-flash-vision-exp`), verified
-working on Russian PDF pages, ~$0.01 per 73-minute lecture. A local llama.cpp +
-mmproj backend is a configuration swap, not a rewrite — but it is not the default,
-because a 7B VLM on this hardware reads dense Russian technical text worse.
+working on Russian PDF pages, at 396 k input tokens per 73-minute lecture measured in
+ADR-0005 D5. A dollar figure for this backend appeared in an earlier revision and was
+never measured — no gateway price is recorded in the repository. #96.
+
+A local llama.cpp + mmproj backend is a configuration swap, not a rewrite — but it is
+not the default, because a 7B VLM on this hardware reads dense Russian technical text
+worse.
 
 ### D9 — Artefacts live in the vault, not in this repository
 

@@ -617,6 +617,54 @@ check(
     f"only {len(glb.RUN_ARTEFACTS)} names",
 )
 
+# --- 10. a dollar figure in the docs names its source, or says it has none -----------
+# #96: ADR-0006 carried "~$0.0006 per frame on the measured gateway". No measurement of a
+# gateway price exists in this repository -- not in any document, not in any artefact -- so
+# the figure could not be derived from anything, and an ADR propagates whatever it is quoted
+# as. It was flagged as unsourced in #86's review and merged anyway.
+#
+# The general rule, which is what stops the next one: a `$` amount in `docs/` must sit next to
+# either a measurement it came from or an explicit statement that it was never measured.
+# Everything else in these documents is quoted in tokens and seconds, because those are what
+# the pipeline records in `caption_trace` and `timings.json`.
+DOLLAR = re.compile(r"\$[0-9]+(?:\.[0-9]+)?")
+#: Words that make an amount honest by declaring it an estimate. Deliberately exact phrases
+#: rather than a regex over prose: a looser rule would start passing on wording nobody checked,
+#: which is the failure this file exists to prevent.
+COST_MARKERS = (
+    "never measured",
+    "no such measurement",
+    "not measured",
+    "unsourced",
+    "assumption",
+)
+
+unsourced: list[str] = []
+figures: list[str] = []
+for _doc in sorted((REPO / "docs").rglob("*.md")):
+    _lines = _doc.read_text(encoding="utf-8").splitlines()
+    for _i, _line in enumerate(_lines):
+        for _fig in DOLLAR.findall(_line):
+            figures.append(f"{_doc.relative_to(REPO)}:{_i + 1} {_fig}")
+            _window = "\n".join(_lines[max(0, _i - 3) : _i + 4]).lower()
+            if not any(_marker in _window for _marker in COST_MARKERS):
+                unsourced.append(f"{_doc.relative_to(REPO)}:{_i + 1} {_fig}")
+
+check(
+    "no dollar figure in docs/ is presented without a source or a disclaimer",
+    not unsourced,
+    "; ".join(unsourced) or f"checked {len(figures)} figures",
+)
+#: Four figures, each disclaimed. Zero would mean the regex stopped matching -- and the first
+#: version of it did match `$.` inside the `$...$` LaTeX in `docs/stages.md` and
+#: `docs/quality.md`, which would have produced a check that failed on nothing and then been
+#: loosened into one that passes on nothing.
+check(
+    "the dollar-figure check actually finds figures to judge",
+    len(figures) >= 4,
+    f"only {len(figures)} found, so the check above guards nothing: {figures}",
+)
+
 _env.restore(SAVED_ENV)
 
 print()
