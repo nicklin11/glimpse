@@ -4,6 +4,20 @@
 - **Date:** 2026-10-02
 - **Scope:** MVP. GUI and local vision are explicitly later milestones.
 
+> **How to read this file.** `D<n>` means "decision *n* within *this* ADR". The number is
+> local to this file and collides with numbers in ADR-0004; references from anywhere else
+> must be written `ADR-0001 Dn`.
+>
+> `## Decision` is the register. It is **not** the whole story. Everything from
+> `## Amendment 2026-10-02` onward is a changelog: six dated amendments that changed
+> decisions the register still describes in their original wording. Several register
+> entries are therefore stale by construction.
+>
+> Each entry below carries a `Status:` line saying what that decision means **today** and
+> where to read its current text. Read the status first; do not assume the register text
+> is current. Amendments are kept rather than folded in because they carry the
+> measurements that justify the change — see `docs/adr/README.md` for the reading order.
+
 ## Context
 
 A lecture arrives as a video or audio file. The goal is a single Markdown note that
@@ -31,6 +45,8 @@ The pipeline therefore needs two properties that pull in opposite directions:
 ## Decision
 
 ### D1 — The name carries no meaning; the interface does
+
+**Status:** in force. Amended 2026-10-02 — the package was renamed; the rule is unchanged.
 
 The package is `glimpse`. The subcommand surface carries the meaning:
 
@@ -63,6 +79,12 @@ Two honest notes on the new name:
 
 ### D2 — glimpse depends on `shipboard`, and does not reimplement STT
 
+**Status: SUPERSEDED 2026-10-03 and again 2026-10-04. Do not implement this text.**
+The shipboard dependency was removed (PR #50) and the backend became a pluggable
+endpoint. Current text: *Amendment to D2 (2026-10-03)* and *2026-10-04 — D2 amended: one
+less backend*. The error-propagation contract below survives in both; the shipboard
+specifics do not.
+
 STT is delegated: `shipboard process PATH` already transcribes an existing file to
 stdout. whisper.cpp runs **CPU-only by design**, which keeps roughly 1.5 GiB of VRAM
 free for llama-swap. A second STT stack inside glimpse would duplicate that
@@ -75,6 +97,8 @@ that swallows its dependency's errors is worse than no tool, because the failure
 looks like success.
 
 ### D3 — Frames are read from the source, never from a blurred intermediate
+
+**Status:** in force.
 
 Two passes:
 
@@ -100,6 +124,10 @@ reports success must verify artefact counts on disk, not the exit code.
 
 ### D4 — Frame quality is gated, and the fix is crop, not a better model
 
+**Status:** in force, but the *order* described below was wrong and has been corrected twice
+by measurement. Current text: *Amendment 2026-10-03 — D4, and the gate reads the source* and
+*Amendment 2026-10-04 — D4's gate, measured rather than asserted*.
+
 Frames are poor because the screen is mostly UI chrome, not because the model is
 weak. Measured: 17 distinct states over 73 minutes.
 
@@ -112,6 +140,8 @@ the on-screen text is small, it cannot be recovered, and the quality gate should
 **report** that rather than pretend otherwise.
 
 ### D5 — The audit is a separate model context, and it never rewrites
+
+**Status:** in force.
 
 The auditor receives the finished note and the raw transcript, and reviews the note.
 It is not asked to check its own work; it did not write it.
@@ -129,6 +159,8 @@ action with their own log, so that "what was wrong" and "what was changed" stay
 distinguishable.
 
 ### D6 — Math verification is layered, mechanical layers first
+
+**Status:** in force.
 
 An LLM asked to check formulas is **unreliably** correct. The reason it worked here is
 that the prompt carried an explicit rank/dimension clause; two of the errors it found
@@ -149,6 +181,10 @@ and a non-symmetric matrix asserted to be positive definite.
 
 ### D7 — Progress is stage-level in the MVP, and the reason is a code fact
 
+**Status:** in force. Note: the premise — that STT is one blocking request with no
+streaming — was true of shipboard and is not true of the endpoint backend that replaced it.
+Re-measure before relying on the weights.
+
 `shipboard` sends **one** blocking HTTP request to whisper.cpp and waits; there is no
 streaming and no per-segment callback. A per-segment progress bar is not available
 without a change on the whisper server side.
@@ -160,12 +196,34 @@ would be a lie about where the time goes.
 
 ### D8 — The vision backend is pluggable; local is deferred
 
+**Status: HALF IMPLEMENTED. This is the open stage.**
+Stage 5 (`quality`) **is** closed: `GLIMPSE_BBOX_SOURCE` defaults to `geometric`, and
+`quality.GeometricEstimator` does the crop. The `vlm` branch of `resolve_estimator` exists
+as a registered name and raises `NotConfiguredError` — it is dead code, not a fallback.
+
+Stage 6 (`captions`) is **half** closed. `caption.run()` performs the frame-to-transcript
+**alignment** and that half works. The captioning half does not exist: there is no vision
+client anywhere in the codebase. `llm.py` is text-only — it has no image, base64 or
+multimodal path — and `caption.py` says so itself:
+
+```
+captioning is NOT_CONFIGURED -- no vision client in this codebase
+```
+
+`GLIMPSE_VLM_*` is read nowhere in `src/`. Tracked as issue #67. "Local is deferred" refers
+to the *local* backend; the gateway path this decision names was never built either.
+See ADR-0004 D3, which already specifies the `[vision]` configuration section.
+
 Default backend is the gateway (`opencode-go/deepseek-v4-flash-vision-exp`), verified
 working on Russian PDF pages, ~$0.01 per 73-minute lecture. A local llama.cpp +
 mmproj backend is a configuration swap, not a rewrite — but it is not the default,
 because a 7B VLM on this hardware reads dense Russian technical text worse.
 
 ### D9 — Artefacts live in the vault, not in this repository
+
+**Status: SUPERSEDED 2026-10-03.** Artefacts now live in a run *bundle* under XDG state,
+and the vault is an export target copied into. Current text: *Amendment to D9 (2026-10-03)*.
+The intent below — nothing personal enters the repository — survives and still binds.
 
 Transcripts, frames and audit reports are outputs, and they live beside the note in
 the Obsidian vault. The repository carries code, ADRs and issue history only.
@@ -175,6 +233,9 @@ names visible in the conferencing UI. Nothing in the repository may contain a
 participant name, a personal IP or a hostname.
 
 ## The pipeline
+
+> The 12-stage list below lives here, not in any `D<n>`. Code that cites the stage count
+> should link to this section.
 
 ```
 glimpse process ~/Videos/lectures/.../1_lecture_OCS.webm
@@ -338,7 +399,7 @@ the frames are read by a VLM and the cost is real money.
 
 Two decisions changed because the code was measured rather than reasoned about.
 
-### D2 — STT is delegated to an *endpoint*, not to a utility
+### Amendment to D2 (2026-10-03) — STT is delegated to an *endpoint*, not to a utility
 
 `TranscriptionBackend` is the boundary: `check()` answers "can you transcribe", `run()`
 returns the raw payload, and nothing above the backend parses anything. shipboard is one
@@ -396,7 +457,7 @@ Consequences, both of which change what "verified" means here:
 Stage 4 is the opposite: `frames` output is deterministic, three runs gave the same 16
 timestamps. A regression check can still be exact on the frame half.
 
-### D9 — the vault is an export target, not the artefact root
+### Amendment to D9 (2026-10-03) — the vault is an export target, not the artefact root
 
 Deliverables go to a **bundle**: `--output-dir`, else `$XDG_STATE_HOME/glimpse/<lecture>`.
 The vault, when given, is copied into.

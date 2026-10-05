@@ -13,7 +13,7 @@ for a 180 s slide gap is most of the lecture.
 
 ## What this stage does not do
 
-It does not caption. D4 assigns captioning to a VLM, and there is no vision client here.
+It does not caption. ADR-0001 D4 assigns captioning to a VLM, and there is no vision client here.
 A frame that cannot be described still gets its transcript window, its word timings and its
 quality verdict, which is everything stage 7 needs to place it in the note. The absence is
 recorded in provenance as `caption: null` with a reason, so a later consumer can tell the
@@ -40,7 +40,7 @@ PROVENANCE_NAME = "caption-provenance.json"
 UNCOVERED = "no_transcript_coverage"
 
 #: Above this share of uncovered frames the audio and the video are not describing the same
-#: lecture, which is a muxing problem, not a captioning problem. D5 exit 4.
+#: lecture, which is a muxing problem, not a captioning problem. ADR-0001 D5 exit 4.
 UNCOVERED_SHARE_LIMIT = 0.30
 
 
@@ -414,7 +414,7 @@ def provenance(settings: Settings) -> str:
             "tool": "glimpse-align-v1",
             "method": "segment overlap; boundary at first word >= frame display start",
             "requires_model": False,
-            "caption": "NOT_CONFIGURED (D4 assigns this to a VLM; none is configured)",
+            "caption": "NOT_CONFIGURED (ADR-0001 D4 assigns this to a VLM; none is configured)",
             "ocr": "not attempted (no dependency; alignment does not need it)",
             "uncovered_share_limit": settings.uncovered_share_limit,
             "max_chars": settings.max_chars,

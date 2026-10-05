@@ -135,7 +135,7 @@ def check_ffprobe() -> Check:
 
 
 def check_stt() -> Check:
-    """D2 (amended): STT is delegated to an *endpoint*, not to a utility.
+    """ADR-0001 D2 (amended): STT is delegated to an *endpoint*, not to a utility.
 
     Asking "is some binary on PATH" cannot tell "no STT configured" from "STT configured and
     its backend is down" -- and `process` used to discover the second only in stage 3, after
@@ -171,7 +171,7 @@ def check_stt() -> Check:
 
 
 def check_vault() -> Check:
-    """D9: artefacts live in the vault, never in this repository."""
+    """ADR-0001 D9: artefacts live in the vault, never in this repository."""
     vault = Path(os.environ.get(VAULT_ENV, str(DEFAULT_VAULT))).expanduser()
     if not vault.exists():
         return Check(
@@ -212,7 +212,7 @@ def check_vault() -> Check:
 
 
 def check_gateway() -> Check:
-    """D8: the vision/audit backend. Unconfigured is not a failure."""
+    """ADR-0001 D8: the vision/audit backend. Unconfigured is not a failure."""
     url = os.environ.get(GATEWAY_ENV, "").strip()
     if not url:
         # ok=False because nothing was actually verified; fatal=False because an

@@ -1,6 +1,6 @@
 """Stage 10: repair what can be repaired mechanically, and say what was not.
 
-D5: repair is a proposal, never a silent rewrite. The original note is kept; this stage
+ADR-0001 D5: repair is a proposal, never a silent rewrite. The original note is kept; this stage
 writes `note.repaired.md` beside it and `repair.json` naming every change and every finding
 it declined to touch. A repair the reader cannot audit is indistinguishable from corruption.
 

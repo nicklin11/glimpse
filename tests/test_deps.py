@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Enforce ADR-0002 D2: third-party code may import numpy and nothing else.
 
-D2 is a decision record, and a decision record does not enforce itself. The
+ADR-0001 D2 is a decision record, and a decision record does not enforce itself. The
 zipapp ships one file with nothing to resolve at start, which is exactly what a
 stray `import requests` gives away -- silently, at runtime, on someone else's
 machine, after the fact. This script is the executable form of that sentence.
@@ -93,7 +93,7 @@ check(
 )
 
 # --- 2. numpy is actually used -----------------------------------------------
-# The opposite drift: D2 permits numpy, so a future edit that drops the import
+# The opposite drift: ADR-0001 D2 permits numpy, so a future edit that drops the import
 # leaves a declared dependency nobody needs, and the zipapp pays for it.
 check(
     "numpy is imported somewhere, so the declared dependency is real",

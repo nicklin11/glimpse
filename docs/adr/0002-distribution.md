@@ -5,6 +5,10 @@
 - **Proposal:** [#13](https://github.com/nicklin11/glimpse/issues/13)
 - **Scope:** MVP packaging. Publishes nothing to any index.
 
+> **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
+> collides with numbers in ADR-0001 and ADR-0004; references from anywhere else must be
+> written `ADR-000N Dn`. Reading order and index: [`docs/adr/README.md`](README.md).
+
 ## Context
 
 The requirement is a self-contained program, not a package on a public index.
@@ -58,6 +62,15 @@ taste. A second runtime dependency needs the cost argument in D1 re-run against 
 
 ### D3 — `shipboard` is an external runtime dependency, checked by `doctor`, never bundled
 
+**Status: SUPERSEDED.** The premise is dead. This decision rests on ADR-0001 D2, which was
+superseded on 2026-10-03; shipboard is no longer a mandatory dependency, and
+`grep -rn shipboard src/glimpse/` returns **nothing** — no module requires, probes or
+mentions it. The distribution logic below (never vendor, never a `dependencies = []` entry,
+exit 2 with a remediation line) survives as a rule but has no current subject.
+
+Retained because the reasoning is sound and applies to whatever the backend turns out to be:
+a backend must never be vendored into the zipapp or installed by the install step.
+
 ADR-0001 D2 decides the delegation: STT belongs to shipboard and glimpse does not reimplement
 it. This ADR adds only the distribution consequence:
 
@@ -73,6 +86,12 @@ Bundling shipboard, or installing it from `setup.py`, both mean arbitrary code i
 installer's context that uninstall does not account for.
 
 ### D4 — The STT backend is local, and `doctor` probes the configured URL
+
+**Status:** in force. Corrected 2026-10-04: the proxy path given below is wrong. The script
+lives at `~/Coding/shipboard/src/shipboard/assets/scripts/whisper_wake_proxy.py`, not
+`~/Coding/shipboard/scripts/whisper_wake_proxy.py`. The topology and the
+`~/.config/shipboard/shipboard.toml` pointer (`http://100.64.0.1:10301/inference`) were
+re-verified and still hold.
 
 Measured on this host, 2026-10-03:
 

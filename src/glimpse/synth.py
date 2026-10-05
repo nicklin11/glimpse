@@ -14,7 +14,7 @@ provenance either way:
 
 `TemplateSynthesizer` exists so the pipeline is runnable and testable end to end without a
 GPU, and so the failure mode of an unavailable endpoint is a *worse note* rather than no
-note. D5 requires the note to survive a failed synthesis; the template is that guarantee
+note. The note must survive a failed synthesis; the template is that guarantee
 made concrete rather than aspirational. It is also the oracle: if the LLM output is worse
 than a blank skeleton, the model is not earning its place in the pipeline.
 
@@ -28,10 +28,21 @@ character count that means nothing.
 
 ## The eight sections are not negotiable
 
-D5 fixes them, and stage 8 lints against them. A section with no material in the transcript
-is written as an explicit "not covered" line. An invented section is a lie about the
-lecture; a missing one is a lie about the note's completeness. The second is recoverable,
-the first is not.
+The synthesizer skill fixes them, and stage 8 lints against them. A section with no material
+in the transcript is written as an explicit "not covered" line. An invented section is a lie
+about the lecture; a missing one is a lie about the note's completeness. The second is
+recoverable, the first is not.
+
+## Where the structure comes from
+
+The eight sections are **not** defined by any ADR. They come from the synthesizer skill,
+§ "Структура выходного документа":
+
+    ~/.dsh/skills/academic-lecture-synthesizer/SKILL.md
+
+References to "the skill" throughout this module mean that file. The skill uses no `D<n>`
+notation of its own, so a section reference can never be resolved to a numbered decision —
+which is why they are named by name rather than by number.
 """
 
 from __future__ import annotations
@@ -49,7 +60,7 @@ REPORT_NAME = "synth.json"
 PROVENANCE_NAME = "synth-provenance.json"
 NOTE_NAME = "note.md"
 
-#: D5's structure. `(number, title, one line on what belongs here)`. The lint stage checks
+#: the skill's document structure. `(number, title, one line on what belongs here)`. The lint stage checks
 #: the note against this list, so a section title that drifts here drifts in two places.
 SECTIONS: tuple[tuple[int, str, str], ...] = (
     (1, "Паспорт лекции", "предмет, тема, лектор, executive summary"),
@@ -140,7 +151,7 @@ class Synthesizer(Protocol):
     name: str
 
     def section(self, section: Section, transcript: str) -> str:
-        """The body of one of D5's eight sections. No top-level heading."""
+        """The body of one of the skill's eight sections. No top-level heading."""
 
 
 # --- section cutting ---------------------------------------------------------------
@@ -290,7 +301,7 @@ def assemble(note_title: str, bodies: dict[int, str], sections: list[Section]) -
 #: A heading that only exists in the document's own table of contents.
 _TOC = re.compile(r"^\s{0,3}#{1,6}\s*(содержание|оглавление)\b", re.IGNORECASE)
 
-#: `#` at any level, which D5 does not permit inside a section. The eight section headings
+#: `#` at any level, which the skill does not permit inside a section. The eight section headings
 #: are emitted by `assemble`; a model adding its own top level reshapes the document so the
 #: structure lint then checks a different thing than it was written to check.
 _H1 = re.compile(r"^(\s{0,3})#(?!#)\s+(.*)$")
@@ -326,7 +337,7 @@ def synthesise(
 
     # The eight content sections map onto the numbered slices in order. A lecture with two
     # frames cannot support eight sections and pretending otherwise would be the exact
-    # invention D5 forbids.
+    # invention the skill forbids.
     for index, (number, section_title, brief) in enumerate(SECTIONS):
         payload = sections[index].text if index < len(sections) else ""
         if not payload.strip():
@@ -345,7 +356,7 @@ def synthesise(
             warnings.append(f"section {number}: {exc}")
             body = ""
         except llm.EndpointError as exc:
-            # One failed section must not lose the seven that succeeded. D5: the note
+            # One failed section must not lose the seven that succeeded. The note
             # survives a failed synthesis.
             warnings.append(f"section {number}: {exc}")
             body = ""
@@ -374,7 +385,8 @@ def synthesise(
     name = getattr(synthesizer, "name", "unknown")
     # Falling back to the template is itself a degradation, independent of whether the
     # sections came out filled. A template note has eight headings and no synthesis behind
-    # them; reporting it as a clean run is the silent-degradation failure D2 is written
+    # them; reporting it as a clean run is the silent-degradation failure that
+    # ADR-0001 D2 is written against.
     # against, and `process` will now refuse to exit 0 on one.
     used_template = name == "template"
     if used_template and "synthesis did not run: no model endpoint configured" not in warnings:
@@ -462,7 +474,7 @@ def provenance(note: Note, config: llm.Config | None) -> str:
             "why_two_implementations": (
                 "TemplateSynthesizer runs with no model so the pipeline is end-to-end "
                 "runnable and testable; it is also the oracle an LLM output must beat. "
-                "D5 requires the note to survive a failed synthesis."
+                "The note must survive a failed synthesis."
             ),
         },
         indent=2,

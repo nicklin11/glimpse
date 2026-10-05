@@ -8,7 +8,7 @@ because that is where this pipeline's real failures live:
   * a dependency that is absent (2) versus present and failing (3), and the
     failure's stderr arriving byte-for-byte rather than as a paraphrase;
   * artefacts verified on disk, so an ffmpeg run that exits 0 having written
-    nothing is caught instead of trusted (D3);
+    nothing is caught instead of trusted (ADR-0001 D3);
   * word timings consumed as seconds from the endpoint's JSON, never reparsed out
     of stdout text, and BPE pieces left alone rather than detokenised by guess.
 
@@ -1061,7 +1061,7 @@ def fake_pipeline(source, work, **kw):
         # so a stand-in without the attribute would crash rather than assert.
         note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
         # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
-        # failure rather than a flag: that is the D3 case stage 12 exists for.
+        # failure rather than a flag: that is the ADR-0001 D3 case stage 12 exists for.
         report=glro.Report(),
     )
 
@@ -1084,7 +1084,7 @@ check(
 check("and it says where the artefacts are", "verified" in text, text)
 
 
-# D3, which is what exit 0 is now conditional on. Every stage above reports success; this
+# ADR-0001 D3, which is what exit 0 is now conditional on. Every stage above reports success; this
 # is the case where the filesystem disagrees, and the code must not be 0.
 def unverified_pipeline(source, work, **kw):
     result = fake_pipeline(source, work, **kw)
@@ -1351,7 +1351,7 @@ check("--workdir error has a remediation", "remediation:" in err.getvalue(), err
 check("--workdir error raises no traceback", "Traceback" not in err.getvalue(), err.getvalue())
 
 
-# --- 8. stage 4: frames, two passes, and the zero-frame trap (D3) --------------
+# --- 8. stage 4: frames, two passes, and the zero-frame trap (ADR-0001 D3) --------------
 # The filter string is the port's contract with the script it replaces: if this changes,
 # the manifest changes, and the manifest is what stage 7 binds captions by.
 check(
@@ -1479,7 +1479,7 @@ check(
     str(extract_call),
 )
 check(
-    "the extract pass applies NO blur (D3)",
+    "the extract pass applies NO blur (ADR-0001 D3)",
     "boxblur" not in extract_call[-2] and "boxblur" not in " ".join(extract_call),
     str(extract_call),
 )
@@ -1496,7 +1496,7 @@ check(
     man_text,
 )
 
-# D3, the trap the ported script fell into: zero frames must not be a successful run.
+# ADR-0001 D3, the trap the ported script fell into: zero frames must not be a successful run.
 install_fake({"ffmpeg": [(b"", b"", 0)]})
 glr.run = ffmpeg_writes([])
 exc = raises(glfr.run, src, tmp / "zeroframes")
@@ -1890,7 +1890,7 @@ urllib.request.urlopen = real_urlopen
 # --- 10. the output bundle: XDG default, publication, verified export -----------
 # The default matters more than it looks. `./output/<lecture>` puts a 137.9 MiB wav and a
 # 3.7 MB transcript wherever the user happened to be standing -- which is the repo
-# pollution D9 was written against, reintroduced one directory level down.
+# pollution ADR-0001 D9 was written against, reintroduced one directory level down.
 _real_state = os.environ.pop("XDG_STATE_HOME", None)
 _real_outdir = os.environ.pop("GLIMPSE_OUTPUT_DIR", None)
 xdg = tmp / "xdg"
@@ -3005,7 +3005,7 @@ check(
     str([s["number"] for s in note.sections]),
 )
 check(
-    "in D5's order, with D5's titles",
+    "in ADR-0001 D5's order, with ADR-0001 D5's titles",
     re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)
     == [(str(n), t) for n, t, _ in glsy.SECTIONS],
     str(re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)),
@@ -3015,7 +3015,7 @@ check(
     "# Фрагмент" not in note.markdown,
     "a synthesized heading leaked into the note",
 )
-# Six frames cut one per slice, so six of D5's eight sections have material and two cannot.
+# Six frames cut one per slice, so six of ADR-0001 D5's eight sections have material and two cannot.
 # Filling more would be inventing content, which is the thing this pipeline exists not to do.
 check("only sections with source material are filled", note.filled == 6, str(note.filled))
 check(
@@ -3026,7 +3026,7 @@ check(
 )
 check("a note missing sections is degraded", note.degraded, "an incomplete note claimed complete")
 
-# Failure isolation: one dead section must not lose the seven that worked. D5.
+# Failure isolation: one dead section must not lose the seven that worked. ADR-0001 D5.
 partial = glsy.synthesise(
     json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth(fail_on={4})
 )
@@ -3053,7 +3053,7 @@ check("and the warning says so", any("table of contents" in w for w in toc.notes
 
 # Heading demotion. The model reshapes the document; `assemble` must win.
 check(
-    "a synthesized h1 is demoted, not left to compete with D5's headings",
+    "a synthesized h1 is demoted, not left to compete with ADR-0001 D5's headings",
     glsy.normalise("# Фрагмент\n\nтекст") == "### Фрагмент\n\nтекст",
     glsy.normalise("# Фрагмент\n\nтекст"),
 )
@@ -3193,7 +3193,7 @@ renamed = clean.replace("## 6. Математический фундамент",
 check("a renamed section is an error", rules(renamed, "structure/renamed-section"), "no finding")
 extra = clean.replace("## 8. Вопросы для самопроверки", "## 9. Вопросы для самопроверки")
 check(
-    "a section D5 does not define is an error",
+    "a section ADR-0001 D5 does not define is an error",
     rules(extra, "structure/unknown-section"),
     "no finding",
 )
@@ -3539,7 +3539,7 @@ check(
     str([f.severity for f in crit]),
 )
 
-# D5's enforced format, checked mechanically. Each of these is a plausible critic output
+# ADR-0001 D5's enforced format, checked mechanically. Each of these is a plausible critic output
 # and each must be discarded -- with a logged reason, never silently.
 SECTION = "содержимое"
 for name, line, why in (
@@ -3612,7 +3612,7 @@ finally:
     glle.chat = real_chat
 sent = " ".join(m["content"] for call in stub.seen for m in call)
 check(
-    "D5: the critic IS given the transcript it audits against",
+    "ADR-0001 D5: the critic IS given the transcript it audits against",
     "соответствие динамической системы" in sent,
     sent[:200],
 )
@@ -3972,7 +3972,7 @@ check(
 )
 
 # --- 18. stage 12: report — verify, do not trust -------------------------------------
-# D3's run: every stage exited 0, ffmpeg wrote an empty file, and the pipeline called it
+# ADR-0001 D3's run: every stage exited 0, ffmpeg wrote an empty file, and the pipeline called it
 # success. These tests build that situation and require the code to refuse it.
 bdir = tmp / "report-bundle"
 
@@ -4040,7 +4040,7 @@ check(
     str(good.verified[:1]),
 )
 
-# The D3 case: the manifest says 18, the filesystem has 17. Every earlier stage exits 0.
+# The ADR-0001 D3 case: the manifest says 18, the filesystem has 17. Every earlier stage exits 0.
 shutil.rmtree(bdir, ignore_errors=True)
 fill_bundle(frame_count=17, manifest_rows=18)
 short = run_report()

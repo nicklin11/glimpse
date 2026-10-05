@@ -1,6 +1,6 @@
 """Stage 3 core: the normalised transcript types, the parser, and the writers.
 
-D2: STT is delegated, never reimplemented. The wav is posted to a whisper.cpp endpoint
+ADR-0001 D2: STT is delegated, never reimplemented. The wav is posted to a whisper.cpp endpoint
 and the raw `segments` payload comes back over HTTP. Two properties of that payload
 drove the design, both measured on this host rather than assumed:
 
@@ -56,7 +56,7 @@ TIMEOUT_PER_REALTIME = 2.0
 TIMEOUT_MARGIN = 120.0
 
 # Realtime multipliers behind the estimate the pipeline prints before stage 3
-# blocks (D7). A range, not a point estimate: the rate depends on model size and
+# blocks (ADR-0001 D7). A range, not a point estimate: the rate depends on model size and
 # machine, and a precise-looking prediction that is wrong by 2x is worse than an
 # honest interval.
 RATE_RANGE = (0.05, 0.2)
@@ -305,7 +305,7 @@ def _truncated(raw: bytes, limit: int = 2000) -> bytes:
     """First `limit` bytes, marked when anything was cut.
 
     An unmarked truncation reads as a complete message, which is the swallowed
-    -error outcome D2 exists to prevent -- and worse here, because these bytes
+    -error outcome ADR-0001 D2 exists to prevent -- and worse here, because these bytes
     came from stdout and `report()` would otherwise present them as the
     dependency's stderr.
     """

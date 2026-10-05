@@ -3,7 +3,7 @@
 This stage is the reason `process` can exit 0 at all. Exit 0 in ADR-0001's table means
 "all artefacts written and verified", and the second half of that is the whole point of
 this module: **verification is a read of the filesystem, never an inference from an exit
-code.** D3 records the run that produced zero frames and exited successfully — ffmpeg wrote
+code.** ADR-0001 D3 records the run that produced zero frames and exited successfully — ffmpeg wrote
 an empty file, ffmpeg exited 0, and the pipeline had nothing to check. So stage 12 stats
 every artefact it expects and counts what is actually there.
 
@@ -25,7 +25,7 @@ every artefact it expects and counts what is actually there.
 
 ## The vault is not touched here
 
-D9, as amended 2026-10-03: the vault is an export target, not the artefact root. This
+ADR-0001 D9, as amended 2026-10-03: the vault is an export target, not the artefact root. This
 stage writes into the bundle and nowhere else. `Bundle.export_to_vault` performs the copy
 when `--vault-path` was given, and verifies each destination against its source.
 """
@@ -58,7 +58,7 @@ REQUIRED: dict[str, str] = {
     "the transcript if the normaliser is wrong",
     lint.REPORT_NAME: "the mechanical gate that ran before the audit",
     audit.REPORT_NAME: "the audit; without it the note is unverified",
-    repair.REPORT_NAME: "the fix log; D5 requires 'wrong' and 'changed' stay separable",
+    repair.REPORT_NAME: "the fix log; ADR-0001 D5 requires 'wrong' and 'changed' stay separable",
     frames.MANIFEST: "the record of which frames were extracted and when",
 }
 
@@ -151,7 +151,7 @@ def count_frames(bundle_root: Path) -> tuple[int, int]:
     held 16 correct frames, and a glob that had matched would have counted the derivatives
     too.
 
-    Expected counts data rows, not lines: a header-only manifest is the D3 failure this
+    Expected counts data rows, not lines: a header-only manifest is the ADR-0001 D3 failure this
     whole stage exists to catch, and counting lines would call that a success.
     """
     manifest = bundle_root / frames.MANIFEST
@@ -229,11 +229,11 @@ def provenance(report: Report) -> str:
             "requires_model": False,
             "verified_by": "filesystem stat, not the exit code of any earlier stage",
             "why": (
-                "D3: a run produced zero frames and exited successfully, because ffmpeg "
+                "ADR-0001 D3: a run produced zero frames and exited successfully, because ffmpeg "
                 "wrote an empty file and exited 0. An exit code is a claim by the stage "
                 "that failed; a stat is a measurement."
             ),
-            "vault": "not written by this stage; export_to_vault copies and verifies (D9)",
+            "vault": "not written by this stage; export_to_vault copies and verifies (ADR-0001 D9)",
             "ok": report.ok,
             "frames_expected": report.frames_expected,
             "frames_found": report.frames_found,
