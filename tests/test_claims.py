@@ -36,6 +36,7 @@ SAVED_ENV = _env.isolate()
 from glimpse import audit  # noqa: E402
 from glimpse import bundle as glb  # noqa: E402
 from glimpse import caption  # noqa: E402
+from glimpse import deps  # noqa: E402
 from glimpse import exitcodes as ec  # noqa: E402
 from glimpse import frames  # noqa: E402
 from glimpse import lint  # noqa: E402
@@ -258,6 +259,70 @@ check(
     "the artefact-name set the flatness check runs against is populated",
     len(ARTEFACTS) >= 20,
     f"only {len(ARTEFACTS)} names known, so the check above guards nothing: {sorted(ARTEFACTS)}",
+)
+
+# The flatness check above reads literals, and the fix for #91 removed the literals: the three
+# strings now interpolate `{result.bundle.root / gla.REPORT_NAME}`, so `re.findall` over
+# `cli.py`'s string constants matches **zero** of them. Measured, before writing this: 0 hits.
+# A guard that matches nothing is not a guard, so the same invariant is now also asserted over
+# attribute references, with the alias table `cli.py` actually imports.
+CLI_ALIASES = {
+    "gla": audit,
+    "gld": deps,
+    "ec": ec,
+    "glb": glb,
+    "gllnk": link,
+    "glp": glp,
+    "glr": repair,
+}
+#: The constant names a stage publishes under. Matching on the name rather than on the value is
+#: deliberate: the value is what is being checked, and it is not visible in the AST.
+ARTEFACT_CONSTANTS = (
+    "REPORT_NAME",
+    "PROVENANCE_NAME",
+    "NOTE_NAME",
+    "NOTE",
+    "REPAIRED_NOTE",
+    "LINKED_NOTE",
+    "SYNTH_NOTE_NAME",
+    "MANIFEST",
+    "TIMINGS_NAME",
+    "LLM_TRANSCRIPT_NAME",
+)
+
+referenced: list[tuple[int, str, str]] = []
+for _node in ast.walk(CLI_TREE):
+    if not isinstance(_node, ast.Attribute) or _node.attr not in ARTEFACT_CONSTANTS:
+        continue
+    if not (isinstance(_node.value, ast.Name) and _node.value.id in CLI_ALIASES):
+        continue
+    _module = CLI_ALIASES[_node.value.id]
+    _value = getattr(_module, _node.attr, None)
+    if isinstance(_value, str):
+        referenced.append((_node.lineno, f"{_node.value.id}.{_node.attr}", _value))
+
+unknown = [
+    f"cli.py:{ln} names {expr} -> {value}, which no stage produces"
+    for ln, expr, value in referenced
+    if value not in ARTEFACTS
+]
+check(
+    "no message names a constant whose artefact no stage produces",
+    not unknown,
+    "; ".join(unknown) or f"resolved {sorted({v for _, _, v in referenced})}",
+)
+#: Without a lower bound this section is the third check that would pass against an empty
+#: input. `cli.py` interpolates at least the audit report and the repair report on the exit-5
+#: and exit-1 branches.
+check(
+    "cli.py's messages do interpolate artefact constants, so the check above is not vacuous",
+    len(referenced) >= 2,
+    f"only {len(referenced)} artefact-constant references found in cli.py: {referenced}",
+)
+check(
+    "and the messages name more than one artefact, each of them known",
+    len({v for _, _, v in referenced}) >= 2 and {v for _, _, v in referenced} <= ARTEFACTS,
+    f"referenced values: {sorted({v for _, _, v in referenced})}",
 )
 
 # --- 7. every stage announces itself -------------------------------------------
