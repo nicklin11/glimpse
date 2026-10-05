@@ -52,7 +52,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import llm, stages
+from . import llm
 
 REPORT_NAME = "audit.json"
 PROVENANCE_NAME = "audit-provenance.json"
@@ -671,7 +671,6 @@ def audit(
             report.findings.extend(found)
 
     out = stream if stream is not None else sys.stdout
-    out.write(f"  [9/{stages.IMPLEMENTED}] audit   {report.summary()}\n")
     for finding in report.findings[:10]:
         out.write(f"           {finding.severity} {finding.rule}: {finding.detail}\n")
     if len(report.findings) > 10:

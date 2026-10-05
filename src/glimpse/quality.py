@@ -101,7 +101,6 @@ import json
 import subprocess
 import sys
 import time
-from . import stages  # noqa: F401 -- the progress line's denominator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -776,7 +775,6 @@ def run(
             )
 
     fallbacks = sum(1 for f in report.frames if f.crop_state == CROP_FALLBACK)
-    out.write(f"  [5/{stages.IMPLEMENTED}] quality {report.summary()}\n")
     if report.failed:
         for line in report.explain().splitlines():
             out.write(f"         {line.strip()}\n")
