@@ -617,6 +617,55 @@ check(
     f"only {len(glb.RUN_ARTEFACTS)} names",
 )
 
+# --- 9b. every lint rule has a fixture that trips it ---------------------------------
+# #93's first acceptance item, stage-8 half: "a rule with no firing fixture is an unevidenced
+# rule". The rationale is not that the rules are broken -- it is that 13 checks and 4 tier-1
+# audit rules have never fired on a real note, so a clean run and a broken checker produce the
+# same artefact. That is the shape #82 shipped in: a stage-5 gate that was a no-op for eight
+# runs and whose report said nothing about it.
+#
+# "Named in a test" is a proxy for "fired in a test" -- a rule could be quoted by an assertion
+# that expects it *not* to fire. It is the cheap half of the check and it is what keeps a new
+# rule from arriving with no evidence at all; the firing fixture is the part a human reads.
+#
+# The rules are harvested by walking the AST, not by reading module attributes. They are not
+# module-level constants: every one is a literal at the `report.add(...)` call site that emits
+# it, so `vars(lint)` yields zero and the first version of this check passed vacuously.
+_RULE_ID = re.compile(r"\A[a-z][a-z-]*/[a-z0-9-]+\Z")
+STAGES_TESTS = (REPO / "tests" / "test_stages.py").read_text(encoding="utf-8")
+
+
+def _rule_ids(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and _RULE_ID.match(node.value)
+    }
+
+
+unevidenced: list[str] = []
+all_rules: set[str] = set()
+for _mod in (lint, audit):
+    _rules = _rule_ids(Path(_mod.__file__))
+    all_rules |= _rules
+    for _rule in _rules:
+        if f'"{_rule}"' not in STAGES_TESTS:
+            unevidenced.append(f"{_mod.__name__}:{_rule}")
+
+check(
+    "every rule stage 8 and stage 9 can emit has a fixture in the stage tests",
+    not unevidenced,
+    f"no fixture trips these: {sorted(unevidenced)}",
+)
+check(
+    "the rule set this check reads is populated",
+    len(all_rules) >= 23,
+    f"{len(all_rules)} rule ids harvested from lint.py and audit.py",
+)
+
 # --- 10. a dollar figure in the docs names its source, or says it has none -----------
 # #96: ADR-0006 carried "~$0.0006 per frame on the measured gateway". No measurement of a
 # gateway price exists in this repository -- not in any document, not in any artefact -- so

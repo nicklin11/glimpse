@@ -4399,6 +4399,34 @@ check(
     ),
     "substring match inside prose fired",
 )
+# The last lint rule without a firing fixture. #93 asks for one per rule, on the grounds that
+# a rule nothing trips is unevidenced rather than correct: 12 of 13 already had one, so this
+# was the whole of the gap on the stage-8 side.
+check(
+    "a section heading that appears twice is a warning",
+    rules(
+        clean + "\n## 6. Математический фундамент\n\nещё раз то же самое\n",
+        "structure/duplicate-heading",
+    ),
+    str(glln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
+)
+check(
+    "and it is a warning, not an error -- the note is still structurally complete",
+    [
+        f.severity
+        for f in glln.lint(
+            clean + "\n## 6. Математический фундамент\n\nещё раз то же самое\n", limg
+        ).findings
+        if f.rule == "structure/duplicate-heading"
+    ]
+    == [glln.WARN],
+    str(glln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
+)
+check(
+    "a well-formed note has no duplicate heading to report",
+    not rules(clean, "structure/duplicate-heading"),
+    "the clean fixture was flagged",
+)
 check(
     # ...and the reading that motivated the rule still holds: a bare sentinel line beside
     # content is a template bug, and must still be reported. Shaped like the test above --
@@ -4949,6 +4977,37 @@ check(
     "and is told an uncited finding will be thrown away",
     "будет отброшена" in stub.seen[0][0]["content"],
     stub.seen[0][0]["content"][:200],
+)
+
+
+# The last rule with no firing fixture, on the stage-9 side. A critic that dies mid-run is a
+# different artefact from a critic that found nothing, and only this rule tells them apart --
+# without it, an endpoint that failed on section 1 produces a clean-looking audit.
+def _dead_critic(messages, config, **kw):
+    raise glle.EndpointError(f"{config.url} unreachable: connection refused")
+
+
+glle.chat = _dead_critic
+try:
+    dead_findings, dead_dropped, _dead_cov = glau.tier2_critic(
+        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    )
+finally:
+    glle.chat = real_chat
+check(
+    "a critic that fails mid-run is reported, not counted as a clean audit",
+    [f.rule for f in dead_findings] == ["critic/unavailable"],
+    f"findings: {[f.rule for f in dead_findings]}",
+)
+check(
+    "and the failure says what failed rather than only that something did",
+    "connection refused" in (dead_findings[0].detail if dead_findings else ""),
+    f"detail: {dead_findings[0].detail if dead_findings else 'no finding'}",
+)
+check(
+    "and it is a warning, so a dead critic does not fail the run",
+    [f.severity for f in dead_findings] == ["WARN"],
+    f"severity: {[f.severity for f in dead_findings]}",
 )
 
 # --- stage 10: repair --------------------------------------------------------------
