@@ -240,6 +240,18 @@ def run(
     bundle = bundle if bundle is not None else Bundle.open(source, overwrite=False)
     reports: list[StageReport] = []
 
+    # Before anything is written. `Bundle.open` only removes the root when `overwrite=True`,
+    # so without this a run merges into the previous run's bundle: measured mid-run on
+    # lecture 1, 12 files from the last run sat beside the 17 this one had written, two of
+    # them on the `REQUIRED` set. Stage 12 would then verify the earlier run's `audit.json`
+    # and exit 0. This is the root-level half of the rule `Bundle.clear_images` applies to
+    # `images/`; see `Bundle.clear_root`.
+    superseded = bundle.clear_root()
+    if superseded:
+        shown = ", ".join(superseded[:4])
+        tail = ", ..." if len(superseded) > 4 else ""
+        out.write(f"  bundle    cleared {len(superseded)} from an earlier run: {shown}{tail}\n")
+
     # --- stage 1: probe -------------------------------------------------------
     began = time.monotonic()
     info = probe.probe(Path(source))
@@ -333,9 +345,12 @@ def run(
     quality.resolve_estimator(bbox_source)
     qreport = quality.run(produced, work.path, settings=qs, bbox_source=bbox_source, stream=out)
 
-    # Publish the gated frames only now, so stage 5 read real files. Empty `images/` first:
-    # the bundle is opened with overwrite=False, so without this the directory is the union
-    # of every run that has ever touched it. See `Bundle.clear_images`.
+    # Publish the gated frames only now, so stage 5 read real files. `images/` is emptied
+    # here rather than by `clear_root` at the top of the run, because it must be empty at the
+    # moment the frames land, and by then the root's own artefacts are wanted. Same rule as
+    # the root's, one level down: the bundle is opened with overwrite=False, so without this
+    # the directory is the union of every run that has ever touched it. See
+    # `Bundle.clear_images` and `Bundle.clear_root`.
     bundle.clear_images()
     for index, path in enumerate(produced):
         target = bundle.images / path.name
@@ -513,6 +528,7 @@ def run(
         final_note=note_artefact,
         synth_note=Path(artefacts[synth.NOTE_NAME]),
         artefacts=artefacts,
+        superseded=superseded,
         stream=out,
     )
     artefacts["note"] = bundle.root / synth.NOTE_NAME

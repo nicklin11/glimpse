@@ -85,6 +85,11 @@ class Report:
     #: Files that no check touched, by name. `len(unchecked) + checked` is everything the run
     #: left, and a reader can compare that against `bundle_files` without trusting this stage.
     unchecked: list[str] = field(default_factory=list)
+    #: Artefacts removed from the root before this run started, by name. They were an earlier
+    #: run's, and left in place they would have satisfied `REQUIRED` on their behalf -- two of
+    #: them, `audit.json` and `repair.json`, did exactly that for eight runs. Recorded because
+    #: a non-empty list is the evidence that what was verified belonged to this run.
+    superseded: list[str] = field(default_factory=list)
 
     @property
     def checked(self) -> int:
@@ -116,6 +121,7 @@ class Report:
             "files_checked": self.checked,
             "files_in_bundle_excluding_this_stage": self.bundle_files,
             "unchecked": self.unchecked,
+            "superseded_by_this_run": self.superseded,
         }
 
 
@@ -244,11 +250,12 @@ def run(
     final_note: Path,
     synth_note: Path,
     artefacts: dict[str, Path],
+    superseded: list[str] | None = None,
     stream=None,
 ) -> Report:
     out = stream if stream is not None else sys.stdout
     root = Path(bundle_root)
-    report = Report()
+    report = Report(superseded=list(superseded or []))
     checked_paths: set[Path] = set()
 
     published, promoted = promote_note(root, final_note, synth_note)
@@ -324,6 +331,7 @@ def provenance(report: Report) -> str:
             "note_promoted": report.promoted,
             "files_checked": report.checked,
             "files_in_bundle_excluding_this_stage": report.bundle_files,
+            "superseded_by_this_run": report.superseded,
             "not_checked": report.unchecked,
             "coverage": (
                 f"{report.checked} of {report.bundle_files + 2} files were examined; the "

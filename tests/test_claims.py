@@ -41,6 +41,7 @@ from glimpse import frames  # noqa: E402
 from glimpse import lint  # noqa: E402
 from glimpse import link  # noqa: E402
 from glimpse import pipeline as glp  # noqa: E402
+from glimpse import probe  # noqa: E402
 from glimpse import quality  # noqa: E402
 from glimpse import repair  # noqa: E402
 from glimpse import report as glro  # noqa: E402
@@ -419,6 +420,67 @@ check(
     "the registry the cli check runs against is populated",
     len(registered) >= 15,
     f"only {len(registered)} names known: {sorted(registered)}",
+)
+
+# --- 9. bundle.RUN_ARTEFACTS is the set `clear_root` deletes ------------------------
+# `Bundle.clear_root` removes exactly the names in `RUN_ARTEFACTS` before each run, and that
+# set is written as literals in `bundle.py` because importing the stage modules there would
+# close an import cycle (`report.py` and `pipeline.py` import each other). Literals drift.
+# Both directions are checked here, because the two failures are different bugs:
+#
+#   a name produced by a stage but absent from the set -> clear_root leaves the previous
+#   run's file behind, which is exactly the defect #99 closed;
+#   a name in the set that nothing produces -> `clear_root` deletes a file a user put in the
+#   bundle root with `--output-dir`, which is the one thing it must never do.
+BARE_LITERALS = {
+    "transcript.json",
+    "transcript.raw.json",
+    "transcript.txt",
+    "detect.json",
+}
+PRODUCED: set[str] = (
+    # `REQUIRED["note"]` is a registry key, not a filename; the file it resolves to is
+    # `synth.NOTE_NAME` below, and it is in `RUN_ARTEFACTS` as "note.md".
+    (set(glro.REQUIRED) | set(glro.OPTIONAL)) - {"note"}
+    | set(audit.ALL_ARTEFACTS)
+    | set(synth.STAGE7_ARTEFACTS)
+    | set(link.ALL_ARTEFACTS)
+    | set(glro.ALL_ARTEFACTS)
+    | BARE_LITERALS
+    | {
+        probe.PROVENANCE_NAME,
+        sttcore.PROVENANCE_NAME,
+        frames.MANIFEST,
+        synth.NOTE_NAME,
+        synth.LLM_TRANSCRIPT_NAME,
+        repair.REPAIRED_NOTE,
+        link.LINKED_NOTE,
+        glro.SYNTH_NOTE_NAME,
+        glp.TIMINGS_NAME,
+        # these five stages have no ALL_ARTEFACTS tuple, so their pair is named here
+        caption.REPORT_NAME,
+        caption.PROVENANCE_NAME,
+        lint.PROVENANCE_NAME,
+        quality.PROVENANCE_NAME,
+        repair.PROVENANCE_NAME,
+    }
+)
+unlisted = sorted(PRODUCED - glb.RUN_ARTEFACTS)
+check(
+    "every artefact a run produces is in RUN_ARTEFACTS, or clear_root leaves it behind",
+    not unlisted,
+    f"not cleared between runs: {unlisted}",
+)
+unknown = sorted(glb.RUN_ARTEFACTS - PRODUCED)
+check(
+    "RUN_ARTEFACTS names nothing a run does not produce, or clear_root eats a user's file",
+    not unknown,
+    f"would delete a file nothing wrote: {unknown}",
+)
+check(
+    "the set is big enough to be the whole bundle",
+    len(glb.RUN_ARTEFACTS) >= 29,
+    f"only {len(glb.RUN_ARTEFACTS)} names",
 )
 
 _env.restore(SAVED_ENV)

@@ -27,6 +27,59 @@ from pathlib import Path
 NOTE_NAME = "note.md"
 AUDIT_NAME = "audit.md"
 IMAGES = "images"
+
+#: Every filename a run can leave in the bundle root, as literals rather than imports.
+#:
+#: The stage modules define most of these as constants, but `report.py` and `pipeline.py`
+#: import each other and `stt` is a package, so importing the whole set here would close a
+#: cycle. Literals drift the moment a stage adds an artefact, so `tests/test_claims.py`
+#: asserts this set against the files a run actually produces: a name added to one and not
+#: the other fails that check. The set is what the test reads, which is why the duplication
+#: is tolerable -- and `clear_root` is safe without it, because it only ever removes names
+#: from here, never anything else in the directory.
+RUN_ARTEFACTS: frozenset[str] = frozenset(
+    {
+        # stages 1-2 -- what the source is
+        "source-provenance.json",
+        "detect.json",
+        # stage 3 -- transcription
+        "transcript.json",
+        "transcript.raw.json",
+        "transcript.txt",
+        "stt-provenance.json",
+        # stage 4 -- frames
+        "manifest.tsv",
+        # stages 5-6 -- the frame gates
+        "quality.json",
+        "quality-provenance.json",
+        "captions.json",
+        "caption-provenance.json",
+        # stage 7 -- the note itself
+        "note.md",
+        "note.synth.md",
+        "synth.json",
+        "synth-provenance.json",
+        "synth-llm-transcript.json",
+        # stages 8-9 -- the gates over the note
+        "lint.json",
+        "lint-provenance.json",
+        "audit.json",
+        "audit-provenance.json",
+        "audit-llm-transcript.json",
+        # stages 10-11 -- what was changed and linked
+        "note.repaired.md",
+        "repair.json",
+        "repair-provenance.json",
+        "note.linked.md",
+        "link.json",
+        "link-provenance.json",
+        # stage 12, and the run's own timings
+        "report.json",
+        "report-provenance.json",
+        "timings.json",
+    }
+)
+
 #: Where a bundle lands inside a vault unless told otherwise. Its own directory, because the
 #: alternative is writing ~188 files into the directory the user's own notes live in.
 DEFAULT_EXPORT_SUBDIR = "glimpse"
@@ -121,6 +174,34 @@ class Bundle:
             if stale.is_file():
                 stale.unlink()
                 removed += 1
+        return removed
+
+    def clear_root(self) -> list[str]:
+        """Remove the previous run's artefacts from the root. Returns what was removed.
+
+        `clear_images` fixed `images/` and left the root with the same defect one level up.
+        Measured on lecture 1, mid-run: at 06:20 with run 14 in stage 9 the root held **12
+        files written by run 13** at 05:50 alongside the 17 run 14 had just written. Two of
+        those twelve are on the `REQUIRED` set -- `audit.json` and `repair.json` -- and
+        `_check` accepts any file that exists and is non-empty. So a run whose stage 9
+        produced no audit still had `audit.json` recorded as verified, and exited 0. The
+        stage that exists to catch that was reading the previous run's file.
+
+        Why it did not show up in thirteen runs: `tests/test_stages.py` builds a fresh `tmp`
+        directory per test, so the bundle is never dirty when the tests look at it.
+
+        Only names in `RUN_ARTEFACTS` are removed. `--output-dir DIR` makes `DIR` the bundle
+        root, and a user who points it at a directory holding anything of their own keeps it:
+        this is deliberately narrower than `overwrite=True`, which `rmtree`s the whole thing.
+        Directories are never touched, so `images/` is left to `clear_images`.
+        """
+        if not self.root.is_dir():
+            return []
+        removed: list[str] = []
+        for stale in sorted(self.root.iterdir()):
+            if stale.is_file() and stale.name in RUN_ARTEFACTS:
+                stale.unlink()
+                removed.append(stale.name)
         return removed
 
     def path(self, name: str) -> Path:

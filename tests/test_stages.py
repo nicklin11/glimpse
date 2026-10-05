@@ -5374,6 +5374,100 @@ check(
     "a second promotion made a pointless duplicate of itself",
 )
 
+# --- 18b. the root is emptied before the run, so stage 12 cannot verify the last one -----
+# Measured mid-run on lecture 1: at 06:20 with run 14 in stage 9 the bundle root held 12
+# files written by run 13 at 05:50 beside the 17 run 14 had written. `audit.json` and
+# `repair.json` are both on the `REQUIRED` set and `_check` accepts any non-empty file, so
+# stage 12 -- the stage that exists to catch this -- was reading the previous run's audit.
+# It stayed invisible because every test builds a fresh `tmp` directory and the bundle is
+# therefore never dirty when the tests look at it.
+cdir = tmp / "clearroot"
+(cdir / "images").mkdir(parents=True, exist_ok=True)
+stale = cdir / glau.REPORT_NAME
+stale.write_text('{"stale": true}\n', encoding="utf-8")
+(cdir / glp.TIMINGS_NAME).write_text("{}\n", encoding="utf-8")
+(cdir / "note.md").write_text("# old\n", encoding="utf-8")
+(cdir / "images" / "f_1.png").write_bytes(b"\x89PNG")
+(cdir / "my-own-file.txt").write_text("not a run artefact\n", encoding="utf-8")
+
+bundle = glb.Bundle(root=cdir, created=False)
+cleared = bundle.clear_root()
+check(
+    "the previous run's artefacts are removed from the root",
+    sorted(cleared) == sorted([glau.REPORT_NAME, glp.TIMINGS_NAME, "note.md"]),
+    f"cleared {cleared}",
+)
+check(
+    "and what was cleared is what was there",
+    not stale.exists() and not (cdir / glp.TIMINGS_NAME).exists(),
+    "a REQUIRED artefact from an earlier run survived",
+)
+check(
+    "a file the run never writes is left alone",
+    (cdir / "my-own-file.txt").is_file(),
+    "`--output-dir` makes this directory the bundle root; a user's own file went with it",
+)
+check(
+    "`images/` is left for clear_images, not removed as a directory",
+    (cdir / "images" / "f_1.png").is_file(),
+    "the frames directory was taken out from under stage 5",
+)
+check(
+    "clearing a bundle that does not exist is not an error",
+    glb.Bundle(root=tmp / "never-created", created=False).clear_root() == [],
+    "a first run on a fresh path raised instead of returning nothing",
+)
+
+# The acceptance criterion that matters: a stale REQUIRED artefact must not satisfy the
+# check. Without `clear_root` this passes only because the tests are hermetic; with it, this
+# states the property directly.
+kept_dir = tmp / "stale-required-kept"
+kept_dir.mkdir(parents=True, exist_ok=True)
+(kept_dir / glau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
+
+# Without the clear, stage 12 finds this file, `_check` accepts it -- it exists and is
+# non-empty -- and records the audit as verified for a run that never ran one. `verified` is
+# asserted per name, not as a non-empty list: with a bare `bool(missing)` the check still
+# passes with the stale file present, because seven other REQUIRED entries are absent anyway.
+kept = glro.run(
+    kept_dir,
+    final_note=kept_dir / "note.linked.md",
+    synth_note=kept_dir / "note.md",
+    artefacts={"note": kept_dir / "note.md"},
+)
+check(
+    "WITHOUT the clear, an earlier run's audit.json is accepted as this run's",
+    any(e["artefact"] == glau.REPORT_NAME for e in kept.verified),
+    "the defect #99 describes is not reproducible here, so the fix below proves nothing",
+)
+
+# A separate directory, because the run above writes its own report.json and
+# report-provenance.json into it, and those would then be cleared too -- which is correct
+# behaviour and would make the assertion below about the wrong files.
+rdir = tmp / "stale-required"
+rdir.mkdir(parents=True, exist_ok=True)
+(rdir / glau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
+cleared_stale = glb.Bundle(root=rdir, created=False).clear_root()
+stale_report = glro.run(
+    rdir,
+    final_note=rdir / "note.linked.md",
+    synth_note=rdir / "note.md",
+    artefacts={"note": rdir / "note.md"},
+    superseded=cleared_stale,
+)
+check(
+    "and after the clear it is reported missing, not verified",
+    any(e["artefact"] == glau.REPORT_NAME for e in stale_report.missing)
+    and not any(e["artefact"] == glau.REPORT_NAME for e in stale_report.verified),
+    f"verified={[e['artefact'] for e in stale_report.verified]}, "
+    f"missing={[e['artefact'] for e in stale_report.missing]}",
+)
+check(
+    "report.json records what this run superseded",
+    stale_report.as_dict()["superseded_by_this_run"] == [glau.REPORT_NAME],
+    str(stale_report.as_dict()["superseded_by_this_run"]),
+)
+
 # --- 19. the exit contract: what may not produce 0 -----------------------------------
 # Both rules below were decided after the first real 12-stage run, where each one produced a
 # run that looked finished and was not.
