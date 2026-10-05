@@ -156,6 +156,27 @@ does not paper over them.
 run 6's audit flagged the contradiction, where a marker appeared inside a span the transcript
 renders in full. #49 is the underlying measurement.
 
+## Stage 12 — what it reports
+
+`report.json` states the coverage of its own verification, computed on disk at run end:
+
+| field | what it answers |
+|---|---|
+| `verified` / `absent` / `missing` | artefacts checked, expected-but-absent optional ones, required-but-not-found ones |
+| `files_checked` | how much of the bundle stage 12 actually confirmed (run 13: 65) |
+| `files_in_bundle_excluding_this_stage` | everything it could have checked (run 13: 144) |
+| `unchecked` | the absolute list of files it did not check |
+| `frames_expected` / `frames_found` | frames against `manifest.tsv` |
+| `note_promoted` | whether the vault copy happened |
+
+Since `5c66731`, `verified ∪ unchecked = files_in_bundle_excluding_this_stage` holds on the
+artefact itself, and a reader can compute the coverage claim rather than trust the prose.
+Before that release, the module's prose claimed 143 files were checked when 65 were — the
+artefact above is the correction. `files_checked ==
+files_in_bundle_excluding_this_stage` is the end state; the gap is
+[#87](https://github.com/nicklin11/glimpse/issues/87), and the presence-only character of the
+per-file check is the deeper constraint recorded in the same issue.
+
 ## Where the note is written
 
 `glimpse process` exports into the vault by default, into `<vault>/glimpse/`. The vault

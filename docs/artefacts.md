@@ -1,0 +1,72 @@
+# The bundle — what a run writes
+
+The bundle lives in `$XDG_STATE_HOME/glimpse/<lecture>/` by default (`$GLIMPSE_OUTPUT_DIR` or
+`--output-dir` name it explicitly). The root is **flat**: `images/` is the only subdirectory.
+
+Produced by run 13, `1_lecture_OCS.mp4` (4520 s): 30 entries in the root, 58 frames under
+`images/`.
+
+## Root files, by writer
+
+| file | written by | what it is |
+|---|---|---|
+| `transcript.raw.json` | stage 3 `stt` | the endpoint's payload, untouched |
+| `transcript.json` | stage 3 `stt` | structured transcript, with word timings |
+| `transcript.txt` | stage 3 `stt` | plain text |
+| `manifest.tsv` | stage 4 `frames` | frame index: timestamp, path, reason |
+| `detect.json` | stage 4 `frames` | the ffmpeg filter chain and settings actually used |
+| `quality.json` | stage 5 `quality` | per-frame sharpness and the gate decision |
+| `captions.json` | stage 6 `caption` | per-frame captions and `caption_trace` (model, tokens, timing, called or cached) |
+| `synth.json` | stage 7 `synth` | the synthesis state; the note chain is `note.md` → `note.repaired.md` → `note.linked.md` |
+| `note.md` | stage 7 `synth` | the note as synthesised |
+| `lint.json` | stage 8 `lint` | mechanical gate findings, before the audit |
+| `audit.json` | stage 9 `audit` | findings, each with its quoted line |
+| `repair.json` | stage 10 `repair` | what was changed and what was declined |
+| `note.repaired.md` | stage 10 `repair` | the note after repair |
+| `link.json` | stage 11 `link` | wikilinks inserted |
+| `note.linked.md` | stage 11 `link` | the note after linking |
+| `report.json` | stage 12 `report` | what stage 12 verified, and what it did not find |
+| `timings.json` | `pipeline` | wall clock per stage and the total; written after stage 12, not a registered artefact |
+
+`note.synth.md` does not exist: `Bundle.publish` names published files by their source
+basename, and stage 7 publishes `note.md` plus `synth.json`.
+
+## Provenance — one file per stage
+
+Every stage writes a `*-provenance.json` recording what produced its output:
+
+| stages | provenance | what it answers |
+|---|---|---|
+| 1, 2 | `source-provenance.json` | what the input was, and which ffmpeg measured it |
+| 3 | `stt-provenance.json` | backend, endpoint, every request field, digests of both transcripts |
+| 4 | `detect.json` (see above) | the full filter chain, every setting, the ffmpeg version |
+| 5–12 | `quality`/`caption`/`synth`/`lint`/`audit`/`repair`/`link`/`report`-provenance.json | the tool, its rule set, and what it changed |
+| 6 | per-frame `caption_trace` in `captions.json` | which model captioned this frame, tokens, timing, called or cached |
+| 7, 9 | `synth-llm-transcript.json`, `audit-llm-transcript.json` | every call: full messages, model, tokens, seconds, attempts |
+
+The three LLM stages keep different amounts on purpose. Stages 7 and 9 make 8 calls each and
+store the whole `messages` array — ~190 KiB per call, needed so the audit is checkable. Stage
+6 makes 58 and stores a summary; the full form would be ~11 MiB per run, more than the rest of
+the bundle. Attribution still works: model, tokens, seconds, attempts, fingerprint, and
+whether the frame was called or taken from cache.
+
+## The scratch work dir
+
+`audio.wav` (137.9 MiB on lecture 1) and everything else stage 2–12 work through goes to a
+temporary work dir, removed when the run succeeds; `--keep-workdir` keeps it, `--workdir`
+names its parent.
+
+## `report.json` — what stage 12 actually verified
+
+| field | meaning |
+|---|---|
+| `ok` | the overall verdict |
+| `verified` / `absent` / `missing` | artefacts checked on disk, expected-but-absent optional ones, and required-but-not-found ones |
+| `frames_expected` / `frames_found` | frame count against `manifest.tsv` |
+| `note_promoted` | whether the vault copy happened |
+| `files_checked` | files whose presence stage 12 confirmed (65 of 144 on run 13 — the gap is [#87](https://github.com/nicklin11/glimpse/issues/87)) |
+| `files_in_bundle_excluding_this_stage` | everything present on disk the stage could have checked (144) |
+| `unchecked` | the absolute list of files stage 12 did not check |
+
+Since `5c66731`, a reader can compute the coverage claim from the artefact itself: `verified ∪
+unchecked = files_in_bundle_excluding_this_stage`.

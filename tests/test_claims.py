@@ -337,6 +337,90 @@ check(
     f"write_timings called after stage 12: {'write_timings(bundle, reports)' in PIPELINE}",
 )
 
+# --- 8. the configuration reference matches the code ---------------------------
+# #98: `README.md` named env vars that no longer exist and omitted ones the code
+# reads; `docs/running.md` is where the full table now lives, and it is held to
+# the code the same way the exit-code table is held to `DESCRIPTIONS` -- parsed
+# out of the source, not out of a hand-maintained list.
+#
+# Direction 1: every `GLIMPSE_*` name that appears as a *string constant* in the
+# source must appear in `docs/running.md`. Constants, not textual grep: a
+# comment (the dead `GLIMPSE_GATEWAY_URL` in `deps.py:377`) is not a live
+# variable, and the docstrings that name one describe a real read. The one
+# dynamic name, `f"GLIMPSE_{name.upper()}_URL"`, resolves to `GLIMPSE_OPENAI_URL`
+# and `GLIMPSE_WHISPERCPP_URL` against `DEFAULT_ENDPOINTS`; both also surface as
+# literals in error messages the code can emit, but they are added explicitly so
+# the set does not depend on the phrasing of a message.
+RUNNING = (REPO / "docs" / "running.md").read_text(encoding="utf-8")
+
+live_vars: set[str] = set()
+for src_path in sorted((REPO / "src" / "glimpse").rglob("*.py")):
+    src_tree = ast.parse(src_path.read_text(encoding="utf-8"), filename=str(src_path))
+    for node in ast.walk(src_tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            live_vars.update(re.findall(r"GLIMPSE_[A-Z_]+", node.value))
+# the dynamically built names, matched against `DEFAULT_ENDPOINTS` keys
+BACKENDS_SRC = (REPO / "src" / "glimpse" / "stt" / "backends.py").read_text(encoding="utf-8")
+backend_names = re.findall(r'^\s{4}"(\w+)":\s*"http', BACKENDS_SRC, flags=re.M)
+for backend in backend_names:
+    live_vars.add(f"GLIMPSE_{backend.upper()}_URL")
+
+missing_from_docs = sorted(v for v in live_vars if v not in RUNNING)
+check(
+    "every live GLIMPSE_ variable is documented in docs/running.md",
+    not missing_from_docs,
+    f"in code, absent from running.md: {missing_from_docs}",
+)
+check(
+    "the env-var set the check runs against is populated",
+    len(live_vars) >= 15,
+    f"only {len(live_vars)} names known: {sorted(live_vars)}",
+)
+
+# Direction 2: every `GLIMPSE_*` the table names must be a live variable. The
+# reference cannot rot into documenting aspirational configuration (#65, #68).
+# The one exception is stated, not inferred from the prose around the name:
+# `GLIMPSE_GATEWAY_URL` appears only in the paragraph that records its removal,
+# the same statement `deps.py:377` records in a comment.
+REMOVED_VARS = {"GLIMPSE_GATEWAY_URL"}
+ghosts = sorted(
+    m
+    for m in set(re.findall(r"GLIMPSE_[A-Z_]+", RUNNING))
+    if m not in live_vars and m not in REMOVED_VARS
+)
+check(
+    "docs/running.md names no variable the code does not read",
+    not ghosts,
+    f"in running.md, absent from code: {ghosts}",
+)
+
+# Every subcommand and flag registered in `cli.py` must be named in `running.md`,
+# and the other way around an unregistered name must not sneak into the table.
+registered: set[str] = set()
+for node in ast.walk(CLI_TREE):
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr == "add_parser" and node.args and isinstance(node.args[0], ast.Constant):
+            registered.add(node.args[0].value)
+        if (
+            node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            if str(node.args[0].value).startswith("--"):
+                registered.add(node.args[0].value)
+
+absent_from_docs = sorted(f for f in registered if f not in RUNNING)
+check(
+    "every cli.py subcommand and flag is documented in docs/running.md",
+    not absent_from_docs,
+    f"registered, not in running.md: {absent_from_docs}",
+)
+check(
+    "the registry the cli check runs against is populated",
+    len(registered) >= 15,
+    f"only {len(registered)} names known: {sorted(registered)}",
+)
+
 _env.restore(SAVED_ENV)
 
 print()
