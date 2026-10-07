@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from glimpse import quality as q  # noqa: E402
+from dyak import quality as q  # noqa: E402
 
 PROBE = Path("/tmp/jpegprobe")
 SIGMAS = [round(0.2 * i, 1) for i in range(0, 16)]  # 0.0 .. 3.0 inclusive
@@ -113,7 +113,7 @@ def main() -> None:
     for png in sorted(PROBE.glob("f_*.png")):
         # The box is estimated from the JPEG stage 4 wrote; the coordinates are the same
         # grid either way, and estimating from the lossless copy would be circular.
-        jpg = Path("/tmp/glimpse-probe/b1/images") / f"{png.stem}.jpg"
+        jpg = Path("/tmp/dyak-probe/b1/images") / f"{png.stem}.jpg"
         found = q.estimate_box(jpg, settings) if jpg.is_file() else None
         box = found.as_dict() if found else None
         boxes[png.stem] = box

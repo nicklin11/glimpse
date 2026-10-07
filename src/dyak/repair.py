@@ -303,7 +303,7 @@ def provenance(report: Report) -> str:
     return json.dumps(
         {
             "stage": 10,
-            "tool": "glimpse-repair-v1",
+            "tool": "dyak-repair-v1",
             "requires_model": False,
             "output": REPAIRED_NOTE,
             "original_kept": True,

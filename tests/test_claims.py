@@ -33,25 +33,25 @@ import _env  # noqa: E402
 SAVED_ENV = _env.isolate()
 
 
-from glimpse import audit  # noqa: E402
-from glimpse import bundle as glb  # noqa: E402
-from glimpse import caption  # noqa: E402
-from glimpse import deps  # noqa: E402
-from glimpse import exitcodes as ec  # noqa: E402
-from glimpse import frames  # noqa: E402
-from glimpse import lint  # noqa: E402
-from glimpse import link  # noqa: E402
-from glimpse import pipeline as glp  # noqa: E402
-from glimpse import probe  # noqa: E402
-from glimpse import quality  # noqa: E402
-from glimpse import repair  # noqa: E402
-from glimpse import report as glro  # noqa: E402
-from glimpse import stages as gst  # noqa: E402
-from glimpse import synth  # noqa: E402
-from glimpse.stt import core as sttcore  # noqa: E402
+from dyak import audit  # noqa: E402
+from dyak import bundle as dyb  # noqa: E402
+from dyak import caption  # noqa: E402
+from dyak import deps  # noqa: E402
+from dyak import exitcodes as ec  # noqa: E402
+from dyak import frames  # noqa: E402
+from dyak import lint  # noqa: E402
+from dyak import link  # noqa: E402
+from dyak import pipeline as dyp  # noqa: E402
+from dyak import probe  # noqa: E402
+from dyak import quality  # noqa: E402
+from dyak import repair  # noqa: E402
+from dyak import report as dyro  # noqa: E402
+from dyak import stages as gst  # noqa: E402
+from dyak import synth  # noqa: E402
+from dyak.stt import core as sttcore  # noqa: E402
 
 README = (REPO / "README.md").read_text(encoding="utf-8")
-PIPELINE = (REPO / "src" / "glimpse" / "pipeline.py").read_text(encoding="utf-8")
+PIPELINE = (REPO / "src" / "dyak" / "pipeline.py").read_text(encoding="utf-8")
 
 failures: list[str] = []
 
@@ -164,13 +164,13 @@ check(
 # `Bundle.open` (bundle.py) falls back to `./output/<lecture>` when $XDG_STATE_HOME is
 # unset, so a run started in this directory drops a whole bundle here; `images/` is where
 # stage 5 puts the frames, not the `frames/` the rule above names; `*.log` is where a
-# redirected run writes; and `-o glimpse` from the README's zipapp build lands a binary
+# redirected run writes; and `-o dyak` from the README's zipapp build lands a binary
 # named after the package at the repository root, which `ALLOWED_ROOT` would also reject.
 MUST_BE_IGNORED = {
     "output/1_lecture_OCS/report.json": "the default bundle root when XDG_STATE_HOME is unset",
     "output/1_lecture_OCS/images/f_1.png": "the frames stage 5 publishes",
-    "glimpse-run.log": "a redirected run",
-    "glimpse": "the zipapp binary",
+    "dyak-run.log": "a redirected run",
+    "dyak": "the zipapp binary",
 }
 unignored = []
 for candidate, _why in MUST_BE_IGNORED.items():
@@ -194,7 +194,7 @@ check(
 # matters is that nothing imports it.
 
 offenders: list[tuple[str, int]] = []
-for path in sorted((REPO / "src" / "glimpse").rglob("*.py")):
+for path in sorted((REPO / "src" / "dyak").rglob("*.py")):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         name = ""
@@ -223,11 +223,11 @@ check(
 # `Bundle.publish`, which lands each file in the root under its own basename; only the frames
 # are moved into `bundle.images` explicitly. So a message naming `<dir>/<artefact>` is wrong
 # unless `<dir>` is `images/`.
-CLI_SRC = REPO / "src" / "glimpse" / "cli.py"
+CLI_SRC = REPO / "src" / "dyak" / "cli.py"
 CLI_TREE = ast.parse(CLI_SRC.read_text(encoding="utf-8"), filename=str(CLI_SRC))
 
 ARTEFACTS: set[str] = set()
-for _mod in (audit, caption, frames, lint, link, quality, repair, glro, synth):
+for _mod in (audit, caption, frames, lint, link, quality, repair, dyro, synth):
     for _value in vars(_mod).values():
         if isinstance(_value, str) and _value.endswith((".json", ".md", ".tsv", ".txt")):
             ARTEFACTS.add(_value)
@@ -237,13 +237,13 @@ for _mod in (audit, caption, frames, lint, link, quality, repair, glro, synth):
                 for v in _value
                 if isinstance(v, str) and v.endswith((".json", ".md", ".tsv", ".txt"))
             )
-ARTEFACTS |= set(glro.REQUIRED) | set(glro.OPTIONAL) | {sttcore.PROVENANCE_NAME, glp.TIMINGS_NAME}
+ARTEFACTS |= set(dyro.REQUIRED) | set(dyro.OPTIONAL) | {sttcore.PROVENANCE_NAME, dyp.TIMINGS_NAME}
 
 nested: list[str] = []
 for _node in ast.walk(CLI_TREE):
     if isinstance(_node, ast.Constant) and isinstance(_node.value, str):
         for _prefix, _base in re.findall(r"([\w.]+)/([\w.-]+\.(?:json|md|tsv|txt))", _node.value):
-            if _base in ARTEFACTS and _prefix != glb.IMAGES:
+            if _base in ARTEFACTS and _prefix != dyb.IMAGES:
                 nested.append(f"cli.py:{_node.lineno} names {_prefix}/{_base}")
 
 check(
@@ -262,18 +262,18 @@ check(
 )
 
 # The flatness check above reads literals, and the fix for #91 removed the literals: the three
-# strings now interpolate `{result.bundle.root / gla.REPORT_NAME}`, so `re.findall` over
+# strings now interpolate `{result.bundle.root / dya.REPORT_NAME}`, so `re.findall` over
 # `cli.py`'s string constants matches **zero** of them. Measured, before writing this: 0 hits.
 # A guard that matches nothing is not a guard, so the same invariant is now also asserted over
 # attribute references, with the alias table `cli.py` actually imports.
 CLI_ALIASES = {
-    "gla": audit,
-    "gld": deps,
+    "dya": audit,
+    "dyd": deps,
     "ec": ec,
-    "glb": glb,
-    "gllnk": link,
-    "glp": glp,
-    "glr": repair,
+    "dyb": dyb,
+    "dylnk": link,
+    "dyp": dyp,
+    "dyr": repair,
 }
 #: The constant names a stage publishes under. Matching on the name rather than on the value is
 #: deliberate: the value is what is being checked, and it is not visible in the AST.
@@ -390,7 +390,7 @@ check(
     f"expected {sorted(expected - SILENT_BY_DESIGN)}",
 )
 
-REPORT_SRC = (REPO / "src" / "glimpse" / "report.py").read_text(encoding="utf-8")
+REPORT_SRC = (REPO / "src" / "dyak" / "report.py").read_text(encoding="utf-8")
 STAGE12_LINE = "[{stages.IMPLEMENTED}/{stages.IMPLEMENTED}] report"
 check(
     "stage 12 announces itself from report.run, so no stage is silent",
@@ -431,7 +431,7 @@ def stage_prefixed_literals(tree: ast.AST) -> list[str]:
 
 
 _spelling: dict[str, list[str]] = {}
-for _src in sorted((REPO / "src" / "glimpse").glob("*.py")):
+for _src in sorted((REPO / "src" / "dyak").glob("*.py")):
     _hits = stage_prefixed_literals(ast.parse(_src.read_text(encoding="utf-8"), filename=str(_src)))
     if _hits:
         _spelling[_src.name] = _hits
@@ -478,31 +478,31 @@ check(
 # the code the same way the exit-code table is held to `DESCRIPTIONS` -- parsed
 # out of the source, not out of a hand-maintained list.
 #
-# Direction 1: every `GLIMPSE_*` name that appears as a *string constant* in the
+# Direction 1: every `DYAK_*` name that appears as a *string constant* in the
 # source must appear in `docs/running.md`. Constants, not textual grep: a
-# comment (the dead `GLIMPSE_GATEWAY_URL` in `deps.py:377`) is not a live
+# comment (the dead `DYAK_GATEWAY_URL` in `deps.py:377`) is not a live
 # variable, and the docstrings that name one describe a real read. The one
-# dynamic name, `f"GLIMPSE_{name.upper()}_URL"`, resolves to `GLIMPSE_OPENAI_URL`
-# and `GLIMPSE_WHISPERCPP_URL` against `DEFAULT_ENDPOINTS`; both also surface as
+# dynamic name, `f"DYAK_{name.upper()}_URL"`, resolves to `DYAK_OPENAI_URL`
+# and `DYAK_WHISPERCPP_URL` against `DEFAULT_ENDPOINTS`; both also surface as
 # literals in error messages the code can emit, but they are added explicitly so
 # the set does not depend on the phrasing of a message.
 RUNNING = (REPO / "docs" / "running.md").read_text(encoding="utf-8")
 
 live_vars: set[str] = set()
-for src_path in sorted((REPO / "src" / "glimpse").rglob("*.py")):
+for src_path in sorted((REPO / "src" / "dyak").rglob("*.py")):
     src_tree = ast.parse(src_path.read_text(encoding="utf-8"), filename=str(src_path))
     for node in ast.walk(src_tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            live_vars.update(re.findall(r"GLIMPSE_[A-Z_]+", node.value))
+            live_vars.update(re.findall(r"DYAK_[A-Z_]+", node.value))
 # the dynamically built names, matched against `DEFAULT_ENDPOINTS` keys
-BACKENDS_SRC = (REPO / "src" / "glimpse" / "stt" / "backends.py").read_text(encoding="utf-8")
+BACKENDS_SRC = (REPO / "src" / "dyak" / "stt" / "backends.py").read_text(encoding="utf-8")
 backend_names = re.findall(r'^\s{4}"(\w+)":\s*"http', BACKENDS_SRC, flags=re.M)
 for backend in backend_names:
-    live_vars.add(f"GLIMPSE_{backend.upper()}_URL")
+    live_vars.add(f"DYAK_{backend.upper()}_URL")
 
 missing_from_docs = sorted(v for v in live_vars if v not in RUNNING)
 check(
-    "every live GLIMPSE_ variable is documented in docs/running.md",
+    "every live DYAK_ variable is documented in docs/running.md",
     not missing_from_docs,
     f"in code, absent from running.md: {missing_from_docs}",
 )
@@ -512,15 +512,15 @@ check(
     f"only {len(live_vars)} names known: {sorted(live_vars)}",
 )
 
-# Direction 2: every `GLIMPSE_*` the table names must be a live variable. The
+# Direction 2: every `DYAK_*` the table names must be a live variable. The
 # reference cannot rot into documenting aspirational configuration (#65, #68).
 # The one exception is stated, not inferred from the prose around the name:
-# `GLIMPSE_GATEWAY_URL` appears only in the paragraph that records its removal,
+# `DYAK_GATEWAY_URL` appears only in the paragraph that records its removal,
 # the same statement `deps.py:377` records in a comment.
-REMOVED_VARS = {"GLIMPSE_GATEWAY_URL"}
+REMOVED_VARS = {"DYAK_GATEWAY_URL"}
 ghosts = sorted(
     m
-    for m in set(re.findall(r"GLIMPSE_[A-Z_]+", RUNNING))
+    for m in set(re.findall(r"DYAK_[A-Z_]+", RUNNING))
     if m not in live_vars and m not in REMOVED_VARS
 )
 check(
@@ -575,11 +575,11 @@ BARE_LITERALS = {
 PRODUCED: set[str] = (
     # `REQUIRED["note"]` is a registry key, not a filename; the file it resolves to is
     # `synth.NOTE_NAME` below, and it is in `RUN_ARTEFACTS` as "note.md".
-    (set(glro.REQUIRED) | set(glro.OPTIONAL)) - {"note"}
+    (set(dyro.REQUIRED) | set(dyro.OPTIONAL)) - {"note"}
     | set(audit.ALL_ARTEFACTS)
     | set(synth.STAGE7_ARTEFACTS)
     | set(link.ALL_ARTEFACTS)
-    | set(glro.ALL_ARTEFACTS)
+    | set(dyro.ALL_ARTEFACTS)
     | BARE_LITERALS
     | {
         probe.PROVENANCE_NAME,
@@ -589,8 +589,8 @@ PRODUCED: set[str] = (
         synth.LLM_TRANSCRIPT_NAME,
         repair.REPAIRED_NOTE,
         link.LINKED_NOTE,
-        glro.SYNTH_NOTE_NAME,
-        glp.TIMINGS_NAME,
+        dyro.SYNTH_NOTE_NAME,
+        dyp.TIMINGS_NAME,
         # these five stages have no ALL_ARTEFACTS tuple, so their pair is named here
         caption.REPORT_NAME,
         caption.PROVENANCE_NAME,
@@ -599,13 +599,13 @@ PRODUCED: set[str] = (
         repair.PROVENANCE_NAME,
     }
 )
-unlisted = sorted(PRODUCED - glb.RUN_ARTEFACTS)
+unlisted = sorted(PRODUCED - dyb.RUN_ARTEFACTS)
 check(
     "every artefact a run produces is in RUN_ARTEFACTS, or clear_root leaves it behind",
     not unlisted,
     f"not cleared between runs: {unlisted}",
 )
-unknown = sorted(glb.RUN_ARTEFACTS - PRODUCED)
+unknown = sorted(dyb.RUN_ARTEFACTS - PRODUCED)
 check(
     "RUN_ARTEFACTS names nothing a run does not produce, or clear_root eats a user's file",
     not unknown,
@@ -613,8 +613,8 @@ check(
 )
 check(
     "the set is big enough to be the whole bundle",
-    len(glb.RUN_ARTEFACTS) >= 29,
-    f"only {len(glb.RUN_ARTEFACTS)} names",
+    len(dyb.RUN_ARTEFACTS) >= 29,
+    f"only {len(dyb.RUN_ARTEFACTS)} names",
 )
 
 # --- 9b. every lint rule has a fixture that trips it ---------------------------------

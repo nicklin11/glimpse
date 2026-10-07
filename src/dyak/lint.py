@@ -474,7 +474,7 @@ def provenance(report: Report) -> str:
     return json.dumps(
         {
             "stage": 8,
-            "tool": "glimpse-lint-v1",
+            "tool": "dyak-lint-v1",
             "requires_model": False,
             "rules": [
                 "structure/missing-section",

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
-- **Proposal:** [#16](https://github.com/nicklin11/glimpse/issues/16)
+- **Proposal:** [#16](https://github.com/nicklin11/dyak/issues/16)
 - **Scope:** MVP. The cost control for stage 6.
 
 > **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and

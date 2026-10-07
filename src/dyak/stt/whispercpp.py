@@ -42,10 +42,10 @@ from .. import exitcodes as ec
 from .. import runner
 from .backends import DEFAULT_ENDPOINTS, BackendInfo, _env_endpoint
 
-ENV_LANGUAGE = "GLIMPSE_WHISPERCPP_LANGUAGE"
+ENV_LANGUAGE = "DYAK_WHISPERCPP_LANGUAGE"
 
 REMEDIATION = (
-    "start whisper.cpp and point GLIMPSE_WHISPERCPP_URL at it "
+    "start whisper.cpp and point DYAK_WHISPERCPP_URL at it "
     f"(default {DEFAULT_ENDPOINTS['whispercpp']})"
 )
 
@@ -89,7 +89,7 @@ class HttpWhisperCpp:
             raise runner.DependencyError(
                 name=self.name,
                 code=ec.USAGE,
-                message=f"GLIMPSE_WHISPERCPP_URL is not an http(s) URL: {self.base_url!r}",
+                message=f"DYAK_WHISPERCPP_URL is not an http(s) URL: {self.base_url!r}",
                 remediation=REMEDIATION,
             )
         try:
@@ -110,7 +110,7 @@ class HttpWhisperCpp:
     # -- transcription ---------------------------------------------------------
 
     def run(self, wav: Path, *, timeout: float) -> bytes:
-        boundary = f"glimpse-{uuid.uuid4().hex}"
+        boundary = f"dyak-{uuid.uuid4().hex}"
         body = self._multipart(boundary, Path(wav), timeout)
         request = urllib.request.Request(
             f"{self.base_url}/inference",

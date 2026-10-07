@@ -28,7 +28,7 @@ A stage that cannot run must say so rather than write a string that reads like c
 no vision endpoint is configured, `run()` raises `NotConfiguredError`; it does not produce
 `caption: null` in the artefact and call the run clean.
 
-The vision endpoint has its own configuration names (`GLIMPSE_VLM_*`) and falls back to the
+The vision endpoint has its own configuration names (`DYAK_VLM_*`) and falls back to the
 text ones, per ADR-0004 D3: separate names because the roles are separate, not because they
 have to be separate places.
 """
@@ -705,7 +705,7 @@ def write(
             {
                 "provenance": {
                     "stage": 6,
-                    "tool": "glimpse-caption-v2",
+                    "tool": "dyak-caption-v2",
                     "alignment": "segment overlap with word-timed boundary",
                     "caption": outcome.as_dict() if outcome else None,
                     "uncovered_share": round(report.uncovered_share, 4),
@@ -725,7 +725,7 @@ def provenance(settings: Settings, config: llm.Config, outcome: CaptionOutcome) 
     return json.dumps(
         {
             "stage": 6,
-            "tool": "glimpse-caption-v2",
+            "tool": "dyak-caption-v2",
             "method": "segment overlap; boundary at first word >= frame display start",
             "requires_model": True,
             "caption": outcome.as_dict(),

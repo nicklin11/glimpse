@@ -38,29 +38,29 @@ import _env  # noqa: E402
 
 SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
-from glimpse import audio as gla  # noqa: E402
-from glimpse import cli as glc  # noqa: E402
-from glimpse import deps as gld  # noqa: E402
-from glimpse import exitcodes as ec  # noqa: E402
-from glimpse import bundle as glb  # noqa: E402
-from glimpse import frames as glfr  # noqa: E402
-from glimpse import pipeline as glp  # noqa: E402
-from glimpse import audio as glpa  # noqa: E402
-from glimpse import quality as glq  # noqa: E402
-from glimpse import caption as glcap  # noqa: E402
-from glimpse import llm as glle  # noqa: E402
-from glimpse import synth as glsy  # noqa: E402
-from glimpse import lint as glln  # noqa: E402
-from glimpse import audit as glau  # noqa: E402
-from glimpse import link as gllk  # noqa: E402
-from glimpse import report as glro  # noqa: E402
-from glimpse import repair as glrep  # noqa: E402
-from glimpse import stt as glst  # noqa: E402
-from glimpse import probe as glprobe  # noqa: E402
-from glimpse import runner as glr  # noqa: E402
-from glimpse import stt as glstt  # noqa: E402
-from glimpse import workspace as glw  # noqa: E402
-from glimpse.deps import PROCESS_REQUIRES  # noqa: E402
+from dyak import audio as dya  # noqa: E402
+from dyak import cli as dyc  # noqa: E402
+from dyak import deps as dyd  # noqa: E402
+from dyak import exitcodes as ec  # noqa: E402
+from dyak import bundle as dyb  # noqa: E402
+from dyak import frames as dyfr  # noqa: E402
+from dyak import pipeline as dyp  # noqa: E402
+from dyak import audio as dypa  # noqa: E402
+from dyak import quality as dyq  # noqa: E402
+from dyak import caption as dycap  # noqa: E402
+from dyak import llm as dyle  # noqa: E402
+from dyak import synth as dysy  # noqa: E402
+from dyak import lint as dyln  # noqa: E402
+from dyak import audit as dyau  # noqa: E402
+from dyak import link as dylk  # noqa: E402
+from dyak import report as dyro  # noqa: E402
+from dyak import repair as dyrep  # noqa: E402
+from dyak import stt as dyst  # noqa: E402
+from dyak import probe as dyprobe  # noqa: E402
+from dyak import runner as dyr  # noqa: E402
+from dyak import stt as dystt  # noqa: E402
+from dyak import workspace as dyw  # noqa: E402
+from dyak.deps import PROCESS_REQUIRES  # noqa: E402
 
 failures: list[str] = []
 
@@ -76,7 +76,7 @@ def raises(fn, *args, **kwargs):
     """Return the DependencyError fn raised, or None."""
     try:
         fn(*args, **kwargs)
-    except glr.DependencyError as exc:
+    except dyr.DependencyError as exc:
         return exc
     except Exception as exc:  # a different exception type is itself a failure
         return SimpleNamespace(code="WRONG-TYPE", message=f"{type(exc).__name__}: {exc}")
@@ -88,15 +88,15 @@ def raises(fn, *args, **kwargs):
 # CALLS records every invocation so the argv itself can be asserted.
 FAKE: dict[str, list[tuple[bytes, bytes, int]]] = {}
 CALLS: list[tuple[str, list[str]]] = []
-real_run = glr.run
+real_run = dyr.run
 # Captured before anything is monkeypatched: by the time this file reaches the
-# pipeline-ordering test, glp.run is the stub above, and testing against the stub would
+# pipeline-ordering test, dyp.run is the stub above, and testing against the stub would
 # pass vacuously -- exactly the class of bug the test exists to catch.
-REAL_PIPELINE_RUN = glp.run
-REAL_QUALITY_RUN = glp.quality.run
-real_resolve = glr.resolve
-real_which = glr.shutil.which
-real_sleep = glfr.time.sleep
+REAL_PIPELINE_RUN = dyp.run
+REAL_QUALITY_RUN = dyp.quality.run
+real_resolve = dyr.resolve
+real_which = dyr.shutil.which
+real_sleep = dyfr.time.sleep
 
 PRESENT = {"ffmpeg", "ffprobe"}
 
@@ -181,7 +181,7 @@ urllib.request.urlopen = fake_urlopen
 
 def fake_resolve(name, remediation):
     if name not in PRESENT:
-        raise glr.DependencyError(
+        raise dyr.DependencyError(
             name=name,
             code=ec.MISSING_DEPENDENCY,
             message=f"required dependency not found on PATH: {name}",
@@ -190,7 +190,7 @@ def fake_resolve(name, remediation):
     return f"/usr/bin/{name}"
 
 
-def fake_run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
+def fake_run(name, args, *, remediation, timeout=dyr.DEFAULT_TIMEOUT, cwd=None):
     fake_resolve(name, remediation)
     CALLS.append((name, list(args)))
     if name not in FAKE:
@@ -204,7 +204,7 @@ def fake_run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
         raise AssertionError(f"{name} called more times than FAKE programs for: {args}")
     stdout, stderr, rc = queue.pop(0)
     if rc != 0:
-        raise glr.DependencyError(
+        raise dyr.DependencyError(
             name=name,
             code=ec.DEPENDENCY_FAILED,
             message=f"{name} exited {rc} running `{' '.join(args)}`",
@@ -214,33 +214,33 @@ def fake_run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
     return stdout
 
 
-tmp = Path(tempfile.mkdtemp(prefix="glimpse-test-"))
-real_workdir_env = os.environ.get(glw.WORKDIR_ENV)
-os.environ[glw.WORKDIR_ENV] = str(tmp)
+tmp = Path(tempfile.mkdtemp(prefix="dyak-test-"))
+real_workdir_env = os.environ.get(dyw.WORKDIR_ENV)
+os.environ[dyw.WORKDIR_ENV] = str(tmp)
 
-# The first `glimpse process` with nothing configured writes the vault it used to
-# `~/.config/glimpse/settings.toml` -- which is the point of the feature, and a write into
+# The first `dyak process` with nothing configured writes the vault it used to
+# `~/.config/dyak/settings.toml` -- which is the point of the feature, and a write into
 # the developer's home from a test suite that is not testing it. Measured: a run of this
-# file created `~/.config/glimpse/settings.toml` holding the developer's real vault path.
+# file created `~/.config/dyak/settings.toml` holding the developer's real vault path.
 # Point the settings file at the temp dir for the whole suite. Issue #63 is about the other
 # ambient state these suites read; this one is fixed rather than deferred because this
 # change introduced the write.
-real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
-os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
+real_settings_env = os.environ.get(dyd.SETTINGS_PATH_ENV)
+os.environ[dyd.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
 # And the export target itself. Pinning the settings file stops the suite writing a settings
 # file into the developer's home; it does not stop the export, whose target resolves through
-# `$GLIMPSE_VAULT` and then the built-in default. With the export on by default, a run of
+# `$DYAK_VAULT` and then the built-in default. With the export on by default, a run of
 # this file wrote audio.wav, transcript.txt, transcript.json and transcript.raw.json into
-# the real `~/Documents/obs_notes/glimpse/`. Blocks that need a specific vault set it below.
-real_vault_env = os.environ.get(gld.VAULT_ENV)
-os.environ[gld.VAULT_ENV] = str(tmp / "vault")
+# the real `~/Documents/obs_notes/dyak/`. Blocks that need a specific vault set it below.
+real_vault_env = os.environ.get(dyd.VAULT_ENV)
+os.environ[dyd.VAULT_ENV] = str(tmp / "vault")
 (tmp / "vault").mkdir(exist_ok=True)
 
 
 # --- 1. dependency absent vs. present-and-failing -----------------------------
 # these use the REAL runner.run, with only `which` patched, so the absent/failing
 # distinction is exercised through the actual code path rather than a re-stub.
-glr.shutil.which = lambda name: "/usr/bin/true" if name == "true" else None
+dyr.shutil.which = lambda name: "/usr/bin/true" if name == "true" else None
 exc = raises(real_run, "definitely-not-installed-xyz", ["--help"], remediation="pipx install x")
 check("absent dependency -> exit 2", exc.code == ec.MISSING_DEPENDENCY, f"{exc.code}")
 check("absent dependency names itself", "definitely-not-installed-xyz" in exc.message, exc.message)
@@ -252,7 +252,7 @@ check(
 check("absent dependency has no stderr to report", exc.stderr == b"", repr(exc.stderr))
 
 # a real binary that fails: /bin/false exits 1 with empty stderr
-glr.shutil.which = lambda name: "/bin/false" if name == "false" else None
+dyr.shutil.which = lambda name: "/bin/false" if name == "false" else None
 exc = raises(real_run, "false", [], remediation="n/a")
 check("present-but-failing -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check(
@@ -263,7 +263,7 @@ check(
 noisy = tmp / "noisy.sh"
 noisy.write_bytes(b"#!/bin/sh\nprintf 'boom: \\377\\376 bad\\n' >&2\nexit 7\n")
 noisy.chmod(0o755)
-glr.shutil.which = lambda name: str(noisy) if name == "noisy" else None
+dyr.shutil.which = lambda name: str(noisy) if name == "noisy" else None
 exc = raises(real_run, "noisy", [], remediation="n/a")
 check("failing dependency -> exit 3 (real stderr)", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check(
@@ -273,8 +273,8 @@ check(
 )
 check("dependency exit code is reported", "exited 7" in exc.message, exc.message)
 
-glr.shutil.which = real_which
-glfr.time.sleep = real_sleep
+dyr.shutil.which = real_which
+dyfr.time.sleep = real_sleep
 
 
 # --- 2. report(): dependency stderr is reproduced verbatim ---------------------
@@ -297,7 +297,7 @@ raw = b"  indented: '{\"a\": 1}'\nffmpeg: cannot open shared object file\n\xff\x
 fake = FakeStderr()
 real_stderr, sys.stderr = sys.stderr, fake
 try:
-    glr.report(glr.DependencyError("ffmpeg", ec.DEPENDENCY_FAILED, "boom", stderr=raw))
+    dyr.report(dyr.DependencyError("ffmpeg", ec.DEPENDENCY_FAILED, "boom", stderr=raw))
 finally:
     sys.stderr = real_stderr
 check(
@@ -307,14 +307,14 @@ check(
 )
 check(
     "our own lines are prefixed, its bytes are not",
-    fake.text and fake.text[0].startswith("glimpse: boom"),
+    fake.text and fake.text[0].startswith("dyak: boom"),
 )
 
 labelled = FakeStderr()
 real_stderr, sys.stderr = sys.stderr, labelled
 try:
-    glr.report(
-        glr.DependencyError(
+    dyr.report(
+        dyr.DependencyError(
             "ffprobe", ec.DEPENDENCY_FAILED, "ffprobe printed junk", stdout=b"<html>err</html>"
         )
     )
@@ -332,7 +332,7 @@ check("captured stdout bytes still arrive", b"<html>err</html>" in labelled.buff
 fake2 = FakeStderr()
 real_stderr, sys.stderr = sys.stderr, fake2
 try:
-    glr.report(glr.DependencyError("ffmpeg", ec.DEPENDENCY_FAILED, "boom"))
+    dyr.report(dyr.DependencyError("ffmpeg", ec.DEPENDENCY_FAILED, "boom"))
 finally:
     sys.stderr = real_stderr
 check(
@@ -344,7 +344,7 @@ check("a silent dependency emits no bytes", fake2.buffer.getvalue() == b"")
 
 
 # --- 3. workspace: retained on failure, removed on success ---------------------
-work = glw.WorkDir()
+work = dyw.WorkDir()
 kept = work.path
 work.retain("because")
 check("retained work dir still exists", kept.exists())
@@ -352,25 +352,25 @@ check("note names the reason", "because" in work.note(), work.note())
 work.release()
 check("release() does not remove a retained dir", kept.exists())
 
-work2 = glw.WorkDir()
+work2 = dyw.WorkDir()
 gone = work2.path
 work2.release()
 check("release() removes the work dir on success", not gone.exists())
 check("note says removed", "removed" in work2.note(), work2.note())
 
-work3 = glw.WorkDir(keep=True)
+work3 = dyw.WorkDir(keep=True)
 kept3 = work3.path
 work3.release()
 check("--keep-workdir survives release", kept3.exists())
 check("work dir is 0700", oct(kept3.stat().st_mode)[-3:] == "700", oct(kept3.stat().st_mode)[-3:])
 
-real_rmtree = glw.shutil.rmtree
+real_rmtree = dyw.shutil.rmtree
 try:
-    glw.shutil.rmtree = lambda p: (_ for _ in ()).throw(OSError(30, "Read-only file system"))
-    stuck = glw.WorkDir()
+    dyw.shutil.rmtree = lambda p: (_ for _ in ()).throw(OSError(30, "Read-only file system"))
+    stuck = dyw.WorkDir()
     stuck.release()
 finally:
-    glw.shutil.rmtree = real_rmtree
+    dyw.shutil.rmtree = real_rmtree
 check("a failed rmtree does NOT claim removal", stuck.retained, stuck.note())
 check(
     "a failed rmtree is reported as retained", "KEPT for inspection" in stuck.note(), stuck.note()
@@ -382,7 +382,7 @@ shutil.rmtree(kept, ignore_errors=True)
 shutil.rmtree(kept3, ignore_errors=True)
 
 # --- 4. stage 1: probe --------------------------------------------------------
-glr.run = fake_run
+dyr.run = fake_run
 install_fake(
     {
         "ffprobe": [
@@ -414,13 +414,13 @@ install_fake(
 )
 src = tmp / "lecture.webm"
 src.write_bytes(b"not really a video")
-info = glprobe.probe(src)
+info = dyprobe.probe(src)
 check("probe reads duration as seconds", info.duration == 4396.0, str(info.duration))
 check("probe sees video", info.has_video and info.video_codec == "vp8", info.summary())
 check("probe sees audio", info.has_audio and info.audio_codec == "opus", info.summary())
 check("probe reads sample rate", info.sample_rate == 48000, str(info.sample_rate))
 check("probe reads dimensions", (info.width, info.height) == (1920, 1080), info.summary())
-check("a video source is accepted", raises(glprobe.require_supported, info) is None)
+check("a video source is accepted", raises(dyprobe.require_supported, info) is None)
 
 check(
     "ffprobe is invoked with -i and the resolved path",
@@ -432,11 +432,11 @@ check(
 install_fake(
     {"ffprobe": [(json.dumps({"streams": [], "format": {"duration": "NAN"}}).encode(), b"", 0)]}
 )
-check("NAN duration degrades to 0.0", glprobe.probe(src).duration == 0.0)
+check("NAN duration degrades to 0.0", dyprobe.probe(src).duration == 0.0)
 
 # ffprobe exiting 0 with unparseable output is a broken ffprobe, not bad input
 install_fake({"ffprobe": [(b"<html>proxy error</html>", b"", 0)]})
-exc = raises(glprobe.probe, src)
+exc = raises(dyprobe.probe, src)
 check("non-JSON from ffprobe -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check("non-JSON report keeps the payload", b"proxy error" in exc.stderr, repr(exc.stderr))
 
@@ -453,7 +453,7 @@ for bad in (
     b'{"streams": 3, "format": {}}',
 ):
     install_fake({"ffprobe": [(bad, b"", 0)]})
-    exc = raises(glprobe.probe, src)
+    exc = raises(dyprobe.probe, src)
     check(
         f"ffprobe payload {bad.decode()!r} -> exit 3, not a traceback",
         exc is not None and exc.code == ec.DEPENDENCY_FAILED,
@@ -463,14 +463,14 @@ for bad in (
 # A correctly-shaped payload with junk entries degrades rather than raising:
 # absent or unusable streams are a fact about the file, not a broken ffprobe.
 install_fake({"ffprobe": [(b'{"streams": [null, 3, "x"]}', b"", 0)]})
-degraded = glprobe.probe(src)
+degraded = dyprobe.probe(src)
 check("junk stream entries degrade instead of raising", not degraded.has_audio, degraded.summary())
 check("an absent format degrades to duration 0", degraded.duration == 0.0, str(degraded.duration))
 install_fake({"ffprobe": [(b'{"streams": [], "format": "nope"}', b"", 0)]})
-exc = raises(glprobe.probe, src)
+exc = raises(dyprobe.probe, src)
 check("a format of the wrong type -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
-exc = raises(glprobe.probe, tmp / "no-such-file.webm")
+exc = raises(dyprobe.probe, tmp / "no-such-file.webm")
 check("missing input -> exit 1 (usage)", exc.code == ec.USAGE, f"{exc.code}")
 check("missing input names the path", "no-such-file.webm" in exc.message, exc.message)
 
@@ -479,8 +479,8 @@ check("missing input names the path", "no-such-file.webm" in exc.message, exc.me
 # moves, which moves every frame timestamp and every word boundary downstream. A bundle that
 # cannot say what it was given cannot be reasoned about offline (#80).
 _src = json.loads(
-    glprobe.provenance(
-        glprobe.MediaInfo(
+    dyprobe.provenance(
+        dyprobe.MediaInfo(
             path=Path("lecture.mp4"),
             duration=4520.1,
             has_video=True,
@@ -515,8 +515,8 @@ check(
     str(_src.get("ffmpeg")),
 )
 _src2 = json.loads(
-    glprobe.provenance(
-        glprobe.MediaInfo(
+    dyprobe.provenance(
+        dyprobe.MediaInfo(
             path=Path("lecture.mp4"),
             duration=4520.1,
             has_video=True,
@@ -528,7 +528,7 @@ _src2 = json.loads(
             sample_rate=48000,
             channels=2,
         ),
-        gla.AudioArtefact(
+        dya.AudioArtefact(
             path=Path("audio.wav"),
             duration=4520.0,
             sample_rate=16000,
@@ -571,8 +571,8 @@ install_fake(
         ]
     }
 )
-audio_only = glprobe.probe(src)
-exc = raises(glprobe.require_supported, audio_only)
+audio_only = dyprobe.probe(src)
+exc = raises(dyprobe.require_supported, audio_only)
 check("audio-only input -> exit 1", exc.code == ec.USAGE, f"{exc.code}")
 check("audio-only rejection cites the ADR boundary", "Not doing" in exc.message, exc.message)
 
@@ -592,8 +592,8 @@ install_fake(
         ]
     }
 )
-silent_video = glprobe.probe(src)
-exc = raises(glprobe.require_supported, silent_video)
+silent_video = dyprobe.probe(src)
+exc = raises(dyprobe.require_supported, silent_video)
 check("video with no audio -> exit 1", exc.code == ec.USAGE, f"{exc.code}")
 check("video with no audio says nothing to transcribe", "transcribe" in exc.message, exc.message)
 
@@ -643,7 +643,7 @@ install_fake(
 )
 dest = tmp / "audio.wav"
 dest.write_bytes(wav_bytes(25.0))
-artefact = gla.verify(dest)
+artefact = dya.verify(dest)
 check("verify accepts a real wav", artefact.duration == 25.0, artefact.summary())
 check(
     "verify reports 16 kHz mono",
@@ -694,7 +694,7 @@ install_fake(
     }
 )
 CALLS.clear()
-gla.extract(src, dest)
+dya.extract(src, dest)
 ffmpeg_call = next(a for name, a in CALLS if name == "ffmpeg")
 check(
     "ffmpeg gets -nostdin (else it eats the parent's stdin)",
@@ -726,7 +726,7 @@ try:
     (tmp / "out.wav").write_bytes(wav_bytes(2.0))
     install_fake({"ffmpeg": [(b"", b"", 0)], "ffprobe": [(PCM_PROBE, b"", 0)]})
     CALLS.clear()
-    gla.extract(Path("lecture.webm"), Path("out.wav"))
+    dya.extract(Path("lecture.webm"), Path("out.wav"))
     rel_call = next(a for name, a in CALLS if name == "ffmpeg")
 finally:
     os.chdir(saved_cwd)
@@ -758,18 +758,18 @@ check(
 # the test itself had put there.
 install_fake({"ffmpeg": [(b"", b"", 0)], "ffprobe": [(b"{}", b"", 0)]})
 absent = tmp / "never-written.wav"
-exc = raises(gla.extract, src, absent)
+exc = raises(dya.extract, src, absent)
 check("ffmpeg exiting 0 without writing -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check("the missing artefact is named", str(absent) in exc.message, exc.message)
 check("nothing was invented on disk", not absent.exists())
 
 header_only = tmp / "empty.wav"
 header_only.write_bytes(wav_bytes(0))
-exc = raises(gla.verify, header_only)
+exc = raises(dya.verify, header_only)
 check("header-only wav -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check("header-only wav is blamed on exit-code trust", "exit code was 0" in exc.message, exc.message)
 
-exc = raises(gla.verify, tmp / "ffmpeg-wrote-nothing.wav")
+exc = raises(dya.verify, tmp / "ffmpeg-wrote-nothing.wav")
 check("no file at all -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
 wrong = tmp / "wrong-rate.wav"
@@ -797,7 +797,7 @@ install_fake(
         ]
     }
 )
-exc = raises(gla.verify, wrong)
+exc = raises(dya.verify, wrong)
 check("wrong sample rate -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check("wrong rate states expected vs actual", "48000Hz/2ch" in exc.message, exc.message)
 
@@ -847,16 +847,16 @@ install_fake(
         ]
     }
 )
-long_info = glprobe.probe(src)
-short_artefact = gla.AudioArtefact(dest, 100.0, 16000, 1, 800238)
-warn = gla.check_coverage(long_info, short_artefact)
+long_info = dyprobe.probe(src)
+short_artefact = dya.AudioArtefact(dest, 100.0, 16000, 1, 800238)
+warn = dya.check_coverage(long_info, short_artefact)
 check(
     "a short extraction warns",
     warn is not None and "may not be the lecture audio" in warn,
     str(warn),
 )
-full_artefact = gla.AudioArtefact(dest, 4396.0, 16000, 1, 140_000_000)
-ok = gla.check_coverage(long_info, full_artefact)
+full_artefact = dya.AudioArtefact(dest, 4396.0, 16000, 1, 140_000_000)
+ok = dya.check_coverage(long_info, full_artefact)
 check("a full-length extraction does not warn", ok is None, str(ok))
 
 
@@ -867,8 +867,8 @@ check("a full-length extraction does not warn", ok is None, str(ok))
 # not of the code under test: with whisper.cpp up the suite would POST the synthetic wav
 # to the real server. The backend is pinned here so the section tests one backend, and
 # autodetection is tested separately in section 9 with both branches controlled.
-real_stt_backend = os.environ.get("GLIMPSE_STT")
-os.environ["GLIMPSE_STT"] = "whispercpp"
+real_stt_backend = os.environ.get("DYAK_STT")
+os.environ["DYAK_STT"] = "whispercpp"
 
 REAL_SEGMENTS = [
     {
@@ -901,7 +901,7 @@ REAL_SEGMENTS = [
 payload = json.dumps(REAL_SEGMENTS, ensure_ascii=False).encode()
 install_http([payload])
 CALLS.clear()
-tr = glstt.transcribe(dest, audio_duration=25.0)
+tr = dystt.transcribe(dest, audio_duration=25.0)
 # Acceptance: timings are requested from `/inference` as verbose_json, never reparsed out
 # of plain transcript text. A plain-text form carries no segments at all, so these
 # assertions are what would catch a regression to a text-only request. These replace the
@@ -947,18 +947,18 @@ check(
 check("no anomalies on a clean payload", tr.anomalies == (), str(tr.anomalies))
 
 install_http([b"   \n"])
-exc = raises(glstt.transcribe, dest, audio_duration=25.0)
+exc = raises(dystt.transcribe, dest, audio_duration=25.0)
 check("empty stdout -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
 install_http([b"not json at all"])
-exc = raises(glstt.transcribe, dest, audio_duration=25.0)
+exc = raises(dystt.transcribe, dest, audio_duration=25.0)
 check("non-JSON stdout -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
 # A JSON object is no longer a shape error: whisper.cpp's own /inference returns
 # {task, language, duration, text, segments, ...}. A bare array is the other accepted
 # shape. Both are accepted, and the envelope is recorded as an anomaly.
 install_http([b'{"text": "plain"}'])
-exc = raises(glstt.transcribe, dest, audio_duration=25.0)
+exc = raises(dystt.transcribe, dest, audio_duration=25.0)
 check(
     "an object payload with no timings -> exit 3",
     exc is not None and exc.code == ec.DEPENDENCY_FAILED,
@@ -971,13 +971,13 @@ check(
 )
 
 install_http([b"[]"])
-exc = raises(glstt.transcribe, dest, audio_duration=25.0)
+exc = raises(dystt.transcribe, dest, audio_duration=25.0)
 check("empty segments array -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 
 install_http(
     [json.dumps([{"id": 0, "text": " hi", "start": 0.0, "end": 1.0, "words": []}]).encode()]
 )
-exc = raises(glstt.transcribe, dest, audio_duration=25.0)
+exc = raises(dystt.transcribe, dest, audio_duration=25.0)
 check(
     "zero timed words -> exit 3",
     exc is not None and exc.code == ec.DEPENDENCY_FAILED,
@@ -1016,7 +1016,7 @@ messy = [
     "not an object",
 ]
 install_http([json.dumps(messy).encode()])
-tr = glstt.transcribe(dest, audio_duration=25.0)
+tr = dystt.transcribe(dest, audio_duration=25.0)
 check("blank-text segments are dropped", len(tr.segments) == 3, str(len(tr.segments)))
 check("anomalies are collected, not fatal", len(tr.anomalies) >= 4, str(tr.anomalies))
 check(
@@ -1028,8 +1028,8 @@ check("a backwards end is clamped", tr.segments[2].end >= tr.segments[2].start, 
 
 check(
     "timestamp formatting",
-    glstt.format_timestamp(4396.0) == "01:13:16",
-    glstt.format_timestamp(4396.0),
+    dystt.format_timestamp(4396.0) == "01:13:16",
+    dystt.format_timestamp(4396.0),
 )
 
 # `1e999` and the bare literals are valid JSON *input* and parse to inf / NaN.
@@ -1043,14 +1043,14 @@ for literal in (b"Infinity", b"-Infinity", b"NaN", b"1e999"):
         + b', "words": [{"word": " x", "start": 0.0, "end": 1.0}]}]'
     )
     install_http([nasty, nasty])
-    got = raises(glstt.transcribe, dest, audio_duration=25.0)
+    got = raises(dystt.transcribe, dest, audio_duration=25.0)
     check(
         f"a non-finite end ({literal.decode()}) does not crash the run",
         got is None,
         str(got),
     )
     if got is None:
-        tr_n = glstt.transcribe(dest, audio_duration=25.0)
+        tr_n = dystt.transcribe(dest, audio_duration=25.0)
         check(
             f"a non-finite end ({literal.decode()}) is recorded as an anomaly",
             any("non-finite end" in a for a in tr_n.anomalies),
@@ -1064,7 +1064,7 @@ for literal in (b"Infinity", b"-Infinity", b"NaN", b"1e999"):
                 for s_ in tr_n.segments
             ),
         )
-        paths_n = glstt.write(tr_n, tmp)
+        paths_n = dystt.write(tr_n, tmp)
         text_n = paths_n["json"].read_text(encoding="utf-8")
         check(
             f"transcript.json stays valid JSON after a {literal.decode()}",
@@ -1074,8 +1074,8 @@ for literal in (b"Infinity", b"-Infinity", b"NaN", b"1e999"):
 
 # And the clamping path still has to produce a writable, valid artefact.
 install_http([payload])
-tr = glstt.transcribe(dest, audio_duration=25.0)
-paths = glstt.write(tr, tmp)
+tr = dystt.transcribe(dest, audio_duration=25.0)
+paths = dystt.write(tr, tmp)
 check(
     # `pipeline.run` publishes whatever `write()` returns, so a file written here and not
     # named here never reaches the bundle. That is how stage 3 had no provenance at all
@@ -1143,26 +1143,26 @@ check(
 
 
 # --- 7. cli: process is honest about being unfinished --------------------------
-real_run_all = glc.run_all
-real_pipeline_run = glp.run
+real_run_all = dyc.run_all
+real_pipeline_run = dyp.run
 
 
 def healthy_checks(*, required=None):
     """Accept `required` so the stub tracks run_all's signature."""
-    return [glc.Check(name="ffmpeg", ok=True, detail="ok", path="/usr/bin/ffmpeg", version="7.1.1")]
+    return [dyc.Check(name="ffmpeg", ok=True, detail="ok", path="/usr/bin/ffmpeg", version="7.1.1")]
 
 
-glc.run_all = healthy_checks
+dyc.run_all = healthy_checks
 
 work_root = tmp / "cliruns"
-os.environ[glw.WORKDIR_ENV] = str(work_root)
+os.environ[dyw.WORKDIR_ENV] = str(work_root)
 
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process"])
+    rc = dyc.main(["process"])
 check("process without a path -> exit 1", rc == ec.USAGE, f"rc={rc}")
 check(
-    "process without a path shows usage", "glimpse process PATH" in err.getvalue(), err.getvalue()
+    "process without a path shows usage", "dyak process PATH" in err.getvalue(), err.getvalue()
 )
 
 # The stub writes real files into the real work dir. Without this the directory
@@ -1196,9 +1196,9 @@ def fake_pipeline(source, work, **kw):
         transcript=SimpleNamespace(anomalies=(), summary=lambda: "3 segments, 40 timed words"),
         # Real Report objects, not stubs: the exit code is decided from these, so a
         # SimpleNamespace stand-in would let a broken audit pass every test here.
-        audit=glau.Report(),
-        repair=glrep.Report(),
-        link=gllk.Report(),
+        audit=dyau.Report(),
+        repair=dyrep.Report(),
+        link=dylk.Report(),
         # A synthesised note, not a template: exit 0 is conditional on this being False,
         # so a stand-in without the attribute would crash rather than assert.
         note=SimpleNamespace(degraded=False, synthesizer="test", notes=()),
@@ -1207,22 +1207,22 @@ def fake_pipeline(source, work, **kw):
         # before the quality gate -- so a stand-in without it would crash rather than
         # assert. captioned=1 because ok is `captioned + reused > 0`, and a fake run that
         # captioned nothing is a real failure, not a neutral default.
-        caption=glcap.Report(),
-        caption_outcome=glcap.CaptionOutcome(
+        caption=dycap.Report(),
+        caption_outcome=dycap.CaptionOutcome(
             captioned=1, reused=0, failed=0, model="test-model", served_model=None
         ),
         # A verified run. `ok` is computed, not stubbed, so flipping it below is a real
         # failure rather than a flag: that is the ADR-0001 D3 case stage 12 exists for.
-        report=glro.Report(),
+        report=dyro.Report(),
     )
 
 
-glp.run = fake_pipeline
+dyp.run = fake_pipeline
 
 # --- 7a. the default (removed) work dir, as the control for 7b ---------------
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src)])
+    rc = dyc.main(["process", str(src)])
 text = out.getvalue()
 check(
     # With every stage built, a run whose artefacts verified DOES exit 0. This is the
@@ -1246,12 +1246,12 @@ def _stage7_promotes(with_transcript: bool, name: str) -> dict[str, Path]:
     root = tmp / name
     sdir = root / "synth"
     sdir.mkdir(parents=True, exist_ok=True)
-    for extra in glsy.STAGE7_ARTEFACTS:
+    for extra in dysy.STAGE7_ARTEFACTS:
         (sdir / extra).write_text("{}", encoding="utf-8")
     if with_transcript:
-        (sdir / glsy.LLM_TRANSCRIPT_NAME).write_text('{"calls": []}\n', encoding="utf-8")
-    bundle = glb.Bundle.open(src, output_dir=str(root / "bundle"), overwrite=True)
-    published = glp.publishes_stage7_transcript(sdir, bundle)
+        (sdir / dysy.LLM_TRANSCRIPT_NAME).write_text('{"calls": []}\n', encoding="utf-8")
+    bundle = dyb.Bundle.open(src, output_dir=str(root / "bundle"), overwrite=True)
+    published = dyp.publishes_stage7_transcript(sdir, bundle)
     return {key: Path(value).name for key, value in published.items()}
 
 
@@ -1263,19 +1263,19 @@ check(
     # `audit-llm-transcript.json` with 8 stage-9 calls and no stage-7 equivalent.
     # ADR-0004 D4 -- a regression gate that cannot attribute a difference is not a gate.
     "the stage-7 transcript is published into the bundle when the LLM ran",
-    glsy.LLM_TRANSCRIPT_NAME in _kept,
+    dysy.LLM_TRANSCRIPT_NAME in _kept,
     str(sorted(_kept)),
 )
 check(
     "and the note and its two reports are published alongside it",
-    set(_kept) == set(glsy.STAGE7_ARTEFACTS) | {glsy.LLM_TRANSCRIPT_NAME},
+    set(_kept) == set(dysy.STAGE7_ARTEFACTS) | {dysy.LLM_TRANSCRIPT_NAME},
     str(sorted(_kept)),
 )
 check(
     # Guarded by `.is_file()`, because the template synthesizer makes no calls and writes no
     # transcript. Promoting unconditionally would publish a file that does not exist.
     "a template run publishes no transcript",
-    glsy.LLM_TRANSCRIPT_NAME not in _stage7_promotes(False, "s7b"),
+    dysy.LLM_TRANSCRIPT_NAME not in _stage7_promotes(False, "s7b"),
     str(sorted(_stage7_promotes(False, "s7c"))),
 )
 
@@ -1290,10 +1290,10 @@ def unverified_pipeline(source, work, **kw):
     return result
 
 
-glp.run = unverified_pipeline
+dyp.run = unverified_pipeline
 uout = io.StringIO()
 with redirect_stdout(uout), redirect_stderr(uout):
-    rc_unverified = glc.main(["process", str(src)])
+    rc_unverified = dyc.main(["process", str(src)])
 check(
     "a run whose artefacts did NOT verify does NOT exit 0",
     rc_unverified == ec.USAGE,
@@ -1304,8 +1304,8 @@ check(
     "MISSING note" in uout.getvalue(),
     uout.getvalue(),
 )
-glp.run = fake_pipeline
-rc_ok_again = glc.main(["process", str(src)])
+dyp.run = fake_pipeline
+rc_ok_again = dyc.main(["process", str(src)])
 check("and it is recoverable, not latched", rc_ok_again == ec.OK, f"rc={rc_ok_again}")
 check("the transcript summary is reported", "3 segments, 40 timed words" in text, text)
 # A path into a directory release() just deleted reads like an output location
@@ -1317,9 +1317,9 @@ check(
     text,
 )
 # glob must match the directories themselves, not their children: a retained but
-# empty `glimpse-*` dir yields no `glimpse-*/*` matches, so the old form of this
+# empty `dyak-*` dir yields no `dyak-*/*` matches, so the old form of this
 # assertion passed even with release() neutered.
-leftovers = list(work_root.glob("glimpse-*"))
+leftovers = list(work_root.glob("dyak-*"))
 check("the work dir itself is removed on success", not leftovers, str(leftovers))
 
 # --- 7b. --keep-workdir, which is the positive control -----------------------
@@ -1327,7 +1327,7 @@ outdir = tmp / "bundle"
 
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
+    rc = dyc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
 text = out.getvalue()
 check("--keep-workdir reports that it kept the dir", "KEPT for inspection" in text, text)
 # The deliverables are published into the bundle as they are produced, so they are NOT in
@@ -1335,7 +1335,7 @@ check("--keep-workdir reports that it kept the dir", "KEPT for inspection" in te
 # work dir still holds is scratch, chiefly the 137.9 MiB audio.wav. Which file went where
 # is asserted on the filesystem below, not on stdout: stdout names the bundle root, and
 # listing 20 frames there would be noise.
-kept = list(work_root.glob("glimpse-*"))
+kept = list(work_root.glob("dyak-*"))
 check("--keep-workdir leaves exactly one work dir", len(kept) == 1, str(kept))
 check(
     "the retained work dir holds scratch, not deliverables",
@@ -1349,22 +1349,22 @@ check(
 )
 
 # --- 7c. a dependency failure ------------------------------------------------
-glp.run = lambda source, work, **kw: (_ for _ in ()).throw(
-    glr.DependencyError(
+dyp.run = lambda source, work, **kw: (_ for _ in ()).throw(
+    dyr.DependencyError(
         "stt", ec.DEPENDENCY_FAILED, "the STT endpoint exited 1", stderr=b"recording in progress\n"
     )
 )
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src)])
+    rc = dyc.main(["process", str(src)])
 msg = err.getvalue()
 check("a failed stage exits 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
 check("the failure keeps its work dir", "KEPT for inspection" in msg, msg)
 check("the endpoint's stderr is passed through", "recording in progress" in msg, msg)
 check(
     "a retained-after-failure dir is reported as kept",
-    list(work_root.glob("glimpse-*")),
-    str(list(work_root.glob("glimpse-*"))),
+    list(work_root.glob("dyak-*")),
+    str(list(work_root.glob("dyak-*"))),
 )
 
 
@@ -1373,11 +1373,11 @@ def boom(source, work, **kw):
     raise ValueError("something unforeseen")
 
 
-glp.run = boom
+dyp.run = boom
 out, err = io.StringIO(), io.StringIO()
 try:
     with redirect_stdout(out), redirect_stderr(err):
-        glc.main(["process", str(src)])
+        dyc.main(["process", str(src)])
     check("an unexpected exception propagates", False, "was swallowed")
 except ValueError:
     check("an unexpected exception propagates", True)
@@ -1394,10 +1394,10 @@ def interrupted(source, work, **kw):
     raise KeyboardInterrupt
 
 
-glp.run = interrupted
+dyp.run = interrupted
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src)])
+    rc = dyc.main(["process", str(src)])
 check("Ctrl-C exits 130, declared in exitcodes", rc == ec.INTERRUPTED, f"rc={rc}")
 check(
     "130 is in the exit-code table",
@@ -1407,27 +1407,27 @@ check(
 check("Ctrl-C keeps the work dir", "KEPT for inspection" in err.getvalue(), err.getvalue())
 check("Ctrl-C says why it was kept", "interrupted by the user" in err.getvalue(), err.getvalue())
 
-glp.run = fake_pipeline
+dyp.run = fake_pipeline
 
 
 # --- 7e. the preflight gate ---------------------------------------------------
 def broken(*, required=None):
     return [
-        glc.Check(
+        dyc.Check(
             name="stt",
             ok=False,
             detail="no transcription endpoint is reachable",
-            remediation="start whisper.cpp and set GLIMPSE_WHISPERCPP_URL",
+            remediation="start whisper.cpp and set DYAK_WHISPERCPP_URL",
             code=ec.MISSING_DEPENDENCY,
         )
     ]
 
 
-glc.run_all = broken
-glp.run = fake_pipeline
+dyc.run_all = broken
+dyp.run = fake_pipeline
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src)])
+    rc = dyc.main(["process", str(src)])
 check("preflight blocks the run -> exit 2", rc == ec.MISSING_DEPENDENCY, f"rc={rc}")
 check(
     "preflight refuses rather than degrading", "refusing to start" in err.getvalue(), err.getvalue()
@@ -1438,14 +1438,14 @@ check("preflight names doctor", "doctor" in err.getvalue(), err.getvalue())
 # The gate must not be broader than the run: stages 0-3 write nothing to the
 # vault and never call the gateway, so neither may refuse the run.
 def missing_later_stages(*, required=None):
-    return gld.run_all(required=required)
+    return dyd.run_all(required=required)
 
 
-_real_run_all = glc.run_all
+_real_run_all = dyc.run_all
 
 
 def isolated_run_all(*, required=None):
-    """gld.run_all against a guaranteed-bad vault and an unreachable gateway.
+    """dyd.run_all against a guaranteed-bad vault and an unreachable gateway.
 
     Deliberately the real implementation: an earlier version of this test used a
     stub that reimplemented the required/not-required decision, so it passed
@@ -1458,11 +1458,11 @@ def isolated_run_all(*, required=None):
     missing, exit 2" instead. CI caught precisely that: the runner has no ffmpeg,
     and this test came back rc=2 on all three Python versions.
     """
-    return gld.run_all(required=required)
+    return dyd.run_all(required=required)
 
 
-real_deps_run = gld._run
-real_deps_which = gld.shutil.which
+real_deps_run = dyd._run
+real_deps_which = dyd.shutil.which
 
 
 def fake_deps_run(argv):
@@ -1472,25 +1472,25 @@ def fake_deps_run(argv):
     return real_deps_run(argv)
 
 
-gld._run = fake_deps_run
-gld.shutil.which = lambda n: f"/usr/bin/{n}" if n in ("ffmpeg", "ffprobe") else real_deps_which(n)
+dyd._run = fake_deps_run
+dyd.shutil.which = lambda n: f"/usr/bin/{n}" if n in ("ffmpeg", "ffprobe") else real_deps_which(n)
 
 
-saved_vault = os.environ.get(gld.VAULT_ENV)
-# The dead dependency here is the model endpoint, not a "gateway". It was `GLIMPSE_GATEWAY_URL`
+saved_vault = os.environ.get(dyd.VAULT_ENV)
+# The dead dependency here is the model endpoint, not a "gateway". It was `DYAK_GATEWAY_URL`
 # until #68: a name nothing wrote and nothing documented, checked under the name `gateway`
-# while the endpoint the pipeline uses is `GLIMPSE_LLM_ENDPOINT`. The behaviour under test --
+# while the endpoint the pipeline uses is `DYAK_LLM_ENDPOINT`. The behaviour under test --
 # a dependency the current run cannot use is reported and not fatal -- is the same one, and
 # `check_llm` is the check that actually observes it.
-saved_llm = os.environ.get(gld.LLM_ENV)
-os.environ[gld.VAULT_ENV] = str(tmp / "definitely-no-vault")
-os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
-glc.run_all = isolated_run_all
-before = len(list(work_root.glob("glimpse-*")))
+saved_llm = os.environ.get(dyd.LLM_ENV)
+os.environ[dyd.VAULT_ENV] = str(tmp / "definitely-no-vault")
+os.environ[dyd.LLM_ENV] = "http://127.0.0.1:1/inference"
+dyc.run_all = isolated_run_all
+before = len(list(work_root.glob("dyak-*")))
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
-after = len(list(work_root.glob("glimpse-*")))
+    rc = dyc.main(["process", str(src), "--keep-workdir", "--output-dir", str(outdir)])
+after = len(list(work_root.glob("dyak-*")))
 check(
     # A dead model endpoint costs the synthesis stages, not the run. It must not turn a
     # verified pipeline into a failure -- that would be the opposite of the ADR-0001 D8 line.
@@ -1506,7 +1506,7 @@ check(
 check(
     # `export_to_vault` ends in `mkdir(parents=True)`. Exporting to a path that does not
     # exist therefore creates it -- and `check_vault` then reports it exists, is a directory
-    # and is writable, so the next `glimpse doctor` certifies an empty vault. That turns a
+    # and is writable, so the next `dyak doctor` certifies an empty vault. That turns a
     # configuration mistake into a state the tool then calls healthy. Measured: this run
     # created the fixture directory, and "vault is non-fatal for process" then failed with
     # detail "writable" instead of reporting it missing.
@@ -1530,40 +1530,40 @@ check(
     # stages 0-12 do not use it" -- false in both halves, and printed on a run whose
     # stage 6 had just successfully captioned every frame.
     "no dead `gateway` check is left to report",
-    "gateway" not in {c.name for c in gld.run_all()},
-    str(sorted(c.name for c in gld.run_all())),
+    "gateway" not in {c.name for c in dyd.run_all()},
+    str(sorted(c.name for c in dyd.run_all())),
 )
 
-# ...but `glimpse doctor` has no such excuse: it exists to report the whole
+# ...but `dyak doctor` has no such excuse: it exists to report the whole
 # environment, so the same vault must be fatal there.
-strict = {c.name: c for c in gld.run_all()}
+strict = {c.name: c for c in dyd.run_all()}
 check("doctor still sees the vault as fatal", strict["vault"].fatal, strict["vault"].detail)
 check("doctor still sees the model endpoint as fatal", strict["llm"].fatal, strict["llm"].detail)
 for name in ("ffmpeg", "ffprobe"):
-    check(f"{name} is fatal for process", not gld.run_all(required=PROCESS_REQUIRES) or True)
-for chk in gld.run_all(required=PROCESS_REQUIRES):
+    check(f"{name} is fatal for process", not dyd.run_all(required=PROCESS_REQUIRES) or True)
+for chk in dyd.run_all(required=PROCESS_REQUIRES):
     if chk.name in PROCESS_REQUIRES:
         check(f"{chk.name} is fatal for process", chk.fatal)
     else:
         check(f"{chk.name} is non-fatal for process", not chk.fatal, chk.detail)
 if saved_vault is None:
-    os.environ.pop(gld.VAULT_ENV, None)
+    os.environ.pop(dyd.VAULT_ENV, None)
 else:
-    os.environ[gld.VAULT_ENV] = saved_vault
+    os.environ[dyd.VAULT_ENV] = saved_vault
 if saved_llm is None:
-    os.environ.pop(gld.LLM_ENV, None)
+    os.environ.pop(dyd.LLM_ENV, None)
 else:
-    os.environ[gld.LLM_ENV] = saved_llm
-glc.run_all = _real_run_all
+    os.environ[dyd.LLM_ENV] = saved_llm
+dyc.run_all = _real_run_all
 
 # --- 7f. a bad --workdir is a usage error, not a traceback --------------------
-glc.run_all = healthy_checks
+dyc.run_all = healthy_checks
 not_a_dir = tmp / "not-a-dir"
 not_a_dir.write_text("x")
 out, err = io.StringIO(), io.StringIO()
 try:
     with redirect_stdout(out), redirect_stderr(err):
-        rc = glc.main(["process", str(src), "--workdir", str(not_a_dir)])
+        rc = dyc.main(["process", str(src), "--workdir", str(not_a_dir)])
 except OSError as exc:
     # A traceback escaping main() would abort the rest of the suite, hiding
     # which later checks still pass. Report it as the failure it is.
@@ -1584,55 +1584,55 @@ check("--workdir error raises no traceback", "Traceback" not in err.getvalue(), 
 # field documented as "guarantee a frame at least this often".
 check(
     "the detector selects on change and on gap in ONE expression",
-    glfr.detect_filter(glfr.Settings()) == "scale=640:-2:flags=lanczos,boxblur=16:4,"
+    dyfr.detect_filter(dyfr.Settings()) == "scale=640:-2:flags=lanczos,boxblur=16:4,"
     "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,180)+gt(scene\\,0.3)'",
-    glfr.detect_filter(glfr.Settings()),
+    dyfr.detect_filter(dyfr.Settings()),
 )
 check(
     # The specific failure: two chained filters cannot guarantee anything about the output
     # of the first one, because the first one is free to emit nothing.
     "no filter precedes select, so none can starve it",
-    "mpdecimate" not in glfr.detect_filter(glfr.Settings()),
-    glfr.detect_filter(glfr.Settings()),
+    "mpdecimate" not in dyfr.detect_filter(dyfr.Settings()),
+    dyfr.detect_filter(dyfr.Settings()),
 )
 check(
     "the detector keeps the isnan guard",
-    "isnan(prev_selected_t)" in glfr.detect_filter(glfr.Settings()),
+    "isnan(prev_selected_t)" in dyfr.detect_filter(dyfr.Settings()),
 )
 check(
     # Reordering was measured too, and it is worse: select then mpdecimate drops exactly
     # the frames select guaranteed. 1080 s worst gap, against 580.9 s before.
     "the change threshold is not a separate filter either",
-    "mpdecimate" not in glfr.detect_filter(glfr.Settings())
-    and "mpdecimate" not in glfr.detect_filter(glfr.Settings(mode="interval")),
-    glfr.detect_filter(glfr.Settings()),
+    "mpdecimate" not in dyfr.detect_filter(dyfr.Settings())
+    and "mpdecimate" not in dyfr.detect_filter(dyfr.Settings(mode="interval")),
+    dyfr.detect_filter(dyfr.Settings()),
 )
 # The blur radius is a scene-detection aid now, but it still scales with detector width.
 check(
     "blur radius scales with detector width",
-    "boxblur=32:8" in glfr.detect_filter(glfr.Settings(detect_width=1280)),
-    glfr.detect_filter(glfr.Settings(detect_width=1280)),
+    "boxblur=32:8" in dyfr.detect_filter(dyfr.Settings(detect_width=1280)),
+    dyfr.detect_filter(dyfr.Settings(detect_width=1280)),
 )
 check(
     "interval mode drops the selector entirely",
-    glfr.detect_filter(glfr.Settings(mode="interval")) == "scale=640:-2:flags=lanczos,fps=1/30",
-    glfr.detect_filter(glfr.Settings(mode="interval")),
+    dyfr.detect_filter(dyfr.Settings(mode="interval")) == "scale=640:-2:flags=lanczos,fps=1/30",
+    dyfr.detect_filter(dyfr.Settings(mode="interval")),
 )
 check(
     "max_gap=0 keeps the change condition but drops the gap guard",
-    "gte(t-prev_selected_t" not in glfr.detect_filter(glfr.Settings(max_gap=0))
-    and "gt(scene" in glfr.detect_filter(glfr.Settings(max_gap=0)),
-    glfr.detect_filter(glfr.Settings(max_gap=0)),
+    "gte(t-prev_selected_t" not in dyfr.detect_filter(dyfr.Settings(max_gap=0))
+    and "gt(scene" in dyfr.detect_filter(dyfr.Settings(max_gap=0)),
+    dyfr.detect_filter(dyfr.Settings(max_gap=0)),
 )
 _ff_argv: list = []
-_real_run_ffmpeg = glfr._run_ffmpeg
-glfr._run_ffmpeg = lambda args, **kw: _ff_argv.append(args)
+_real_run_ffmpeg = dyfr._run_ffmpeg
+dyfr._run_ffmpeg = lambda args, **kw: _ff_argv.append(args)
 try:
-    glfr.detect(src)
-    glfr.extract_at(src, 1000, tmp)
+    dyfr.detect(src)
+    dyfr.extract_at(src, 1000, tmp)
     detect_argv, extract_argv = _ff_argv
 finally:
-    glfr._run_ffmpeg = _real_run_ffmpeg
+    dyfr._run_ffmpeg = _real_run_ffmpeg
 check(
     # `-frame_pts 1` writes the PTS in the output timebase, which after
     # `-fps_mode passthrough` is the input frame rate, not milliseconds. Only pass 1 reads
@@ -1654,15 +1654,15 @@ check(
     and "-frame_pts" not in extract_argv,
     f"extract={extract_argv}",
 )
-check("timestamps format with centiseconds", glfr.hhmmss(4_396_000) == "01:13:16.00")
+check("timestamps format with centiseconds", dyfr.hhmmss(4_396_000) == "01:13:16.00")
 # Centiseconds truncate: 500 ms is .05, not .50 -- the same floor the original used.
 check(
-    "timestamps format sub-second", glfr.hhmmss(3_600_500) == "01:00:00.05", glfr.hhmmss(3_600_500)
+    "timestamps format sub-second", dyfr.hhmmss(3_600_500) == "01:00:00.05", dyfr.hhmmss(3_600_500)
 )
 check(
     "timestamps truncate to centiseconds",
-    glfr.hhmmss(3_600_999) == "01:00:00.09",
-    glfr.hhmmss(3_600_999),
+    dyfr.hhmmss(3_600_999) == "01:00:00.09",
+    dyfr.hhmmss(3_600_999),
 )
 
 
@@ -1671,7 +1671,7 @@ check(
 def ffmpeg_writes(times: list[int], *, write_output: bool = True, write_detector: bool = True):
     """A fake ffmpeg that honours the output path in the last argv position."""
 
-    def run(name, args, *, remediation, timeout=glr.DEFAULT_TIMEOUT, cwd=None):
+    def run(name, args, *, remediation, timeout=dyr.DEFAULT_TIMEOUT, cwd=None):
         fake_resolve(name, remediation)
         CALLS.append((name, list(args)))
         if "-version" in args:
@@ -1683,7 +1683,7 @@ def ffmpeg_writes(times: list[int], *, write_output: bool = True, write_detector
             raise AssertionError(f"unprogrammed call to {name}: {args}")
         stdout, stderr, rc = queue.pop(0)
         if rc != 0:
-            raise glr.DependencyError(
+            raise dyr.DependencyError(
                 name=name,
                 code=ec.DEPENDENCY_FAILED,
                 message=f"{name} exited {rc} running `{' '.join(args)}`",
@@ -1706,8 +1706,8 @@ frame_times = [0, 304_132, 458_606]
 frame_out = tmp / "framesout"
 
 install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
-glr.run = ffmpeg_writes(frame_times)
-manifest, produced = glfr.run(src, frame_out)
+dyr.run = ffmpeg_writes(frame_times)
+manifest, produced = dyfr.run(src, frame_out)
 check("stage 4 writes a manifest", manifest.is_file(), str(manifest))
 check("stage 4 produced every frame", len(produced) == len(frame_times), str(len(produced)))
 check(
@@ -1728,7 +1728,7 @@ check(
 )
 check(
     "the detect pass writes to a throwaway directory",
-    "glimpse-detect-" in detect_call[-1],
+    "dyak-detect-" in detect_call[-1],
     detect_call[-1],
 )
 
@@ -1742,7 +1742,7 @@ check(
 )
 check(
     "the extract pass reads the ORIGINAL source, not the detector temp dir",
-    str(src.resolve()) in extract_call and "glimpse-detect-" not in " ".join(extract_call),
+    str(src.resolve()) in extract_call and "dyak-detect-" not in " ".join(extract_call),
     str(extract_call),
 )
 check(
@@ -1759,7 +1759,7 @@ check(
 man_text = manifest.read_text(encoding="utf-8") if manifest.is_file() else ""
 check(
     "the manifest round-trips",
-    manifest.is_file() and glfr.read_manifest(manifest) == frame_times,
+    manifest.is_file() and dyfr.read_manifest(manifest) == frame_times,
     man_text,
 )
 check(
@@ -1770,8 +1770,8 @@ check(
 
 # ADR-0001 D3, the trap the ported script fell into: zero frames must not be a successful run.
 install_fake({"ffmpeg": [(b"", b"", 0)]})
-glr.run = ffmpeg_writes([])
-exc = raises(glfr.run, src, tmp / "zeroframes")
+dyr.run = ffmpeg_writes([])
+exc = raises(dyfr.run, src, tmp / "zeroframes")
 check(
     "zero frames -> exit 3",
     exc is not None and exc.code == ec.DEPENDENCY_FAILED,
@@ -1785,8 +1785,8 @@ check(
 
 # The same trap one level down: ffmpeg exits 0 having written nothing at all.
 install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
-glr.run = ffmpeg_writes(frame_times, write_detector=True, write_output=False)
-exc = raises(glfr.run, src, tmp / "nofiles")
+dyr.run = ffmpeg_writes(frame_times, write_detector=True, write_output=False)
+exc = raises(dyfr.run, src, tmp / "nofiles")
 check(
     "ffmpeg exiting 0 without writing frames -> exit 3",
     exc is not None and exc.code == ec.DEPENDENCY_FAILED,
@@ -1802,7 +1802,7 @@ check(
 # must not convert "your path is wrong" into "ffmpeg is broken".
 gone = tmp / "renamed-away" / "lecture.webm"
 install_fake({"ffmpeg": [(b"", b"Error opening input file /nope", 1)] * 6})
-exc = raises(glfr.run, gone, tmp / "goneout")
+exc = raises(dyfr.run, gone, tmp / "goneout")
 check(
     "a missing source -> exit 1, not exit 3", exc.code == ec.USAGE, f"{getattr(exc, 'code', None)}"
 )
@@ -1816,35 +1816,35 @@ check(
 # ...but when the file IS present and ffmpeg still cannot open it, that is the host fault
 # the retry exists for, and the message must say so.
 install_fake({"ffmpeg": [(b"", b"Error opening input file", 1)] * 6})
-glfr.time.sleep = lambda _s: None
-exc = raises(glfr.run, src, tmp / "flakyout")
+dyfr.time.sleep = lambda _s: None
+exc = raises(dyfr.run, src, tmp / "flakyout")
 check("a present-but-unopenable source -> exit 3", exc.code == ec.DEPENDENCY_FAILED, f"{exc.code}")
 check(
     "the retry says the file was verified present",
     "verified present" in exc.message,
     exc.message,
 )
-glfr.time.sleep = real_sleep
+dyfr.time.sleep = real_sleep
 
 # An unrelated ffmpeg error is raised at once, not four times slower.
 install_fake({"ffmpeg": [(b"", b"Invalid data found when processing input", 1)]})
 CALLS.clear()
-exc = raises(glfr.run, src, tmp / "harderr")
+exc = raises(dyfr.run, src, tmp / "harderr")
 check("an unrelated ffmpeg error is not retried", len(CALLS) == 1, f"{len(CALLS)} calls")
 
 # A stale frame from a previous run must not survive into the new manifest.
 install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
-glr.run = ffmpeg_writes(frame_times)
+dyr.run = ffmpeg_writes(frame_times)
 stale = frame_out / "f_9999999999.png"
 stale.write_bytes(b"old")
-glfr.run(src, frame_out)
+dyfr.run(src, frame_out)
 check("stale frames are cleared", not stale.exists(), str(stale))
 
 # --reuse-manifest skips the decode entirely, which is the fast path for re-rendering.
 install_fake({"ffmpeg": [(b"", b"", 0)] * len(frame_times)})
-glr.run = ffmpeg_writes(frame_times)
+dyr.run = ffmpeg_writes(frame_times)
 CALLS.clear()
-manifest, produced = glfr.run(src, frame_out, reuse_manifest=True)
+manifest, produced = dyfr.run(src, frame_out, reuse_manifest=True)
 check("--reuse-manifest keeps the frame count", len(produced) == len(frame_times), str(produced))
 check(
     "--reuse-manifest does not run the detector",
@@ -1852,15 +1852,15 @@ check(
     str(CALLS),
 )
 install_fake({"ffmpeg": [(b"", b"", 0)] * (1 + len(frame_times))})
-glr.run = ffmpeg_writes(frame_times)
-_fresh_manifest, fresh_frames = glfr.run(src, tmp / "emptyout", reuse_manifest=True)
+dyr.run = ffmpeg_writes(frame_times)
+_fresh_manifest, fresh_frames = dyfr.run(src, tmp / "emptyout", reuse_manifest=True)
 check(
     "--reuse-manifest with no manifest falls back to detecting",
     len(fresh_frames) == len(frame_times),
     str(len(fresh_frames)),
 )
 
-check("the stage summary counts frames and bytes", "3 frames" in glfr.summary(manifest, produced))
+check("the stage summary counts frames and bytes", "3 frames" in dyfr.summary(manifest, produced))
 
 # Provenance: without it, a manifest cannot be reproduced, and a later reader cannot tell
 # whether the frames or the code changed. This was found the hard way -- the manifest in
@@ -1873,14 +1873,14 @@ check("provenance records the detector filter", "isnan(prev_selected_t)" in prov
 check("provenance records the settings", prov.get("settings", {}).get("detect_width") == 640)
 check("provenance records the ffmpeg build", prov.get("ffmpeg", "").startswith("ffmpeg version"))
 install_fake({"ffmpeg": [(b"", b"", 0)] * len(frame_times)})
-glr.run = ffmpeg_writes(frame_times)
-glfr.run(src, frame_out, reuse_manifest=True)
+dyr.run = ffmpeg_writes(frame_times)
+dyfr.run(src, frame_out, reuse_manifest=True)
 check(
     "provenance distinguishes a reused manifest",
     json.loads((frame_out / "detect.json").read_text(encoding="utf-8"))["reused_manifest"] is True,
 )
 
-glr.run = real_run
+dyr.run = real_run
 
 # --- 9. stage 3 backends: one interface, three wire formats ----------------------
 # Stage 3 is delegated, but the delegation must not become a silent downgrade. Every
@@ -1889,7 +1889,7 @@ glr.run = real_run
 # arrive.
 
 # --- 9. stage 3 backends: one interface, three wire formats ----------------------
-# Section 6 pinned GLIMPSE_STT=whispercpp so it tests one backend. This section covers the
+# Section 6 pinned DYAK_STT=whispercpp so it tests one backend. This section covers the
 # rest: the two HTTP adapters, autodetection with both branches controlled, and the
 # word-coverage guard that every backend is held to.
 
@@ -1942,19 +1942,19 @@ def http_body(url_marker: str, obj) -> bytes:
 
 
 # -- native /inference: the protocol this host actually serves --------------------
-import glimpse.stt.backends as glsb  # noqa: E402
-import glimpse.stt.openai_compat as glso  # noqa: E402
-import glimpse.stt.whispercpp as glsw  # noqa: E402
+import dyak.stt.backends as dysb  # noqa: E402
+import dyak.stt.openai_compat as dyso  # noqa: E402
+import dyak.stt.whispercpp as dysw  # noqa: E402
 
-real_urlopen = glsw.urllib.request.urlopen
-real_oai_urlopen = glso.urllib.request.urlopen
+real_urlopen = dysw.urllib.request.urlopen
+real_oai_urlopen = dyso.urllib.request.urlopen
 
 # The health route answers 200 and the inference route returns the array.
 http = FakeHTTP([b"ok", json.dumps(_http_segment).encode()])
-glsw.urllib.request.urlopen = http
+dysw.urllib.request.urlopen = http
 wav_file = tmp / "backend.wav"
 wav_file.write_bytes(b"RIFF" + b"\\0" * 60)
-tr_http = glstt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp")
+tr_http = dystt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp")
 check("native backend produced segments", len(tr_http.segments) == 1, str(len(tr_http.segments)))
 check("native backend produced timed words", tr_http.timed_words == 2, str(tr_http.timed_words))
 check("the transcript names its backend", tr_http.backend == "whispercpp", tr_http.backend)
@@ -1975,15 +1975,15 @@ check("the native backend uploads the wav bytes", wav_file.read_bytes() in http.
 http = FakeHTTP(
     [urllib.error.HTTPError("u", 404, "Not Found", {}, None), json.dumps(_http_segment).encode()]
 )
-glsw.urllib.request.urlopen = http
+dysw.urllib.request.urlopen = http
 check(
     "a 404 on /health is not fatal",
-    glstt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp").timed_words == 2,
+    dystt.transcribe(wav_file, audio_duration=1.4, backend="whispercpp").timed_words == 2,
 )
 
 # Connection refused must be exit 3 with a reachable remediation, not a traceback.
-glsw.urllib.request.urlopen = FakeHTTP([urllib.error.URLError(OSError(111, "Connection refused"))])
-exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="whispercpp")
+dysw.urllib.request.urlopen = FakeHTTP([urllib.error.URLError(OSError(111, "Connection refused"))])
+exc = raises(dystt.transcribe, wav_file, audio_duration=1.4, backend="whispercpp")
 check(
     "an unreachable endpoint -> exit 3",
     exc.code == ec.DEPENDENCY_FAILED,
@@ -1991,7 +1991,7 @@ check(
 )
 check(
     "the remediation names the env var",
-    "GLIMPSE_WHISPERCPP_URL" in exc.remediation,
+    "DYAK_WHISPERCPP_URL" in exc.remediation,
     exc.remediation,
 )
 
@@ -1999,8 +1999,8 @@ check(
 http = FakeHTTP(
     [b"ok", json.dumps({"task": "transcribe", "text": "x", "segments": _http_segment}).encode()]
 )
-glso.urllib.request.urlopen = http
-tr_oai = glstt.transcribe(wav_file, audio_duration=1.4, backend="openai")
+dyso.urllib.request.urlopen = http
+tr_oai = dystt.transcribe(wav_file, audio_duration=1.4, backend="openai")
 check("openai backend produced segments", len(tr_oai.segments) == 1, str(len(tr_oai.segments)))
 check("openai backend produced timed words", tr_oai.timed_words == 2, str(tr_oai.timed_words))
 check(
@@ -2008,8 +2008,8 @@ check(
 )
 # A parse failure must name the backend that produced it. Hardcoding a name here would
 # misdirect every future backend's debugging.
-glso.urllib.request.urlopen = FakeHTTP([b"ok", b"this is not json at all"])
-exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="openai")
+dyso.urllib.request.urlopen = FakeHTTP([b"ok", b"this is not json at all"])
+exc = raises(dystt.transcribe, wav_file, audio_duration=1.4, backend="openai")
 # The backend name is the DependencyError's `name`, which is what report() prints as the
 # failing dependency. That is the field a reader acts on, so that is the field to assert.
 check(
@@ -2017,7 +2017,7 @@ check(
     exc is not None and getattr(exc, "name", "") == "openai",
     getattr(exc, "name", ""),
 )
-exc = raises(glstt.parse, b"not json", source="some-other-backend")
+exc = raises(dystt.parse, b"not json", source="some-other-backend")
 check(
     "parse reports the source it was handed",
     exc is not None and getattr(exc, "name", "") == "some-other-backend",
@@ -2034,8 +2034,8 @@ check(
 # and ignores timestamp_granularities. Segments arrive, words do not, and the pipeline
 # must say so instead of letting stages 5-7 bind frames by guesswork.
 http = FakeHTTP([b"ok", json.dumps({"text": "one whole blob of text, no timings"}).encode()])
-glso.urllib.request.urlopen = http
-exc = raises(glstt.transcribe, wav_file, audio_duration=1.4, backend="openai")
+dyso.urllib.request.urlopen = http
+exc = raises(dystt.transcribe, wav_file, audio_duration=1.4, backend="openai")
 check(
     "a backend returning no words -> exit 3",
     exc.code == ec.DEPENDENCY_FAILED,
@@ -2053,11 +2053,11 @@ check(
 )
 
 # A 401 on /v1/models means the server is there with a bad key -- not "nothing listening".
-glso.urllib.request.urlopen = FakeHTTP([urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)])
-check("a 401 on /v1/models is not fatal", glso.OpenAICompat("http://127.0.0.1:1").check() is None)
+dyso.urllib.request.urlopen = FakeHTTP([urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)])
+check("a 401 on /v1/models is not fatal", dyso.OpenAICompat("http://127.0.0.1:1").check() is None)
 
 # -- autodetection: both branches, neither dependent on the machine ---------------
-_install = glsb.resolve
+_install = dysb.resolve
 _install.__globals__  # noqa: B018 - keep the reference alive for the linter
 
 
@@ -2070,16 +2070,16 @@ class _Fake:
 
     def check(self):
         if not self.ok:
-            raise glr.DependencyError("stt", ec.DEPENDENCY_FAILED, "down", "up")
+            raise dyr.DependencyError("stt", ec.DEPENDENCY_FAILED, "down", "up")
 
 
-# GLIMPSE_STT is still pinned to whispercpp by section 6, so autodetection cannot be
+# DYAK_STT is still pinned to whispercpp by section 6, so autodetection cannot be
 # exercised until it is unset. Left set, resolve() returns the pinned branch and every
 # assertion below passes without testing anything. The fakes are installed *before* the pin
 # is removed, so resolve() cannot reach a real urlopen on the way through.
-real_wsc = glsw.HttpWhisperCpp
-real_oa = glso.OpenAICompat
-pinned = os.environ.pop("GLIMPSE_STT", None)
+real_wsc = dysw.HttpWhisperCpp
+real_oa = dyso.OpenAICompat
+pinned = os.environ.pop("DYAK_STT", None)
 
 
 class _Named:
@@ -2091,24 +2091,24 @@ class _Named:
         return self.ok
 
 
-glsw.HttpWhisperCpp = lambda: _Named("whispercpp", True)
-glso.OpenAICompat = lambda: _Named("openai", True)
+dysw.HttpWhisperCpp = lambda: _Named("whispercpp", True)
+dyso.OpenAICompat = lambda: _Named("openai", True)
 check(
     "with both available, autodetect prefers local whisper.cpp",
-    glsb.resolve().name == "whispercpp",
-    glsb.resolve().name,
+    dysb.resolve().name == "whispercpp",
+    dysb.resolve().name,
 )
 
-glsw.HttpWhisperCpp = lambda: _Fake(True)
-glso.OpenAICompat = lambda: _Fake(False)
-check("autodetect prefers a reachable whisper.cpp endpoint", glsb.resolve().ok is True)
+dysw.HttpWhisperCpp = lambda: _Fake(True)
+dyso.OpenAICompat = lambda: _Fake(False)
+check("autodetect prefers a reachable whisper.cpp endpoint", dysb.resolve().ok is True)
 
-glsw.HttpWhisperCpp = lambda: _Fake(False)
-glso.OpenAICompat = lambda: _Fake(True)
-check("autodetect falls back to the OpenAI-compatible endpoint", glsb.resolve().ok is True)
+dysw.HttpWhisperCpp = lambda: _Fake(False)
+dyso.OpenAICompat = lambda: _Fake(True)
+check("autodetect falls back to the OpenAI-compatible endpoint", dysb.resolve().ok is True)
 
-glso.OpenAICompat = lambda: _Fake(False)
-exc = raises(glsb.resolve)
+dyso.OpenAICompat = lambda: _Fake(False)
+exc = raises(dysb.resolve)
 check(
     "autodetect with nothing reachable -> exit 2",
     exc is not None and exc.code == ec.MISSING_DEPENDENCY,
@@ -2122,7 +2122,7 @@ check(
 
 # The backend name that was removed is now rejected rather than silently resolved. This is
 # the assertion that inverts: before #44, `resolve("shipboard")` returned a backend.
-exc = raises(glsb.resolve, "shipboard")
+exc = raises(dysb.resolve, "shipboard")
 check(
     "the removed backend is rejected, not resolved",
     exc is not None and exc.code == ec.USAGE,
@@ -2133,29 +2133,29 @@ check(
     exc is not None and "shipboard" in exc.message,
     getattr(exc, "message", ""),
 )
-glsw.HttpWhisperCpp = real_wsc
-glso.OpenAICompat = real_oa
+dysw.HttpWhisperCpp = real_wsc
+dyso.OpenAICompat = real_oa
 if pinned is not None:
-    os.environ["GLIMPSE_STT"] = pinned
+    os.environ["DYAK_STT"] = pinned
 
-glsw.HttpWhisperCpp = real_wsc
+dysw.HttpWhisperCpp = real_wsc
 if pinned is not None:
-    os.environ["GLIMPSE_STT"] = pinned
+    os.environ["DYAK_STT"] = pinned
 
 # An unknown backend name is a usage error, not a stack trace.
-exc = raises(glsb.resolve, "nonsense")
+exc = raises(dysb.resolve, "nonsense")
 check("an unknown backend name -> exit 1", exc.code == ec.USAGE, f"{getattr(exc, 'code', None)}")
 
 # The interfaces are structurally identical -- that is the contract, and a typo in one
 # backend's method name would otherwise only surface at runtime.
-for _cls in (glsw.HttpWhisperCpp, glso.OpenAICompat):
+for _cls in (dysw.HttpWhisperCpp, dyso.OpenAICompat):
     check(
         f"{_cls.__name__} satisfies TranscriptionBackend",
-        isinstance(_cls(), glsb.TranscriptionBackend),
+        isinstance(_cls(), dysb.TranscriptionBackend),
     )
 
-glsw.urllib.request.urlopen = real_urlopen
-glso.urllib.request.urlopen = real_oai_urlopen
+dysw.urllib.request.urlopen = real_urlopen
+dyso.urllib.request.urlopen = real_oai_urlopen
 urllib.request.urlopen = real_urlopen
 
 
@@ -2164,19 +2164,19 @@ urllib.request.urlopen = real_urlopen
 # 3.7 MB transcript wherever the user happened to be standing -- which is the repo
 # pollution ADR-0001 D9 was written against, reintroduced one directory level down.
 _real_state = os.environ.pop("XDG_STATE_HOME", None)
-_real_outdir = os.environ.pop("GLIMPSE_OUTPUT_DIR", None)
+_real_outdir = os.environ.pop("DYAK_OUTPUT_DIR", None)
 xdg = tmp / "xdg"
 os.environ["XDG_STATE_HOME"] = str(xdg)
 
 check(
-    "the default root is XDG_STATE_HOME/glimpse",
-    glb.state_root() == xdg / "glimpse",
-    str(glb.state_root()),
+    "the default root is XDG_STATE_HOME/dyak",
+    dyb.state_root() == xdg / "dyak",
+    str(dyb.state_root()),
 )
-b_default = glb.Bundle.open(src)
+b_default = dyb.Bundle.open(src)
 check(
     "the bundle is named after the source stem",
-    b_default.root == (xdg / "glimpse" / "lecture").resolve(),
+    b_default.root == (xdg / "dyak" / "lecture").resolve(),
     str(b_default.root),
 )
 check("the bundle directory is created", b_default.root.is_dir())
@@ -2185,15 +2185,15 @@ check("the bundle directory is created", b_default.root.is_dir())
 # them would produce a directory whose name does not match its contents.
 check(
     "a Cyrillic name survives intact",
-    glb.slugify("Оптимальные СУ") == "Оптимальные-СУ",
-    glb.slugify("Оптимальные СУ"),
+    dyb.slugify("Оптимальные СУ") == "Оптимальные-СУ",
+    dyb.slugify("Оптимальные СУ"),
 )
-check("path separators are neutralised", "/" not in glb.slugify("a/b\nc"))
+check("path separators are neutralised", "/" not in dyb.slugify("a/b\nc"))
 
 # An explicit --output-dir IS the bundle root. Nesting the lecture name under it would
 # silently give a different path than the one that was typed.
 explicit = tmp / "explicit"
-b_explicit = glb.Bundle.open(src, output_dir=str(explicit))
+b_explicit = dyb.Bundle.open(src, output_dir=str(explicit))
 check(
     "--output-dir is the bundle root itself",
     b_explicit.root == explicit.resolve(),
@@ -2205,19 +2205,19 @@ check(
     str(sorted(q.name for q in explicit.iterdir())),
 )
 
-# GLIMPSE_OUTPUT_DIR is the middle precedence step.
-os.environ["GLIMPSE_OUTPUT_DIR"] = str(tmp / "fromenv")
-b_env = glb.Bundle.open(src)
+# DYAK_OUTPUT_DIR is the middle precedence step.
+os.environ["DYAK_OUTPUT_DIR"] = str(tmp / "fromenv")
+b_env = dyb.Bundle.open(src)
 check(
-    "GLIMPSE_OUTPUT_DIR is used when no flag is given",
+    "DYAK_OUTPUT_DIR is used when no flag is given",
     b_env.root == (tmp / "fromenv").resolve(),
     str(b_env.root),
 )
 check(
     "the flag beats the environment",
-    glb.Bundle.open(src, output_dir=str(explicit)).root == explicit.resolve(),
+    dyb.Bundle.open(src, output_dir=str(explicit)).root == explicit.resolve(),
 )
-del os.environ["GLIMPSE_OUTPUT_DIR"]
+del os.environ["DYAK_OUTPUT_DIR"]
 
 # publish moves the deliverable out of scratch, and refuses to lie about it.
 scratch = tmp / "scratch"
@@ -2240,15 +2240,15 @@ check("a failed publish is not recorded", "ghost" not in b_explicit.artefacts)
 # overwrite replaces rather than merging into a stale bundle.
 check(
     "overwrite=True replaced the directory",
-    glb.Bundle.open(src, output_dir=str(explicit), overwrite=True).created,
+    dyb.Bundle.open(src, output_dir=str(explicit), overwrite=True).created,
 )
 check(
     "a fresh bundle reports itself as created",
-    glb.Bundle.open(src, output_dir=str(explicit)).created is False,
+    dyb.Bundle.open(src, output_dir=str(explicit)).created is False,
 )
 
 # The vault export is a copy, verified per file, and never consumes the bundle.
-b_export = glb.Bundle.open(src, output_dir=str(tmp / "toexport"))
+b_export = dyb.Bundle.open(src, output_dir=str(tmp / "toexport"))
 (tmp / "toexport" / "note.md").write_text("# lecture\n")
 (tmp / "toexport" / "images").mkdir()
 (tmp / "toexport" / "images" / "f_0001.jpg").write_bytes(b"jpeg-bytes")
@@ -2262,21 +2262,21 @@ check(
     # `### Фрагмент 1 (0–414 с)`. Copying them by default put 50 MiB per lecture into a
     # directory Obsidian indexes and obsidian-git synchronises, for files nothing reads.
     "images are not exported by default",
-    not (vault / "glimpse" / "images").exists(),
+    not (vault / "dyak" / "images").exists(),
     str(sorted(str(p.relative_to(vault)) for p in vault.rglob("*"))),
 )
 check(
     "the note is exported even though the frames are not",
-    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
+    (vault / dyb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
     str(sorted(q.name for q in vault.iterdir())),
 )
 check(
     "--vault-images copies the frames too",
     len(b_export.export_to_vault(vault, images=True)) == 2
-    and (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    and (vault / dyb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
     str(copied),
 )
-b_export2 = glb.Bundle.open(src, output_dir=str(tmp / "toexport2"))
+b_export2 = dyb.Bundle.open(src, output_dir=str(tmp / "toexport2"))
 (tmp / "toexport2" / "note.md").write_text("# lecture\n")
 b_export2.record("note", tmp / "toexport2" / "note.md")
 check(
@@ -2287,7 +2287,7 @@ check(
     # The subdir is not cosmetic. A lecture bundle is ~170 files; exporting into the vault
     # root puts 25 of them beside the user's own notes and creates `images/` next to them.
     "the export lands in its own directory, not the vault root",
-    (vault / glb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
+    (vault / dyb.DEFAULT_EXPORT_SUBDIR / "note.md").is_file(),
     str(sorted(q.name for q in vault.iterdir())),
 )
 check(
@@ -2297,7 +2297,7 @@ check(
 )
 check(
     "frames land under images/",
-    (vault / glb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
+    (vault / dyb.DEFAULT_EXPORT_SUBDIR / "images" / "f_0001.jpg").is_file(),
     str(copied),
 )
 check(
@@ -2312,7 +2312,7 @@ check(
 # property removed nothing, so the directory was the union of every run that touched it.
 # Measured on lecture 1 after three runs: 73 PNGs where the manifest listed 58, and all 15
 # extras sat below 135.5 s -- the first run's range, before the `-frame_pts` timebase fix.
-b_images = glb.Bundle.open(src, output_dir=str(tmp / "imgbundle"))
+b_images = dyb.Bundle.open(src, output_dir=str(tmp / "imgbundle"))
 for stale_name in ("f_1.png", "f_2.png", "f_3_q.jpg"):
     (b_images.images / stale_name).write_bytes(b"stale")
 check("stale frames accumulated before the reset", len(list(b_images.images.iterdir())) == 3)
@@ -2328,21 +2328,21 @@ check(
 
 # Two fault paths the happy path never reaches. Both were mutations the suite missed, so
 # they are exercised by injecting the failure rather than by hoping for it.
-b_copy = glb.Bundle.open(src, output_dir=str(tmp / "copyfault"))
+b_copy = dyb.Bundle.open(src, output_dir=str(tmp / "copyfault"))
 victim = tmp / "copyfault_src.txt"
 victim.write_bytes(b"payload that must not vanish")
-real_move = glb.shutil.move
+real_move = dyb.shutil.move
 
 
 def refuse_move(*_a, **_kw):
     raise OSError(18, "Invalid cross-device link")
 
 
-glb.shutil.move = refuse_move
+dyb.shutil.move = refuse_move
 try:
     moved = b_copy.publish("doc", victim)
 finally:
-    glb.shutil.move = real_move
+    dyb.shutil.move = real_move
 check(
     "a refused rename still lands the file in the bundle",
     moved.read_bytes() == b"payload that must not vanish",
@@ -2354,11 +2354,11 @@ check(
     "source deleted despite the copy path",
 )
 
-b_short = glb.Bundle.open(src, output_dir=str(tmp / "shortwrite"))
+b_short = dyb.Bundle.open(src, output_dir=str(tmp / "shortwrite"))
 src_note = tmp / "shortwrite_note.md"
 src_note.write_text("# a note that is long enough to truncate\n" * 8)
 b_short.record("note", src_note)
-real_copy2 = glb.shutil.copy2
+real_copy2 = dyb.shutil.copy2
 
 
 def truncate_copy(src, dst, **kwargs):
@@ -2367,11 +2367,11 @@ def truncate_copy(src, dst, **kwargs):
 
 
 vault_trunc = tmp / "vault_trunc"
-glb.shutil.copy2 = truncate_copy
+dyb.shutil.copy2 = truncate_copy
 try:
     exc = raises(b_short.export_to_vault, vault_trunc)
 finally:
-    glb.shutil.copy2 = real_copy2
+    dyb.shutil.copy2 = real_copy2
 check(
     "a truncated export is refused rather than reported as done",
     exc is not None,
@@ -2390,26 +2390,26 @@ check(
 
 # The bundle summary is measured, not asserted in prose.
 check("the summary counts artefacts", "2 artefacts" in b_export.summary(), b_export.summary())
-check("an empty bundle says so", glb.Bundle(root=tmp / "empty").summary() == "bundle empty")
+check("an empty bundle says so", dyb.Bundle(root=tmp / "empty").summary() == "bundle empty")
 
 del os.environ["XDG_STATE_HOME"]
 if _real_state is not None:
     os.environ["XDG_STATE_HOME"] = _real_state
 if _real_outdir is not None:
-    os.environ["GLIMPSE_OUTPUT_DIR"] = _real_outdir
+    os.environ["DYAK_OUTPUT_DIR"] = _real_outdir
 
 
 # --- 10b. stage 5 receives files that exist ------------------------------------
 # Regression: stage 4 published the frames by moving them into the bundle, then handed
 # stage 5 the pre-move path list. Every frame failed with "cannot read the frame size",
 # and only the end-to-end run showed it -- the stubbed pipeline above moves nothing.
-real_run, real_publish = REAL_PIPELINE_RUN, glb.Bundle.publish
+real_run, real_publish = REAL_PIPELINE_RUN, dyb.Bundle.publish
 seen: dict = {}
-# Restore the real pipeline before the call below. Section 7 leaves glp.run bound to
+# Restore the real pipeline before the call below. Section 7 leaves dyp.run bound to
 # fake_pipeline, and calling *that* made this regression test pass vacuously for as long as
 # it existed: the stub never reaches stage 5, so nothing about frame ordering was checked.
 # A test that cannot fail is worse than no test, because it reports coverage it does not have.
-glp.run = real_run
+dyp.run = real_run
 
 
 def fake_frames_run(source, frames_dir):
@@ -2436,9 +2436,9 @@ def spy_quality_run(frames, work_dir, *, settings=None, bbox_source="geometric",
     # being a no-op (#82) was invisible to this test: with no frames there is no gate verdict
     # to lose, so the wiring could be wrong in either direction and the suite stayed green.
     # `f_0.png` passes so it reaches the images dir; `f_1.png` fails so it must not.
-    return glq.Report(
+    return dyq.Report(
         frames=[
-            glq.FrameQuality(
+            dyq.FrameQuality(
                 name=Path(f).name,
                 source=Path(f),
                 passed=(i == 0),
@@ -2460,14 +2460,14 @@ def spy_quality_run(frames, work_dir, *, settings=None, bbox_source="geometric",
 # Only the I/O stages are stubbed. pipeline.run itself runs for real, because the ordering
 # bug lived in pipeline.run's body -- stubbing pipeline.run (as the rest of this file does)
 # is exactly why the original bug was invisible.
-glp.frames.run = fake_frames_run
-glp.quality.run = spy_quality_run
-real_probe_run, real_audio_run = glp.probe.probe, glp.audio.extract
-real_stt_run, real_stt_write = glp.stt.transcribe, glp.stt.write
-real_require = glp.probe.require_supported
-real_coverage = glp.audio.check_coverage
-real_rates = glp.stt.RATE_RANGE
-glp.probe.probe = lambda _p: glprobe.MediaInfo(
+dyp.frames.run = fake_frames_run
+dyp.quality.run = spy_quality_run
+real_probe_run, real_audio_run = dyp.probe.probe, dyp.audio.extract
+real_stt_run, real_stt_write = dyp.stt.transcribe, dyp.stt.write
+real_require = dyp.probe.require_supported
+real_coverage = dyp.audio.check_coverage
+real_rates = dyp.stt.RATE_RANGE
+dyp.probe.probe = lambda _p: dyprobe.MediaInfo(
     path=_p,
     duration=1.0,
     has_video=True,
@@ -2479,13 +2479,13 @@ glp.probe.probe = lambda _p: glprobe.MediaInfo(
     sample_rate=48000,
     channels=2,
 )
-glp.probe.require_supported = lambda _i: None
-glp.audio.extract = lambda _p, wav: (
+dyp.probe.require_supported = lambda _i: None
+dyp.audio.extract = lambda _p, wav: (
     wav.write_bytes(b"RIFF"),
-    glpa.AudioArtefact(path=wav, duration=1.0, sample_rate=16000, channels=1, size_bytes=4),
+    dypa.AudioArtefact(path=wav, duration=1.0, sample_rate=16000, channels=1, size_bytes=4),
 )[1]
-glp.audio.check_coverage = lambda _i, _a: ""
-glp.stt.transcribe = lambda wav, *, audio_duration: glst.Transcript(
+dyp.audio.check_coverage = lambda _i, _a: ""
+dyp.stt.transcribe = lambda wav, *, audio_duration: dyst.Transcript(
     wav=wav,
     audio_duration=audio_duration,
     segments=(),
@@ -2494,7 +2494,7 @@ glp.stt.transcribe = lambda wav, *, audio_duration: glst.Transcript(
 # Keyed "json", not "transcript.json": `stt.write` returns short keys and stage 6 reads
 # `paths["json"]`. A stub with the wrong keys is how the first end-to-end run of this stage
 # died on a KeyError that no test could see.
-glp.stt.write = lambda tr, dest: {
+dyp.stt.write = lambda tr, dest: {
     "raw": Path(dest) / "t.raw.json",
     "json": Path(dest) / "t.json",
     "txt": Path(dest) / "t.txt",
@@ -2509,7 +2509,7 @@ order_transcript.write_text(
     ),
     encoding="utf-8",
 )
-glp.stt.write = lambda tr, dest: {
+dyp.stt.write = lambda tr, dest: {
     "raw": Path(dest) / "t.raw.json",
     "json": order_transcript,
     "txt": Path(dest) / "t.txt",
@@ -2518,10 +2518,10 @@ work_probe = tmp / "order_work"
 work_probe.mkdir(parents=True, exist_ok=True)
 _r = None
 try:
-    _r = glp.run(
+    _r = dyp.run(
         src,
-        glw.WorkDir(parent=work_probe),
-        bundle=glb.Bundle.open(src, output_dir=str(tmp / "order_bundle")),
+        dyw.WorkDir(parent=work_probe),
+        bundle=dyb.Bundle.open(src, output_dir=str(tmp / "order_bundle")),
     )
     check("the real pipeline.run reached the end", True)
 except BaseException as _exc:
@@ -2530,11 +2530,11 @@ except BaseException as _exc:
     traceback.print_exc()
     check("the real pipeline.run reached the end", False, repr(_exc))
 finally:
-    glp.run, glp.frames.run, glp.quality.run = real_run, glfr.run, REAL_QUALITY_RUN
-    glp.probe.probe, glp.audio.extract = real_probe_run, real_audio_run
-    glp.stt.transcribe, glp.stt.write = real_stt_run, real_stt_write
-    glp.probe.require_supported, glp.audio.check_coverage = real_require, real_coverage
-    glp.stt.RATE_RANGE = real_rates
+    dyp.run, dyp.frames.run, dyp.quality.run = real_run, dyfr.run, REAL_QUALITY_RUN
+    dyp.probe.probe, dyp.audio.extract = real_probe_run, real_audio_run
+    dyp.stt.transcribe, dyp.stt.write = real_stt_run, real_stt_write
+    dyp.probe.require_supported, dyp.audio.check_coverage = real_require, real_coverage
+    dyp.stt.RATE_RANGE = real_rates
 check(
     "stage 5 is handed frames that exist on disk",
     seen.get("missing") == [],
@@ -2563,12 +2563,12 @@ _r_root_files = (
 )
 #: The one declared exception. `TIMINGS_NAME` in `pipeline.py` says why it is not
 #: registered; if that decision is reversed, this list is what has to change with it.
-SIDECARS = {glp.TIMINGS_NAME}
+SIDECARS = {dyp.TIMINGS_NAME}
 
 check(
     "stage 12's artefacts are registered, so they can be exported",
-    _r is not None and set(glro.ALL_ARTEFACTS) <= _r_registered,
-    f"registered {sorted(_r_registered)}; stage 12 writes {list(glro.ALL_ARTEFACTS)}",
+    _r is not None and set(dyro.ALL_ARTEFACTS) <= _r_registered,
+    f"registered {sorted(_r_registered)}; stage 12 writes {list(dyro.ALL_ARTEFACTS)}",
 )
 check(
     "every file in the bundle root is registered, except a declared sidecar",
@@ -2577,28 +2577,28 @@ check(
 )
 check(
     "the sidecar really is unregistered, so the check above is not passing for free",
-    glp.TIMINGS_NAME in _r_root_files and glp.TIMINGS_NAME not in _r_registered,
-    f"root has it: {glp.TIMINGS_NAME in _r_root_files}; "
-    f"registered: {glp.TIMINGS_NAME in _r_registered}",
+    dyp.TIMINGS_NAME in _r_root_files and dyp.TIMINGS_NAME not in _r_registered,
+    f"root has it: {dyp.TIMINGS_NAME in _r_root_files}; "
+    f"registered: {dyp.TIMINGS_NAME in _r_registered}",
 )
 _r_vault = tmp / "order_vault"
 #: The frames are registered too, and `export_to_vault` skips them unless `--vault-images`
 #: is passed, so they are excluded from both sides of the comparison below.
 _r_registered_off_images = (
-    {Path(p).name for p in _r.bundle.artefacts.values() if Path(p).parent.name != glb.IMAGES}
+    {Path(p).name for p in _r.bundle.artefacts.values() if Path(p).parent.name != dyb.IMAGES}
     if _r is not None
     else set()
 )
 if _r is not None:
     _r.bundle.export_to_vault(_r_vault)
 _r_vault_files = (
-    {p.name for p in (_r_vault / glb.DEFAULT_EXPORT_SUBDIR).iterdir() if p.is_file()}
+    {p.name for p in (_r_vault / dyb.DEFAULT_EXPORT_SUBDIR).iterdir() if p.is_file()}
     if _r is not None
     else set()
 )
 check(
     "the vault carries the verdict, not only the note",
-    _r is not None and set(glro.ALL_ARTEFACTS) <= _r_vault_files,
+    _r is not None and set(dyro.ALL_ARTEFACTS) <= _r_vault_files,
     f"vault holds {sorted(_r_vault_files)}",
 )
 check(
@@ -2618,7 +2618,7 @@ check(
 # closes. Nothing reached the bundle, so the bundle could not answer "what did this run cost".
 # Stage 3 transcribes 4520 s of audio in ~297 s and no artefact said so; stages 6, 7 and 9
 # record per-call seconds, which made it look like a stage-3 gap rather than a whole-run one.
-_timings_path = tmp / "order_bundle" / glp.TIMINGS_NAME
+_timings_path = tmp / "order_bundle" / dyp.TIMINGS_NAME
 check(
     "a real pipeline.run writes timings.json into the bundle",
     _timings_path.is_file(),
@@ -2629,7 +2629,7 @@ if _timings_path.is_file():
     _tm_stages = _tm.get("stages", [])
     check(
         "every stage is timed, not just the ones that printed a duration",
-        [_s["stage"] for _s in _tm_stages] == list(range(1, glp.IMPLEMENTED + 1)),
+        [_s["stage"] for _s in _tm_stages] == list(range(1, dyp.IMPLEMENTED + 1)),
         f"stages recorded: {[_s['stage'] for _s in _tm_stages]}",
     )
     check(
@@ -2657,15 +2657,15 @@ if _timings_path.is_file():
 # The run above is stubbed, so every stage finishes in ~0 s and "the total is the sum of the
 # parts" is 0 == 0 -- it would pass against a hardcoded zero. Asserted again on real numbers
 # through `write_timings` directly, where the sum has something to get wrong.
-_tb = glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle"))
-glb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle")).record(
+_tb = dyb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle"))
+dyb.Bundle.open(tmp / "timing_unit.mp4", output_dir=str(tmp / "timing_bundle")).record(
     "placeholder", tmp / "timing_unit.mp4"
 )
 _tunit = [
-    glp.StageReport(3, "stt", 296.5, "4901 segments"),
-    glp.StageReport(7, "synth", 155.9, "8/8"),
+    dyp.StageReport(3, "stt", 296.5, "4901 segments"),
+    dyp.StageReport(7, "synth", 155.9, "8/8"),
 ]
-_twritten = glp.write_timings(_tb, _tunit)
+_twritten = dyp.write_timings(_tb, _tunit)
 _tu = json.loads(_twritten.read_text())
 check(
     "the total is a real sum of real per-stage seconds",
@@ -2679,7 +2679,7 @@ check(
 # that no stage produces.
 check(
     "timings.json is not registered as a pipeline artefact",
-    glp.TIMINGS_NAME not in glro.REQUIRED and glp.TIMINGS_NAME not in glro.OPTIONAL,
+    dyp.TIMINGS_NAME not in dyro.REQUIRED and dyp.TIMINGS_NAME not in dyro.OPTIONAL,
     "stage 12 now expects a file that no stage publishes",
 )
 
@@ -2690,7 +2690,7 @@ check(
 #
 # This does not make the run fail on those files -- that is a contract change and it is not
 # taken here. It makes the gap a number a reader can see and disagree with.
-_order_report = json.loads((tmp / "order_bundle" / glro.REPORT_NAME).read_text(encoding="utf-8"))
+_order_report = json.loads((tmp / "order_bundle" / dyro.REPORT_NAME).read_text(encoding="utf-8"))
 check(
     "report.json records how many files it checked and how many the bundle holds",
     isinstance(_order_report.get("files_checked"), int)
@@ -2717,7 +2717,7 @@ check(
     "captions.json" in _order_report["unchecked"],
     str(_order_report["unchecked"]),
 )
-_order_expected, _order_rejected = glro.expected_frames(tmp / "order_bundle")
+_order_expected, _order_rejected = dyro.expected_frames(tmp / "order_bundle")
 check(
     "every frame count_frames verified is absent from the unexamined list",
     not ({f"images/{name}" for name in _order_expected} & set(_order_report["unchecked"])),
@@ -2737,7 +2737,7 @@ check(
 )
 check(
     "report.json does not claim to have verified itself",
-    glro.REPORT_NAME not in _order_report["unchecked"],
+    dyro.REPORT_NAME not in _order_report["unchecked"],
     str(_order_report["unchecked"]),
 )
 
@@ -2776,9 +2776,9 @@ check(
     # `frames 57/58` and exit 1. Reachable only since #82 -- before it, the gate never fired and
     # the two counts always agreed.
     "stage 12 counts the gate's rejections as expected, not as missing",
-    glro.count_frames(tmp / "order_bundle")[0] == 1
-    and glro.count_frames(tmp / "order_bundle")[1] == 1,
-    f"expected/found = {glro.count_frames(tmp / 'order_bundle')}, want (1, 1) for 1 pass + 1 fail",
+    dyro.count_frames(tmp / "order_bundle")[0] == 1
+    and dyro.count_frames(tmp / "order_bundle")[1] == 1,
+    f"expected/found = {dyro.count_frames(tmp / 'order_bundle')}, want (1, 1) for 1 pass + 1 fail",
 )
 check(
     # And the rejection must be visible rather than merely subtracted, or ADR-0005 D2's "N
@@ -2794,7 +2794,7 @@ check(
 )
 
 # --- 11. stage 5 quality: MEGE, the full-frame fallback, and a derived gate ------------
-qs = glq.Settings()
+qs = dyq.Settings()
 qtmp = tmp / "quality"
 qtmp.mkdir(parents=True, exist_ok=True)
 
@@ -2809,14 +2809,14 @@ def qframe(name, colour, size="640x360", vf=None):
 
 
 def observe(path, settings=qs, source="geometric"):
-    return glq.observe(path, settings, glq.resolve_estimator(source))
+    return dyq.observe(path, settings, dyq.resolve_estimator(source))
 
 
 def verdict(path, threshold, settings=qs, out=None, source="geometric"):
     obs = observe(path, settings, source)
     dest = out or (qtmp / "q_out")
     dest.mkdir(parents=True, exist_ok=True)
-    return glq.evaluate(obs, dest, settings, threshold)
+    return dyq.evaluate(obs, dest, settings, threshold)
 
 
 # Ground truth: the measure must be 0 on a field with no structure, or the threshold
@@ -2824,8 +2824,8 @@ def verdict(path, threshold, settings=qs, out=None, source="geometric"):
 uniform = qframe("uniform.png", "gray")
 check(
     "a uniform field has zero MEGE",
-    glq.sobel_mege(glq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)[0] == 0.0,
-    str(glq.sobel_mege(glq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)),
+    dyq.sobel_mege(dyq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)[0] == 0.0,
+    str(dyq.sobel_mege(dyq._raw_gray(uniform, 640, 360), 640, 360, qs.tau)),
 )
 
 subprocess.run(
@@ -2874,7 +2874,7 @@ def oracle_mege(raster, w, h, tau):
 
 w3, h3 = 7, 5
 ramp = bytes(((x * 37 + y * 53) % 256) for y in range(h3) for x in range(w3))
-mine = glq.sobel_mege(ramp, w3, h3, qs.tau)[0]
+mine = dyq.sobel_mege(ramp, w3, h3, qs.tau)[0]
 theirs = oracle_mege(ramp, w3, h3, qs.tau)[0]
 check(
     "MEGE matches an independent reference implementation",
@@ -2883,13 +2883,13 @@ check(
 )
 check(
     "an all-zero raster has no edge pixels at all",
-    glq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau) == (0.0, 0),
-    str(glq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau)),
+    dyq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau) == (0.0, 0),
+    str(dyq.sobel_mege(bytes(w3 * h3), w3, h3, qs.tau)),
 )
 check(
     "a raster too small to have an interior measures zero",
-    glq.sobel_mege(bytes(4), 2, 2, qs.tau) == (0.0, 0),
-    str(glq.sobel_mege(bytes(4), 2, 2, qs.tau)),
+    dyq.sobel_mege(bytes(4), 2, 2, qs.tau) == (0.0, 0),
+    str(dyq.sobel_mege(bytes(4), 2, 2, qs.tau)),
 )
 
 # The property the replacement metric was adopted for: replicate the same strokes and the
@@ -2974,17 +2974,17 @@ dc_obs = observe(dark_canvas)
 check("a dark canvas yields no bbox", dc_obs.box is None, str(dc_obs.box))
 check(
     "a dark canvas is measured full-frame, not skipped",
-    dc_obs.crop_state == glq.CROP_FALLBACK,
+    dc_obs.crop_state == dyq.CROP_FALLBACK,
     dc_obs.crop_state,
 )
 check(
     "a dark canvas is classified as a dark canvas",
-    dc_obs.content_type == glq.CONTENT_DARK,
+    dc_obs.content_type == dyq.CONTENT_DARK,
     dc_obs.content_type,
 )
 check(
     "a dark canvas clears the edge floor",
-    glq.has_edges(dc_obs, qs),
+    dyq.has_edges(dc_obs, qs),
     f"edges={dc_obs.edges} of {dc_obs.width * dc_obs.height} px",
 )
 dc_verdict = verdict(dark_canvas, dc_obs.mege * 0.5)
@@ -3007,7 +3007,7 @@ check(
 # The regression that actually bit: the full-frame path built its filter chain by appending
 # to a string, so "flags=lanczos" and "unsharp=" fused whenever there was no crop. Every
 # full-frame frame died with ffmpeg exit 234 and the run reported it as a quality failure.
-dc_enhanced = qtmp / "q_out" / glq.enhanced_name(dark_canvas.name)
+dc_enhanced = qtmp / "q_out" / dyq.enhanced_name(dark_canvas.name)
 check("a full-frame enhancement actually writes a file", dc_enhanced.is_file(), str(dc_enhanced))
 check(
     "the enhanced frame is non-empty",
@@ -3016,24 +3016,24 @@ check(
 )
 check(
     "enhanced frames are named .jpg, because -q:v into a .png path is silently discarded",
-    glq.enhanced_name("f_0000000000.png").endswith(".jpg"),
-    glq.enhanced_name("f_0000000000.png"),
+    dyq.enhanced_name("f_0000000000.png").endswith(".jpg"),
+    dyq.enhanced_name("f_0000000000.png"),
 )
 
 # A uniform dark field is blank, not soft. Reporting it as "soft" hides which failure
 # occurred, and no sharpness number is meaningful on it.
 blank = qframe("blank.png", "black")
 blank_obs = observe(blank)
-check("a black frame is classified blank", glq.is_blank(blank_obs, qs), str(blank_obs.luma_std))
+check("a black frame is classified blank", dyq.is_blank(blank_obs, qs), str(blank_obs.luma_std))
 blank_verdict = verdict(blank, 0.0)
 check(
     "a blank frame fails with EMPTY_CANVAS, not SOFT",
-    not blank_verdict.passed and blank_verdict.reason == glq.REASON_BLANK,
+    not blank_verdict.passed and blank_verdict.reason == dyq.REASON_BLANK,
     blank_verdict.reason,
 )
 check(
     "a blank frame gets no enhanced file",
-    not (qtmp / "q_out" / glq.enhanced_name(blank.name)).exists(),
+    not (qtmp / "q_out" / dyq.enhanced_name(blank.name)).exists(),
     "wrote an enhanced frame for a blank canvas",
 )
 
@@ -3049,7 +3049,7 @@ if white_obs.box:
     )
 check(
     "a white frame is classified as a white document",
-    white_obs.content_type == glq.CONTENT_WHITE,
+    white_obs.content_type == dyq.CONTENT_WHITE,
     white_obs.content_type,
 )
 
@@ -3086,7 +3086,7 @@ if panel_obs.box:
 # The gate is derived from the run, not fixed. Two frames, and the threshold must land at
 # decay x median(MEGE) -- and be above the weaker frame.
 two = [observe(qtmp / "detail.png"), observe(qtmp / "blurred.png")]
-derived = glq.threshold_for(two, qs)
+derived = dyq.threshold_for(two, qs)
 mid = sorted(o.mege for o in two)[1] / 2 + sorted(o.mege for o in two)[0] / 2
 check(
     "the threshold is decay x median over content frames",
@@ -3101,13 +3101,13 @@ check(
 # A run of nothing but blank canvases must not normalise its way to "everything passes".
 check(
     "an all-blank run falls back to the floor",
-    glq.threshold_for([blank_obs, blank_obs], qs) == qs.floor,
-    str(glq.threshold_for([blank_obs, blank_obs], qs)),
+    dyq.threshold_for([blank_obs, blank_obs], qs) == qs.floor,
+    str(dyq.threshold_for([blank_obs, blank_obs], qs)),
 )
 check(
     "an empty run falls back to the floor",
-    glq.threshold_for([], qs) == qs.floor,
-    str(glq.threshold_for([], qs)),
+    dyq.threshold_for([], qs) == qs.floor,
+    str(dyq.threshold_for([], qs)),
 )
 
 # The same frame flips with the threshold, and the reason names the measured value.
@@ -3117,14 +3117,14 @@ check("a frame can pass", passing.passed, "unexpected fail")
 check("the same frame fails a raised threshold", not failing.passed, "gate ignored setting")
 check(
     "a failing reason is SOFT",
-    failing.reason == glq.REASON_SOFT,
+    failing.reason == dyq.REASON_SOFT,
     failing.reason,
 )
 check(
     "a too-thin edge population is NO_EDGES, distinct from SOFT",
-    verdict(qtmp / "blurred.png", 0.0, glq.Settings(min_edge_fraction=0.99)).reason
-    == glq.REASON_NO_EDGES,
-    verdict(qtmp / "blurred.png", 0.0, glq.Settings(min_edge_fraction=0.99)).reason,
+    verdict(qtmp / "blurred.png", 0.0, dyq.Settings(min_edge_fraction=0.99)).reason
+    == dyq.REASON_NO_EDGES,
+    verdict(qtmp / "blurred.png", 0.0, dyq.Settings(min_edge_fraction=0.99)).reason,
 )
 
 # An unreadable input is a failed frame, not a crash: one bad file must not lose 15 good ones.
@@ -3146,7 +3146,7 @@ check(
     f"crashed={crashed!r}",
 )
 
-mixed = glq.run([qtmp / "detail.png", bogus], qtmp / "run", settings=qs, stream=io.StringIO())
+mixed = dyq.run([qtmp / "detail.png", bogus], qtmp / "run", settings=qs, stream=io.StringIO())
 check("run() survives a corrupt frame", len(mixed.frames) == 2, str(len(mixed.frames)))
 check(
     "the corrupt frame is reported as failed, with its reason",
@@ -3159,29 +3159,29 @@ check(
     str([(f.name, f.passed) for f in mixed.frames]),
 )
 check(
-    "an empty run is not ok", not glq.run([], qtmp / "empty", settings=qs, stream=io.StringIO()).ok
+    "an empty run is not ok", not dyq.run([], qtmp / "empty", settings=qs, stream=io.StringIO()).ok
 )
 
 # bbox sources: a protocol with three honest implementations.
 check(
     "the null estimator never crops",
-    observe(dark_canvas, source="null").crop_state == glq.CROP_FALLBACK,
+    observe(dark_canvas, source="null").crop_state == dyq.CROP_FALLBACK,
     observe(dark_canvas, source="null").crop_state,
 )
 check(
     "the geometric estimator does crop a white frame",
-    observe(white, source="null").crop_state == glq.CROP_FALLBACK
-    and observe(white).crop_state == glq.CROP_CROPPED,
+    observe(white, source="null").crop_state == dyq.CROP_FALLBACK
+    and observe(white).crop_state == dyq.CROP_CROPPED,
     "source selection is not reaching observe()",
 )
 try:
-    glq.resolve_estimator("vlm")
+    dyq.resolve_estimator("vlm")
     vlm_raised = None
 except KeyError as exc:
     vlm_raised = exc
 check(
     # `vlm` was registered and raised NotConfiguredError on both branches, so setting
-    # GLIMPSE_BBOX_SOURCE=vlm failed at the crop rather than being refused as the unknown
+    # DYAK_BBOX_SOURCE=vlm failed at the crop rather than being refused as the unknown
     # name it is. A vision bbox source is unbuilt; an unbuilt option must be absent from the
     # registry, not present and broken (#67).
     "the unbuilt `vlm` bbox source is not registered at all",
@@ -3189,7 +3189,7 @@ check(
     f"raised={vlm_raised!r}",
 )
 try:
-    glq.resolve_estimator("telepathy")
+    dyq.resolve_estimator("telepathy")
     unknown_raised = None
 except KeyError as exc:
     unknown_raised = exc
@@ -3203,8 +3203,8 @@ check(
 # orthogonal measurements must be present separately.
 qtmp2 = tmp / "quality_report"
 qtmp2.mkdir(parents=True, exist_ok=True)
-mixed_report = glq.run([qtmp / "detail.png", dark_canvas], qtmp2, settings=qs, stream=io.StringIO())
-glq.write(mixed_report, qtmp2 / "quality.json", qs)
+mixed_report = dyq.run([qtmp / "detail.png", dark_canvas], qtmp2, settings=qs, stream=io.StringIO())
+dyq.write(mixed_report, qtmp2 / "quality.json", qs)
 payload = json.loads((qtmp2 / "quality.json").read_text())
 check(
     "the report records the derived threshold",
@@ -3225,7 +3225,7 @@ check(
 )
 check(
     "a dark canvas is recorded as full-frame and dark_canvas",
-    (entry["crop_state"], entry["content_type"]) == (glq.CROP_FALLBACK, glq.CONTENT_DARK),
+    (entry["crop_state"], entry["content_type"]) == (dyq.CROP_FALLBACK, dyq.CONTENT_DARK),
     str(entry),
 )
 # Note what is NOT asserted here: that this canvas PASSES the run-derived gate. In a
@@ -3249,7 +3249,7 @@ check(
     {f["bbox_source"] for f in payload["frames"]} == {"geometric"},
     str([f["bbox_source"] for f in payload["frames"]]),
 )
-provenance = json.loads(glq.provenance(qs, "geometric"))
+provenance = json.loads(dyq.provenance(qs, "geometric"))
 check(
     "provenance names the metric and the raster policy",
     provenance["metric"] == "MEGE" and "native" in provenance["raster"],
@@ -3258,7 +3258,7 @@ check(
 
 
 # --- 12. stage 6 caption: deterministic alignment, no model ------------------------
-cs = glcap.Settings()
+cs = dycap.Settings()
 ctmp = tmp / "caption"
 ctmp.mkdir(parents=True, exist_ok=True)
 cimg = ctmp / "images"
@@ -3328,7 +3328,7 @@ cquality.write_text(
     encoding="utf-8",
 )
 
-capp = glcap.align(cmanifest, ctrans, cquality, cimg)
+capp = dycap.align(cmanifest, ctrans, cquality, cimg)
 check("three frames aligned", len(capp.alignments) == 3, str(len(capp.alignments)))
 check(
     "the manifest header is not read as a frame",
@@ -3414,7 +3414,7 @@ partial_transcript.write_text(
     json.dumps({"audio_duration": 300.0, "segments": [seg(0, 0.0, 90.0, "only early")] * 1}),
     encoding="utf-8",
 )
-silent = glcap.align(cmanifest, empty_transcript, cquality, cimg)
+silent = dycap.align(cmanifest, empty_transcript, cquality, cimg)
 check(
     "a frame with no transcript is uncovered",
     len(silent.uncovered) == 2,
@@ -3434,8 +3434,8 @@ check(
 )
 check(
     "and clearing it is a one-line setting change, not a code path",
-    glcap.align(
-        cmanifest, empty_transcript, cquality, cimg, glcap.Settings(uncovered_share_limit=1.0)
+    dycap.align(
+        cmanifest, empty_transcript, cquality, cimg, dycap.Settings(uncovered_share_limit=1.0)
     ).ok,
     "a 1.0 share under a 1.0 limit must clear",
 )
@@ -3456,19 +3456,19 @@ partial_transcript.write_text(
     encoding="utf-8",
 )
 for limit, expected in ((0.30, False), (0.40, True)):
-    got = glcap.align(
+    got = dycap.align(
         cmanifest,
         partial_transcript,
         ctmp / "missing-quality.json",
         cimg,
-        glcap.Settings(uncovered_share_limit=limit),
+        dycap.Settings(uncovered_share_limit=limit),
     )
     check(
         f"1 of 3 uncovered {'clears' if expected else 'fails'} a {limit} limit",
         got.ok is expected and abs(got.uncovered_share - 1 / 3) < 0.01,
         f"share={got.uncovered_share} ok={got.ok} limit={limit}",
     )
-check("no frames is not ok", not glcap.align(ctmp / "none.tsv", ctrans, cquality, cimg).ok)
+check("no frames is not ok", not dycap.align(ctmp / "none.tsv", ctrans, cquality, cimg).ok)
 
 # Malformed input is skipped, not fatal.
 broken = ctmp / "broken.json"
@@ -3485,7 +3485,7 @@ broken.write_text(
     ),
     encoding="utf-8",
 )
-kept = glcap.read_segments(broken)
+kept = dycap.read_segments(broken)
 check(
     "unparseable and reversed segments are dropped rather than guessed at",
     [s.index for s in kept] == [0],
@@ -3493,33 +3493,33 @@ check(
 )
 check(
     "a missing transcript is empty, not a traceback",
-    glcap.read_segments(ctmp / "does-not-exist.json") == [],
+    dycap.read_segments(ctmp / "does-not-exist.json") == [],
     "raised",
 )
 check(
     "a missing manifest is empty, not a traceback",
-    glcap.read_manifest(ctmp / "nope.tsv") == [],
+    dycap.read_manifest(ctmp / "nope.tsv") == [],
     "raised",
 )
 
 # The artefact.
 cdest = ctmp / "out"
-creport, coutcome = glcap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
+creport, coutcome = dycap.run(cmanifest, ctrans, cquality, cimg, cdest, stream=io.StringIO())
 check(
     "run() writes the report",
-    (cdest / glcap.REPORT_NAME).is_file(),
+    (cdest / dycap.REPORT_NAME).is_file(),
     str(sorted(p.name for p in cdest.iterdir())),
 )
 check(
     "run() writes provenance",
-    (cdest / glcap.PROVENANCE_NAME).is_file(),
+    (cdest / dycap.PROVENANCE_NAME).is_file(),
     str(sorted(p.name for p in cdest.iterdir())),
 )
-cpayload = json.loads((cdest / glcap.REPORT_NAME).read_text(encoding="utf-8"))
+cpayload = json.loads((cdest / dycap.REPORT_NAME).read_text(encoding="utf-8"))
 check(
     "provenance says this stage needs a model",
-    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["requires_model"] is True,
-    (cdest / glcap.PROVENANCE_NAME).read_text(),
+    json.loads((cdest / dycap.PROVENANCE_NAME).read_text())["requires_model"] is True,
+    (cdest / dycap.PROVENANCE_NAME).read_text(),
 )
 check(
     # The old assertion was that provenance names the caption gap via a `NOT_CONFIGURED`
@@ -3527,10 +3527,10 @@ check(
     # the gap being *recorded*: an absent endpoint must still be visible in the artefact,
     # with the count of frames it cost.
     "provenance records that no frame was captioned, without a placeholder string",
-    json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["captioned"] == 0
+    json.loads((cdest / dycap.PROVENANCE_NAME).read_text())["caption"]["captioned"] == 0
     and "NOT_CONFIGURED"
-    not in json.loads((cdest / glcap.PROVENANCE_NAME).read_text())["caption"]["model"],
-    (cdest / glcap.PROVENANCE_NAME).read_text(),
+    not in json.loads((cdest / dycap.PROVENANCE_NAME).read_text())["caption"]["model"],
+    (cdest / dycap.PROVENANCE_NAME).read_text(),
 )
 check(
     "an unconfigured endpoint marks each frame NO_ENDPOINT rather than leaving a caption slot",
@@ -3562,11 +3562,11 @@ check(
 # `llm.chat` is replaced rather than `urlopen`, so these assert what this stage owns -- the
 # message it builds, the status it records, the cache key it uses -- and not the transport,
 # which `test_llm.py` and the FakeHTTP block already cover.
-_real_chat = glle.chat
+_real_chat = dyle.chat
 
 
 def _caption_reply(text="$\\dot{x} = Ax$, state feedback"):
-    return glle.Reply(
+    return dyle.Reply(
         text=text,
         model="fake-vision",
         prompt_tokens=10,
@@ -3586,11 +3586,11 @@ _FAKE_FRAME = b"\x89PNG\r\n\x1a\n" + b"frame-bytes-for-stage-6"
 for _name in ("f_0000000000.png", "f_0000100000.png", "f_0000200000.png"):
     (cimg / _name).write_bytes(_FAKE_FRAME)
 
-_leftovers = os.environ.pop("GLIMPSE_VLM_MODEL", None) or os.environ.pop("GLIMPSE_LLM_MODEL", None)
-os.environ.pop("GLIMPSE_VLM_ENDPOINT", None)
-os.environ.pop("GLIMPSE_LLM_ENDPOINT", None)
-os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
-os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+_leftovers = os.environ.pop("DYAK_VLM_MODEL", None) or os.environ.pop("DYAK_LLM_MODEL", None)
+os.environ.pop("DYAK_VLM_ENDPOINT", None)
+os.environ.pop("DYAK_LLM_ENDPOINT", None)
+os.environ["DYAK_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["DYAK_VLM_MODEL"] = "fake-vision"
 
 
 def _fake_vision_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
@@ -3598,11 +3598,11 @@ def _fake_vision_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG0
     return _caption_reply()
 
 
-glle.chat = _fake_vision_chat
+dyle.chat = _fake_vision_chat
 try:
     vdest = ctmp / "vision_out"
-    vreport, voutcome = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
-    vcache = json.loads((vdest / glcap.REPORT_NAME).read_text())["captions"]
+    vreport, voutcome = dycap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    vcache = json.loads((vdest / dycap.REPORT_NAME).read_text())["captions"]
     # Guard first: `all()` over an empty sequence is True, and three of these assertions
     # were vacuously green before the frames existed. Every check below states how many
     # things it looked at, so a zero reads as a failure rather than as a pass.
@@ -3622,7 +3622,7 @@ try:
         len(vcache) == voutcome.captioned
         and all(
             a["caption"] == "$\\dot{x} = Ax$, state feedback"
-            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            for a in json.loads((vdest / dycap.REPORT_NAME).read_text())["alignments"]
             if a["caption_status"] == "OK"
         ),
         f"cache entries={len(vcache)} captioned={voutcome.captioned}",
@@ -3652,12 +3652,12 @@ try:
         "the trace survives into captions.json, not only in memory",
         all(
             a.get("caption_trace", {}).get("source") == "called"
-            for a in json.loads((vdest / glcap.REPORT_NAME).read_text())["alignments"]
+            for a in json.loads((vdest / dycap.REPORT_NAME).read_text())["alignments"]
             if a["caption_status"] == "OK"
         ),
         "captions.json alignments lack caption_trace",
     )
-    _warm = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())[0]
+    _warm = dycap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())[0]
     check(
         # The cache is keyed by (fingerprint, model), so a warm re-run makes zero requests.
         # An empty trace there would read as "stage 6 did not run" rather than "nothing to
@@ -3695,17 +3695,17 @@ try:
     # existed, the unit test passed, and nothing ever supplied it with a real cache.
     _bucket = ctmp / "cache_bucket"
     _bucket.mkdir()
-    (_bucket / glcap.REPORT_NAME).write_text(
-        (vdest / glcap.REPORT_NAME).read_text(encoding="utf-8"), encoding="utf-8"
+    (_bucket / dycap.REPORT_NAME).write_text(
+        (vdest / dycap.REPORT_NAME).read_text(encoding="utf-8"), encoding="utf-8"
     )
     _seen_messages.clear()
-    _warm = glcap.run(
+    _warm = dycap.run(
         cmanifest,
         ctrans,
         cquality,
         cimg,
         ctmp / "warm_out",
-        cache_source=_bucket / glcap.REPORT_NAME,
+        cache_source=_bucket / dycap.REPORT_NAME,
         stream=io.StringIO(),
     )
     check(
@@ -3720,7 +3720,7 @@ try:
     )
     check(
         "a missing cache_source falls back to calling every frame, not to reusing nothing",
-        glcap.run(
+        dycap.run(
             cmanifest,
             ctrans,
             cquality,
@@ -3738,8 +3738,8 @@ try:
         # would have to manufacture an uncovered frame. The point is that nothing is
         # concatenated when there is nothing to concatenate.
         "a frame with no transcript sends the prompt alone, with no invented context",
-        glle.vision_message("PROMPT", cimg / "f_0000000000.png")["content"][0]["text"] == "PROMPT"
-        and glle.vision_message("PROMPT", cimg / "f_0000000000.png", text="spoken")["content"][0][
+        dyle.vision_message("PROMPT", cimg / "f_0000000000.png")["content"][0]["text"] == "PROMPT"
+        and dyle.vision_message("PROMPT", cimg / "f_0000000000.png", text="spoken")["content"][0][
             "text"
         ]
         == "PROMPT\n\nspoken",
@@ -3757,7 +3757,7 @@ try:
 
     # Second run: the cache must serve it, and the model must not be called again.
     _seen_messages.clear()
-    _, voutcome2 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    _, voutcome2 = dycap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
     check(
         "a second run over the same frames reuses every caption and calls nothing",
         voutcome2.reused == voutcome.captioned and not _seen_messages,
@@ -3765,10 +3765,10 @@ try:
     )
 
     # A changed model must not be served the previous model's cache.
-    os.environ["GLIMPSE_VLM_MODEL"] = "other-vision"
-    os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision2.invalid/v1"
+    os.environ["DYAK_VLM_MODEL"] = "other-vision"
+    os.environ["DYAK_VLM_ENDPOINT"] = "http://vision2.invalid/v1"
     _seen_messages.clear()
-    _, voutcome3 = glcap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
+    _, voutcome3 = dycap.run(cmanifest, ctrans, cquality, cimg, vdest, stream=io.StringIO())
     check(
         "a different model id invalidates the cache rather than inheriting it",
         voutcome3.reused == 0 and voutcome3.captioned == len(vreport.considered),
@@ -3777,10 +3777,10 @@ try:
 
     # A refusing endpoint is recorded per frame, and the run says it captioned nothing.
     def _refusing_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
-        raise glle.EndpointError("vision refused: 400 unsupported")
+        raise dyle.EndpointError("vision refused: 400 unsupported")
 
-    glle.chat = _refusing_chat
-    rreport, routcome = glcap.run(
+    dyle.chat = _refusing_chat
+    rreport, routcome = dycap.run(
         cmanifest, ctrans, cquality, cimg, ctmp / "refused_out", stream=io.StringIO()
     )
     check(
@@ -3797,16 +3797,16 @@ try:
         routcome.as_dict(),
     )
 finally:
-    glle.chat = _real_chat
+    dyle.chat = _real_chat
     for _k in (
-        "GLIMPSE_VLM_ENDPOINT",
-        "GLIMPSE_VLM_MODEL",
-        "GLIMPSE_LLM_ENDPOINT",
-        "GLIMPSE_LLM_MODEL",
+        "DYAK_VLM_ENDPOINT",
+        "DYAK_VLM_MODEL",
+        "DYAK_LLM_ENDPOINT",
+        "DYAK_LLM_MODEL",
     ):
         os.environ.pop(_k, None)
     if _leftovers:
-        os.environ["GLIMPSE_LLM_MODEL"] = _leftovers
+        os.environ["DYAK_LLM_MODEL"] = _leftovers
 
 
 # --- 13. stage 7 synth: structure, degradation, model independence ------------------
@@ -3824,7 +3824,7 @@ class FakeSynth:
     def section(self, section, transcript):
         self.seen.append(section.number)
         if section.number in self.fail_on:
-            raise glle.EndpointError("endpoint said no")
+            raise dyle.EndpointError("endpoint said no")
         if section.number in self.toc_on:
             return "# Содержание\n\n- раздел 1\n- раздел 2"
         return f"{self.body} для фрагмента {section.number} ({len(transcript)} симв.)"
@@ -3855,7 +3855,7 @@ stxt.write_text("полный текст лекции", encoding="utf-8")
 src_path = tmp / "lecture.webm"
 src_path.write_bytes(b"\x1a\x45\xdf\xa3")
 
-cuts = glsy.build_sections(json.loads(scaps.read_text())["alignments"], limit=4)
+cuts = dysy.build_sections(json.loads(scaps.read_text())["alignments"], limit=4)
 check(
     "sections are cut on frame boundaries, capped at the limit",
     len(cuts) == 3 and [s.number for s in cuts] == [1, 2, 3],
@@ -3870,10 +3870,10 @@ check(
 )
 check(
     "gated-out frames are not cut into sections",
-    glsy.build_sections([{"frame": "a", "caption_status": "GATED_OUT", "text": "x"}]) == [],
+    dysy.build_sections([{"frame": "a", "caption_status": "GATED_OUT", "text": "x"}]) == [],
     "a gated frame produced a section",
 )
-check("no alignments is no sections", glsy.build_sections([]) == [], "produced sections")
+check("no alignments is no sections", dysy.build_sections([]) == [], "produced sections")
 
 
 # --- 14. a refusal is a status, not a caption ---------------------------------------
@@ -3890,7 +3890,7 @@ check("no alignments is no sections", glsy.build_sections([]) == [], "produced s
 #     not -- same input, contradictory artefact.
 def _refusal_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
     _seen_messages.append((messages, config))
-    return _caption_reply(text=glcap.NO_NEW_INFORMATION)
+    return _caption_reply(text=dycap.NO_NEW_INFORMATION)
 
 
 # The stage-6 block above popped these and restored whatever was there before it. Without
@@ -3898,17 +3898,17 @@ def _refusal_chat(messages, config, **kwargs):  # noqa: ANN001, ANN202, ARG001
 # below would read as "the refusal was counted as a failure" -- a false pass on the one bug
 # this block exists to catch.
 _refusal_saved = {
-    _k: os.environ.pop(_k, None) for _k in ("GLIMPSE_VLM_ENDPOINT", "GLIMPSE_VLM_MODEL")
+    _k: os.environ.pop(_k, None) for _k in ("DYAK_VLM_ENDPOINT", "DYAK_VLM_MODEL")
 }
-os.environ["GLIMPSE_VLM_ENDPOINT"] = "http://vision.invalid/v1"
-os.environ["GLIMPSE_VLM_MODEL"] = "fake-vision"
+os.environ["DYAK_VLM_ENDPOINT"] = "http://vision.invalid/v1"
+os.environ["DYAK_VLM_MODEL"] = "fake-vision"
 
-glle.chat = _refusal_chat
+dyle.chat = _refusal_chat
 try:
     rdest = ctmp / "refusal_out"
-    rreport, routcome = glcap.run(cmanifest, ctrans, cquality, cimg, rdest, stream=io.StringIO())
+    rreport, routcome = dycap.run(cmanifest, ctrans, cquality, cimg, rdest, stream=io.StringIO())
 finally:
-    glle.chat = _fake_vision_chat
+    dyle.chat = _fake_vision_chat
 
 check(
     "a refusal is not a failure",
@@ -3929,39 +3929,39 @@ check(
     "the status is recorded in the artefact, not only in memory",
     all(
         a["caption_status"] == "NO_NEW_INFORMATION"
-        for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+        for a in json.loads((rdest / dycap.REPORT_NAME).read_text())["alignments"]
         if a["caption_status"] != "GATED_OUT"
     ),
     str(
         [
             a["caption_status"]
-            for a in json.loads((rdest / glcap.REPORT_NAME).read_text())["alignments"]
+            for a in json.loads((rdest / dycap.REPORT_NAME).read_text())["alignments"]
         ]
     ),
 )
 check(
     "the refusal count is in the outcome the report is written from",
-    json.loads((rdest / glcap.PROVENANCE_NAME).read_text().rsplit("\n{", 1)[0] + "") is not None
+    json.loads((rdest / dycap.PROVENANCE_NAME).read_text().rsplit("\n{", 1)[0] + "") is not None
     and routcome.as_dict()["refused"] == routcome.refused,
     str(routcome.as_dict()),
 )
 
 # Warm re-run over the refusal cache: the same frames, zero calls, and the same statuses.
 _seen_messages.clear()
-glle.chat = _refusal_chat
+dyle.chat = _refusal_chat
 try:
     wdest = ctmp / "refusal_warm"
-    wreport, woutcome = glcap.run(
+    wreport, woutcome = dycap.run(
         cmanifest,
         ctrans,
         cquality,
         cimg,
         wdest,
-        cache_source=rdest / glcap.REPORT_NAME,
+        cache_source=rdest / dycap.REPORT_NAME,
         stream=io.StringIO(),
     )
 finally:
-    glle.chat = _fake_vision_chat
+    dyle.chat = _fake_vision_chat
 
 check(
     "a warm re-run makes no calls",
@@ -4018,7 +4018,7 @@ _WIRE = [
         "on_screen_ms": [2000, 3000],
     },
 ]
-_wsec = glsy.build_sections(_WIRE, limit=1)[0]
+_wsec = dysy.build_sections(_WIRE, limit=1)[0]
 check(
     "a real caption rides along with the section",
     ("f_a.png", r"$\dot{x} = Ax$, матрица состояния") in _wsec.captions,
@@ -4026,7 +4026,7 @@ check(
 )
 check(
     "a refusal is stated in the writer's language, not passed as content",
-    ("f_b.png", glsy.CAPTION_REFUSED) in _wsec.captions
+    ("f_b.png", dysy.CAPTION_REFUSED) in _wsec.captions
     and not any("NO NEW INFORMATION" in t for _, t in _wsec.captions),
     str(_wsec.captions),
 )
@@ -4042,7 +4042,7 @@ check(
 )
 
 # The assertion #84 asks for: the caption text is in the message that goes to the model.
-# `glle.chat` is stubbed, so this reads what stage 7 *builds* -- the transport is covered
+# `dyle.chat` is stubbed, so this reads what stage 7 *builds* -- the transport is covered
 # elsewhere -- but unlike a mock of stage 7's own output it cannot pass while the wiring is
 # missing.
 _wprompts: list = []
@@ -4064,12 +4064,12 @@ class _WireTranscript:
         pass
 
 
-glle.chat = _wire_chat
+dyle.chat = _wire_chat
 try:
-    _wsyn = glsy.LLMSynthesizer(glle.Config(endpoint="http://e/v1", model="m"), _WireTranscript())
+    _wsyn = dysy.LLMSynthesizer(dyle.Config(endpoint="http://e/v1", model="m"), _WireTranscript())
     _wsyn.section(_wsec, _wsec.text)
 finally:
-    glle.chat = _real_chat
+    dyle.chat = _real_chat
 
 _wp = _wprompts[0][1]["content"]
 check(
@@ -4089,15 +4089,15 @@ check(
 )
 
 # A section with no captions still names its frames: the fallback the pre-#84 prompt used.
-_nocap = glsy.build_sections([{"frame": "f_z.png", "text": "t", "caption_status": "OK"}], limit=1)[
+_nocap = dysy.build_sections([{"frame": "f_z.png", "text": "t", "caption_status": "OK"}], limit=1)[
     0
 ]
 _wprompts.clear()
-glle.chat = _wire_chat
+dyle.chat = _wire_chat
 try:
     _wsyn.section(_nocap, _nocap.text)
 finally:
-    glle.chat = _real_chat
+    dyle.chat = _real_chat
 check(
     "a section with no captions still reports which frames were on screen",
     "Кадры на экране: f_z.png" in _wprompts[0][1]["content"],
@@ -4105,7 +4105,7 @@ check(
 )
 
 # The eight headings are the model's to write nothing about.
-note = glsy.synthesise(json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth())
+note = dysy.synthesise(json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth())
 check(
     "all eight sections are present",
     [s["number"] for s in note.sections] == list(range(1, 9)),
@@ -4114,7 +4114,7 @@ check(
 check(
     "in ADR-0001 D5's order, with ADR-0001 D5's titles",
     re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)
-    == [(str(n), t) for n, t, _ in glsy.SECTIONS],
+    == [(str(n), t) for n, t, _ in dysy.SECTIONS],
     str(re.findall(r"^## (\d)\. (.+)$", note.markdown, re.M)),
 )
 check(
@@ -4134,7 +4134,7 @@ check(
 check("a note missing sections is degraded", note.degraded, "an incomplete note claimed complete")
 
 # Failure isolation: one dead section must not lose the seven that worked. ADR-0001 D5.
-partial = glsy.synthesise(
+partial = dysy.synthesise(
     json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth(fail_on={4})
 )
 check(
@@ -4152,7 +4152,7 @@ check(
     "the failure is reported, not swallowed", partial.degraded and partial.notes, str(partial.notes)
 )
 
-toc = glsy.synthesise(
+toc = dysy.synthesise(
     json.loads(scaps.read_text())["alignments"], "текст", src_path, FakeSynth(toc_on={2})
 )
 check("a returned table of contents is discarded", "- раздел 1" not in toc.markdown, "ToC leaked")
@@ -4161,8 +4161,8 @@ check("and the warning says so", any("table of contents" in w for w in toc.notes
 # Heading demotion. The model reshapes the document; `assemble` must win.
 check(
     "a synthesized h1 is demoted, not left to compete with ADR-0001 D5's headings",
-    glsy.normalise("# Фрагмент\n\nтекст") == "### Фрагмент\n\nтекст",
-    glsy.normalise("# Фрагмент\n\nтекст"),
+    dysy.normalise("# Фрагмент\n\nтекст") == "### Фрагмент\n\nтекст",
+    dysy.normalise("# Фрагмент\n\nтекст"),
 )
 check(
     # This one asserted the opposite, and the assertion is what produced 29 unnumbered `##`
@@ -4171,8 +4171,8 @@ check(
     # sections themselves are `##`. A body heading at that level makes `## N. Title` stop
     # being the top of anything.
     "a synthesized h2 is pushed below the section level too",
-    glsy.normalise("## Подраздел\n\nтекст") == "### Подраздел\n\nтекст",
-    glsy.normalise("## Подраздел\n\nтекст"),
+    dysy.normalise("## Подраздел\n\nтекст") == "### Подраздел\n\nтекст",
+    dysy.normalise("## Подраздел\n\nтекст"),
 )
 check(
     "nothing in a section body is left at or above the section level",
@@ -4184,51 +4184,51 @@ check(
             "# A\n###### B",
             "## A",
         )
-        for line in glsy.normalise(body).splitlines()
+        for line in dysy.normalise(body).splitlines()
         if line.lstrip("#").startswith((" ", "")) and line.lstrip().startswith("#")
     ),
-    "  ".join(glsy.normalise(b) for b in ("## A\n### B", "# A\n## B")),
+    "  ".join(dysy.normalise(b) for b in ("## A\n### B", "# A\n## B")),
 )
 check(
     "relative nesting survives the shift",
-    glsy.normalise("## A\n### B\n#### C") == "### A\n#### B\n##### C",
-    glsy.normalise("## A\n### B\n#### C"),
+    dysy.normalise("## A\n### B\n#### C") == "### A\n#### B\n##### C",
+    dysy.normalise("## A\n### B\n#### C"),
 )
 check(
     # Mapping every heading to `###` collapsed a body mixing `##` and `####` into a flat
     # one, losing the model's own structure along with its level.
     "a deeper heading does not collapse onto a shallower sibling",
-    glsy.normalise("# T\n###### D") == "### T\n###### D",
-    glsy.normalise("# T\n###### D"),
+    dysy.normalise("# T\n###### D") == "### T\n###### D",
+    dysy.normalise("# T\n###### D"),
 )
 check(
     # `########` is not a heading in Markdown, it is a paragraph. Clamping keeps the note
     # renderable instead of silently turning a heading into text.
     "a shift cannot produce more than six hashes",
-    max(len(m.group(1)) for m in re.finditer(r"^(#+) ", glsy.normalise("###### D\n# T"), re.M))
+    max(len(m.group(1)) for m in re.finditer(r"^(#+) ", dysy.normalise("###### D\n# T"), re.M))
     <= 6,
-    glsy.normalise("###### D\n# T"),
+    dysy.normalise("###### D\n# T"),
 )
 check(
     # A body that starts at `###` is already correct, and shifting it to `#####` would
     # invent depth the model did not claim.
     "a body already below the section level is left alone",
-    glsy.normalise("### A\n#### B") == "### A\n#### B",
-    glsy.normalise("### A\n#### B"),
+    dysy.normalise("### A\n#### B") == "### A\n#### B",
+    dysy.normalise("### A\n#### B"),
 )
 check(
     "a body with no headings is returned unchanged",
-    glsy.normalise("просто текст\n\nи ещё") == "просто текст\n\nи ещё",
-    glsy.normalise("просто текст\n\nи ещё"),
+    dysy.normalise("просто текст\n\nи ещё") == "просто текст\n\nи ещё",
+    dysy.normalise("просто текст\n\nи ещё"),
 )
 
 # The template synthesizer is the oracle: it must run with nothing configured and must not
 # invent content.
-tnote = glsy.synthesise(
+tnote = dysy.synthesise(
     json.loads(scaps.read_text())["alignments"],
     "текст",
     src_path,
-    glsy.TemplateSynthesizer(src_path, "текст", cuts),
+    dysy.TemplateSynthesizer(src_path, "текст", cuts),
 )
 check("the template needs no model", tnote.synthesizer == "template", tnote.synthesizer)
 check(
@@ -4239,31 +4239,31 @@ check(
 check("and it is reported as degraded", tnote.degraded, "a skeleton is not a finished note")
 check(
     "two synthesizers, one protocol",
-    isinstance(glsy.TemplateSynthesizer(src_path, "", []), glsy.Synthesizer),
+    isinstance(dysy.TemplateSynthesizer(src_path, "", []), dysy.Synthesizer),
     "template is not a Synthesizer",
 )
 check(
     "and the fake is too",
-    isinstance(FakeSynth(), glsy.Synthesizer),
+    isinstance(FakeSynth(), dysy.Synthesizer),
     "duck-typed stub is not a Synthesizer",
 )
 
 # Unconfigured endpoint is a state, not a crash.
 try:
-    glle.Config.from_env()
+    dyle.Config.from_env()
     raise AssertionError("expected NotConfiguredError")
-except glle.NotConfiguredError as exc:
+except dyle.NotConfiguredError as exc:
     check(
         "an unconfigured endpoint raises before any network call",
-        "GLIMPSE_LLM_ENDPOINT" in str(exc),
+        "DYAK_LLM_ENDPOINT" in str(exc),
         str(exc),
     )
 
-saved_llm_env = {k: os.environ.get(k) for k in (glle.ENDPOINT_ENV, glle.MODEL_ENV, glle.KEY_ENV)}
-os.environ[glle.ENDPOINT_ENV] = "http://h/v1"
-os.environ[glle.MODEL_ENV] = "m"
-os.environ[glle.KEY_ENV] = "secret"
-cfg = glle.Config.from_env()
+saved_llm_env = {k: os.environ.get(k) for k in (dyle.ENDPOINT_ENV, dyle.MODEL_ENV, dyle.KEY_ENV)}
+os.environ[dyle.ENDPOINT_ENV] = "http://h/v1"
+os.environ[dyle.MODEL_ENV] = "m"
+os.environ[dyle.KEY_ENV] = "secret"
+cfg = dyle.Config.from_env()
 for _k, _v in saved_llm_env.items():
     os.environ.pop(_k, None) if _v is None else os.environ.__setitem__(_k, _v)
 check(
@@ -4280,23 +4280,23 @@ check("but its presence is recorded", cfg.redacted()["api_key"] is True, str(cfg
 
 # The artefacts.
 dest = tmp / "synth-out"
-sn = glsy.run(scaps, stxt, src_path, dest, config=None, stream=io.StringIO())
+sn = dysy.run(scaps, stxt, src_path, dest, config=None, stream=io.StringIO())
 check(
     "run writes the note",
-    (dest / glsy.NOTE_NAME).is_file(),
+    (dest / dysy.NOTE_NAME).is_file(),
     str(sorted(p.name for p in dest.iterdir())),
 )
 check(
     "run writes the report",
-    (dest / glsy.REPORT_NAME).is_file(),
+    (dest / dysy.REPORT_NAME).is_file(),
     str(sorted(p.name for p in dest.iterdir())),
 )
 check(
     "run writes provenance",
-    (dest / glsy.PROVENANCE_NAME).is_file(),
+    (dest / dysy.PROVENANCE_NAME).is_file(),
     str(sorted(p.name for p in dest.iterdir())),
 )
-prov = json.loads((dest / glsy.PROVENANCE_NAME).read_text())
+prov = json.loads((dest / dysy.PROVENANCE_NAME).read_text())
 check("provenance records which synthesizer ran", prov["synthesizer"] == "template", str(prov))
 check(
     "provenance states the stage does not require a model",
@@ -4308,7 +4308,7 @@ check(
     "oracle" in prov["why_two_implementations"],
     str(prov),
 )
-srep = json.loads((dest / glsy.REPORT_NAME).read_text())
+srep = json.loads((dest / dysy.REPORT_NAME).read_text())
 check(
     "the report records the synthesizer and the size",
     srep["synthesizer"] == "template" and srep["bytes"] > 0,
@@ -4327,22 +4327,22 @@ limg.mkdir(parents=True, exist_ok=True)
 def note(*bodies: str) -> str:
     """A well-formed note, so each test can break exactly one thing."""
     parts = ["# Тест"]
-    for (number, title, _), body in zip(glsy.SECTIONS, bodies):
+    for (number, title, _), body in zip(dysy.SECTIONS, bodies):
         parts += ["", f"## {number}. {title}", "", body]
     return "\n".join(parts) + "\n"
 
 
 clean = note(*["содержимое раздела"] * 8)
-r = glln.lint(clean, limg)
+r = dyln.lint(clean, limg)
 check("a well-formed note lints clean", r.ok and not r.findings, r.summary() + str(r.findings))
 check("every rule ran", r.checked == 9, str(r.checked))
-check("an empty note is not ok", not glln.lint("", limg).ok, "empty passed")
+check("an empty note is not ok", not dyln.lint("", limg).ok, "empty passed")
 
 
 def rules(text, rule):
     """Findings of one rule. Reading findings by rule is how each test names exactly the
     defect it introduced, instead of asserting on a whole report."""
-    return [f for f in glln.lint(text, limg).findings if f.rule == rule]
+    return [f for f in dyln.lint(text, limg).findings if f.rule == rule]
 
 
 # Structure.
@@ -4371,7 +4371,7 @@ padded = note(
 check(
     "a section that declares itself empty and then is not, is an error",
     rules(padded, "structure/claims-empty-but-is-not"),
-    str(glln.lint(padded, limg).findings),
+    str(dyln.lint(padded, limg).findings),
 )
 check(
     "a genuinely empty section is fine",
@@ -4408,19 +4408,19 @@ check(
         clean + "\n## 6. Математический фундамент\n\nещё раз то же самое\n",
         "structure/duplicate-heading",
     ),
-    str(glln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
+    str(dyln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
 )
 check(
     "and it is a warning, not an error -- the note is still structurally complete",
     [
         f.severity
-        for f in glln.lint(
+        for f in dyln.lint(
             clean + "\n## 6. Математический фундамент\n\nещё раз то же самое\n", limg
         ).findings
         if f.rule == "structure/duplicate-heading"
     ]
-    == [glln.WARN],
-    str(glln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
+    == [dyln.WARN],
+    str(dyln.lint(clean + "\n## 6. Математический фундамент\n\nещё раз\n", limg).findings),
 )
 check(
     "a well-formed note has no duplicate heading to report",
@@ -4434,7 +4434,7 @@ check(
     "a bare sentinel beside content is still an error",
     rules(
         note(
-            *["заполнено"] * 7 + [f"{glsy.NOT_COVERED}\n\nА на самом деле три абзаца."],
+            *["заполнено"] * 7 + [f"{dysy.NOT_COVERED}\n\nА на самом деле три абзаца."],
         ),
         "structure/claims-empty-but-is-not",
     ),
@@ -4544,52 +4544,52 @@ check(
     "false positive",
 )
 
-# The vault default. `GLIMPSE_VAULT` and `DEFAULT_VAULT` used to live only inside
+# The vault default. `DYAK_VAULT` and `DEFAULT_VAULT` used to live only inside
 # `check_vault`, so `doctor` reported a directory the run never consulted. Measured on
 # lecture 1: doctor named ~/Documents/obs_notes, the run carried `vault_path=None`, stage 11
 # resolved no terms directory, and stage 12 had the same gap -- on a machine where
 # `mscs/_terms` held 34 term notes.
-_saved_vault_env = os.environ.pop(gld.VAULT_ENV, None)
+_saved_vault_env = os.environ.pop(dyd.VAULT_ENV, None)
 try:
-    os.environ[gld.VAULT_ENV] = str(tmp / "vault-fixture")
+    os.environ[dyd.VAULT_ENV] = str(tmp / "vault-fixture")
     (tmp / "vault-fixture").mkdir()
-    (tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME).mkdir(parents=True)
+    (tmp / "vault-fixture" / dylk.COURSES_DIRNAME / dylk.TERMS_DIRNAME).mkdir(parents=True)
     check(
         "doctor and the run resolve the same vault",
-        gld.resolve_vault() == gld.Path(str(tmp / "vault-fixture")),
-        str(gld.resolve_vault()),
+        dyd.resolve_vault() == dyd.Path(str(tmp / "vault-fixture")),
+        str(dyd.resolve_vault()),
     )
     check(
         "stage 11 finds the terms directory under the resolved vault, with no flag passed",
-        gllk.resolve_terms_dir(None, gld.resolve_vault())
-        == tmp / "vault-fixture" / gllk.COURSES_DIRNAME / gllk.TERMS_DIRNAME,
-        str(gllk.resolve_terms_dir(None, gld.resolve_vault())),
+        dylk.resolve_terms_dir(None, dyd.resolve_vault())
+        == tmp / "vault-fixture" / dylk.COURSES_DIRNAME / dylk.TERMS_DIRNAME,
+        str(dylk.resolve_terms_dir(None, dyd.resolve_vault())),
     )
     check(
         "an explicit --terms-dir still wins over the vault",
-        gllk.resolve_terms_dir(str(tmp), gld.resolve_vault()) == tmp,
+        dylk.resolve_terms_dir(str(tmp), dyd.resolve_vault()) == tmp,
         "explicit argument was ignored",
     )
     check(
         "an explicit --vault still wins over the environment",
-        gld.resolve_vault(str(tmp)) == tmp and gld.resolve_vault(str(tmp)) != gld.resolve_vault(),
+        dyd.resolve_vault(str(tmp)) == tmp and dyd.resolve_vault(str(tmp)) != dyd.resolve_vault(),
         "explicit argument was ignored",
     )
-    os.environ.pop(gld.VAULT_ENV, None)
+    os.environ.pop(dyd.VAULT_ENV, None)
     check(
         "with nothing set, the default vault is used rather than None",
-        gld.resolve_vault() == gld.DEFAULT_VAULT,
-        str(gld.resolve_vault()),
+        dyd.resolve_vault() == dyd.DEFAULT_VAULT,
+        str(dyd.resolve_vault()),
     )
 finally:
     if _saved_vault_env is not None:
-        os.environ[gld.VAULT_ENV] = _saved_vault_env
+        os.environ[dyd.VAULT_ENV] = _saved_vault_env
 
 # Filler.
 bodies[4] = "Метод работает, ну, потому что он сходится, как бы."
 check("filler is a warning, not an error", rules(note(*bodies), "style/filler"), "no finding")
 check(
-    "filler does not block the note", glln.lint(note(*bodies), limg).ok, "filler blocked the gate"
+    "filler does not block the note", dyln.lint(note(*bodies), limg).ok, "filler blocked the gate"
 )
 bodies[4] = "Нулевое начальное условие и нулевая производная корректны."
 check(
@@ -4662,8 +4662,8 @@ fenced = clean.replace(
 )
 check(
     "code fences are excluded from every check",
-    not glln.lint(fenced, limg).findings,
-    str(glln.lint(fenced, limg).findings),
+    not dyln.lint(fenced, limg).findings,
+    str(dyln.lint(fenced, limg).findings),
 )
 
 # Mojibake.
@@ -4675,22 +4675,22 @@ ldest = tmp / "lint-out"
 lnote = ldest / "note.md"
 ldest.mkdir(parents=True, exist_ok=True)
 lnote.write_text(clean, encoding="utf-8")
-lrep = glln.run(lnote, limg, ldest, stream=io.StringIO())
+lrep = dyln.run(lnote, limg, ldest, stream=io.StringIO())
 check(
     "run writes the report",
-    (ldest / glln.REPORT_NAME).is_file(),
+    (ldest / dyln.REPORT_NAME).is_file(),
     str(sorted(p.name for p in ldest.iterdir())),
 )
 check(
     "run writes provenance",
-    (ldest / glln.PROVENANCE_NAME).is_file(),
+    (ldest / dyln.PROVENANCE_NAME).is_file(),
     str(sorted(p.name for p in ldest.iterdir())),
 )
-lprov = json.loads((ldest / glln.PROVENANCE_NAME).read_text())
+lprov = json.loads((ldest / dyln.PROVENANCE_NAME).read_text())
 check("provenance says no model is involved", lprov["requires_model"] is False, str(lprov))
 check("provenance names every rule it ran", len(lprov["rules"]) == 12, str(lprov["rules"]))
 check("provenance says what blocks the gate", lprov["blocking"] == "ERROR", str(lprov))
-lrep = json.loads((ldest / glln.REPORT_NAME).read_text())
+lrep = json.loads((ldest / dyln.REPORT_NAME).read_text())
 check(
     "the report separates errors from warnings",
     lrep["errors"] == 0 and lrep["warnings"] == 0,
@@ -4698,14 +4698,14 @@ check(
 )
 check(
     "run() on a missing note is a finding, not a traceback",
-    not glln.run(ldest / "nope.md", limg, ldest, stream=io.StringIO()).ok,
+    not dyln.run(ldest / "nope.md", limg, ldest, stream=io.StringIO()).ok,
     "passed",
 )
 
 
 # --- 15. stages 9 and 10: audit and repair ------------------------------------------
 decl = r"$\mathbf{x} \in \mathbb{R}^n$, $\mathbf{A} \in \mathbb{R}^{m \times n}$"
-A = glau.Glossary.parse(
+A = dyau.Glossary.parse(
     "| Вариант ASR | Канон | Домен | Дата |\n"
     "|---|---|---|---|\n"
     "| ilqf | iLQR (iterative LQR) | управление | 2026-10-01 |\n"
@@ -4715,13 +4715,13 @@ A = glau.Glossary.parse(
 
 def audit_note(*bodies: str) -> str:
     parts = ["# Тест"]
-    for (n, t, _), b in zip(glsy.SECTIONS, bodies):
+    for (n, t, _), b in zip(dysy.SECTIONS, bodies):
         parts += ["", f"## {n}. {t}", "", b]
     return "\n".join(parts) + "\n"
 
 
 def found(text, rule, transcript="", glossary=A):
-    r = glau.audit(text, transcript, glossary, stream=io.StringIO())
+    r = dyau.audit(text, transcript, glossary, stream=io.StringIO())
     return [f for f in r.findings if f.rule == rule]
 
 
@@ -4744,7 +4744,7 @@ check(
     not found(audit_note(*bodies), "term/drift"),
     str(found(audit_note(*bodies), "term/drift")),
 )
-check("a short variant is not matched loosely", not glau.Glossary(("abc", "X")).entries or True, "")
+check("a short variant is not matched loosely", not dyau.Glossary(("abc", "X")).entries or True, "")
 
 # Dimensions. These are the cases the engine is for, and the ones it must NOT fire on.
 bodies = ["содержимое"] * 8
@@ -4810,7 +4810,7 @@ check("an empty display block is a WARN", found(audit_note(*bodies), "math/empty
 
 # Tier 2.
 clean_note = audit_note(*["содержимое"] * 8)
-ar = glau.audit(clean_note, "", A, stream=io.StringIO())
+ar = dyau.audit(clean_note, "", A, stream=io.StringIO())
 check(
     "without a config tier 2 is NOT_CONFIGURED, not clean", ar.tier2 == "NOT_CONFIGURED", ar.tier2
 )
@@ -4831,7 +4831,7 @@ class CriticStub:
 
     def __call__(self, messages, config, **kw):
         self.seen.append(messages)
-        return glle.Reply(
+        return dyle.Reply(
             text=self.text,
             model="stub",
             prompt_tokens=1,
@@ -4847,15 +4847,15 @@ GOOD_LINE = (
     "[источник: соответствие динамической системы] [уверенность: высокая]"
 )
 
-real_chat = glle.chat
-glle.chat = CriticStub(GOOD_LINE)
+real_chat = dyle.chat
+dyle.chat = CriticStub(GOOD_LINE)
 try:
-    trace = glle.Transcript()
-    crit, crit_dropped, crit_cov = glau.tier2_critic(
-        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), trace
+    trace = dyle.Transcript()
+    crit, crit_dropped, crit_cov = dyau.tier2_critic(
+        clean_note, LECT, dyle.Config(endpoint="http://x/v1", model="m"), trace
     )
 finally:
-    glle.chat = real_chat
+    dyle.chat = real_chat
 check(
     # The stub answers identically for every section, so one finding per reviewed section
     # is the correct count -- not one, and not the cap.
@@ -4923,14 +4923,14 @@ for name, line, why in (
         "quote is not verbatim in the note",
     ),
 ):
-    kept, dropped = glau.parse_critic_findings(line, SECTION, LECT)
+    kept, dropped = dyau.parse_critic_findings(line, SECTION, LECT)
     check(
         f"a finding with {name} is discarded",
         kept == [] and len(dropped) == 1 and dropped[0]["reason"] == why,
         str(dropped),
     )
 
-kept, dropped = glau.parse_critic_findings(GOOD_LINE, SECTION, LECT)
+kept, dropped = dyau.parse_critic_findings(GOOD_LINE, SECTION, LECT)
 check(
     "the same line survives against a matching transcript and section",
     len(kept) == 1 and not dropped,
@@ -4938,29 +4938,29 @@ check(
 )
 
 # The auditor may say "not sure", and that is a result rather than a failure.
-real_chat = glle.chat
-glle.chat = CriticStub("НЕ УВЕРЕН")
+real_chat = dyle.chat
+dyle.chat = CriticStub("НЕ УВЕРЕН")
 try:
-    abst, _, _ = glau.tier2_critic(
-        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    abst, _, _ = dyau.tier2_critic(
+        clean_note, LECT, dyle.Config(endpoint="http://x/v1", model="m"), dyle.Transcript()
     )
 finally:
-    glle.chat = real_chat
+    dyle.chat = real_chat
 check(
     "an abstention is recorded, as INFO rather than silence",
     len(abst) == 8 and all(f.rule == "critic/abstained" and f.severity == "INFO" for f in abst),
     str(abst[:1]),
 )
 
-real_chat = glle.chat
+real_chat = dyle.chat
 stub = CriticStub("OK")
-glle.chat = stub
+dyle.chat = stub
 try:
-    glau.tier2_critic(
-        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    dyau.tier2_critic(
+        clean_note, LECT, dyle.Config(endpoint="http://x/v1", model="m"), dyle.Transcript()
     )
 finally:
-    glle.chat = real_chat
+    dyle.chat = real_chat
 sent = " ".join(m["content"] for call in stub.seen for m in call)
 check(
     "ADR-0001 D5: the critic IS given the transcript it audits against",
@@ -4984,16 +4984,16 @@ check(
 # different artefact from a critic that found nothing, and only this rule tells them apart --
 # without it, an endpoint that failed on section 1 produces a clean-looking audit.
 def _dead_critic(messages, config, **kw):
-    raise glle.EndpointError(f"{config.url} unreachable: connection refused")
+    raise dyle.EndpointError(f"{config.url} unreachable: connection refused")
 
 
-glle.chat = _dead_critic
+dyle.chat = _dead_critic
 try:
-    dead_findings, dead_dropped, _dead_cov = glau.tier2_critic(
-        clean_note, LECT, glle.Config(endpoint="http://x/v1", model="m"), glle.Transcript()
+    dead_findings, dead_dropped, _dead_cov = dyau.tier2_critic(
+        clean_note, LECT, dyle.Config(endpoint="http://x/v1", model="m"), dyle.Transcript()
     )
 finally:
-    glle.chat = real_chat
+    dyle.chat = real_chat
 check(
     "a critic that fails mid-run is reported, not counted as a clean audit",
     [f.rule for f in dead_findings] == ["critic/unavailable"],
@@ -5014,43 +5014,43 @@ check(
 bodies = ["содержимое"] * 8
 bodies[5] = "Формула $x = u + B$ и $y = \\mathbf{x}."
 broken_note = audit_note(*bodies)
-lrep = glln.lint(broken_note, limg)
-arep = glau.audit(broken_note, "0.5", A, stream=io.StringIO())
-fixed, rrep = glrep.repair(broken_note, arep, A, lrep)
-check("an unbalanced $ is repaired", glln.lint(fixed, limg).ok, glln.lint(fixed, limg).summary())
+lrep = dyln.lint(broken_note, limg)
+arep = dyau.audit(broken_note, "0.5", A, stream=io.StringIO())
+fixed, rrep = dyrep.repair(broken_note, arep, A, lrep)
+check("an unbalanced $ is repaired", dyln.lint(fixed, limg).ok, dyln.lint(fixed, limg).summary())
 check(
     "and the change is recorded with before and after",
     rrep.changes and rrep.changes[0].before != rrep.changes[0].after,
     str(rrep.changes),
 )
-again, rrep2 = glrep.repair(fixed, arep, A, glln.lint(fixed, limg))
+again, rrep2 = dyrep.repair(fixed, arep, A, dyln.lint(fixed, limg))
 check("repair is idempotent", again == fixed and not rrep2.changed, "a second run changed the note")
 
-bodies[5] = glsy.NOT_COVERED + "\n\nИ на самом деле абзац."
+bodies[5] = dysy.NOT_COVERED + "\n\nИ на самом деле абзац."
 padded = audit_note(*bodies)
-fixed, rrep = glrep.repair(
-    padded, glau.audit(padded, "", A, stream=io.StringIO()), A, glln.lint(padded, limg)
+fixed, rrep = dyrep.repair(
+    padded, dyau.audit(padded, "", A, stream=io.StringIO()), A, dyln.lint(padded, limg)
 )
 check(
     "a padded empty section is restored to the honest marker",
-    glsy.NOT_COVERED in fixed and "И на самом деле абзац" not in fixed,
+    dysy.NOT_COVERED in fixed and "И на самом деле абзац" not in fixed,
     fixed[-400:],
 )
 
 bodies[3] = "Применяется ILQF."
 drifty = audit_note(*bodies)
-fixed, rrep = glrep.repair(
-    drifty, glau.audit(drifty, "", A, stream=io.StringIO()), A, glln.lint(drifty, limg)
+fixed, rrep = dyrep.repair(
+    drifty, dyau.audit(drifty, "", A, stream=io.StringIO()), A, dyln.lint(drifty, limg)
 )
 check("glossary drift is canonicalised", "iLQR (iterative LQR)" in fixed, "not replaced")
 check("and it did not crash on a LaTeX-bearing canonical", True, "")
 
 # A canonical containing a backslash must not be treated as a replacement template.
-la = glau.Glossary((("пять", r"$\mathbf{x} \in \mathbb{R}^n$"),))
+la = dyau.Glossary((("пять", r"$\mathbf{x} \in \mathbb{R}^n$"),))
 bodies[3] = "Считаем пять."
 latexy = audit_note(*bodies)
-fixed, rrep = glrep.repair(
-    latexy, glau.audit(latexy, "", la, stream=io.StringIO()), la, glln.lint(latexy, limg)
+fixed, rrep = dyrep.repair(
+    latexy, dyau.audit(latexy, "", la, stream=io.StringIO()), la, dyln.lint(latexy, limg)
 )
 check(
     "a canonical containing \\mathbf is inserted, not parsed as an escape",
@@ -5061,8 +5061,8 @@ check(
 # Declined: the things that need judgement.
 bodies[5] = decl + "\n\n$J = \\mathbf{A} + \\mathbf{x}$"
 mism = audit_note(*bodies)
-arep = glau.audit(mism, "", A, stream=io.StringIO())
-_, rrep = glrep.repair(mism, arep, A, glln.lint(mism, limg))
+arep = dyau.audit(mism, "", A, stream=io.StringIO())
+_, rrep = dyrep.repair(mism, arep, A, dyln.lint(mism, limg))
 check(
     "a dimension error is NOT mechanically repaired",
     any(d["rule"] == "dimension/mismatch" for d in rrep.declined),
@@ -5071,13 +5071,13 @@ check(
 check("and the decline says why", all(d["reason"] for d in rrep.declined), str(rrep.declined[:1]))
 check(
     "critic findings are declined by rule, per the table",
-    "critic/finding" in glrep.DECLINED
-    and "a model's criticism is not evidence" in glrep.DECLINED["critic/finding"],
-    str(glrep.DECLINED.get("critic/finding")),
+    "critic/finding" in dyrep.DECLINED
+    and "a model's criticism is not evidence" in dyrep.DECLINED["critic/finding"],
+    str(dyrep.DECLINED.get("critic/finding")),
 )
 check(
     "only the four unambiguous rules are repairable",
-    glrep.REPAIRABLE
+    dyrep.REPAIRABLE
     == frozenset(
         {
             "math/inline-unbalanced",
@@ -5087,7 +5087,7 @@ check(
             "term/drift",
         }
     ),
-    str(sorted(glrep.REPAIRABLE)),
+    str(sorted(dyrep.REPAIRABLE)),
 )
 
 # --- 16. acceptance criteria #11 and #18 that had no test ---------------------------
@@ -5097,7 +5097,7 @@ rdest.mkdir(parents=True, exist_ok=True)
 (rdest / "note.md").write_text(broken_note, encoding="utf-8")
 lrep_path = rdest / "lint.json"
 lrep_path.write_text(json.dumps(lrep.as_dict()), encoding="utf-8")
-rr = glrep.run(
+rr = dyrep.run(
     rdest / "note.md",
     rdest / "missing-audit.json",
     rdest,
@@ -5106,16 +5106,16 @@ rr = glrep.run(
 )
 check(
     "run writes the repaired note beside the original",
-    (rdest / glrep.REPAIRED_NOTE).is_file(),
+    (rdest / dyrep.REPAIRED_NOTE).is_file(),
     str(sorted(p.name for p in rdest.iterdir())),
 )
 check("the original is still there", (rdest / "note.md").is_file(), "original was overwritten")
 check(
     "run writes the repair report",
-    (rdest / glrep.REPORT_NAME).is_file(),
+    (rdest / dyrep.REPORT_NAME).is_file(),
     str(sorted(p.name for p in rdest.iterdir())),
 )
-rprov = json.loads((rdest / glrep.PROVENANCE_NAME).read_text())
+rprov = json.loads((rdest / dyrep.PROVENANCE_NAME).read_text())
 check("provenance says the original is kept", rprov["original_kept"] is True, str(rprov))
 check(
     "provenance lists every declined reason",
@@ -5131,10 +5131,10 @@ adir2 = tmp / "repair-src"
 adir2.mkdir(parents=True, exist_ok=True)
 src_note = adir2 / "note.md"
 src_note.write_text(broken_note, encoding="utf-8")
-src_audit = adir2 / glau.REPORT_NAME
+src_audit = adir2 / dyau.REPORT_NAME
 src_audit.write_text(json.dumps(arep.as_dict(), ensure_ascii=False), encoding="utf-8")
 before_hash = hashlib.sha256(src_audit.read_bytes()).hexdigest()
-glrep.run(src_note, src_audit, adir2, lint_report_path=lrep_path, stream=io.StringIO())
+dyrep.run(src_note, src_audit, adir2, lint_report_path=lrep_path, stream=io.StringIO())
 after_hash = hashlib.sha256(src_audit.read_bytes()).hexdigest()
 check(
     "repair leaves the audit report byte-identical",
@@ -5148,9 +5148,9 @@ check(
 empty_dir = tmp / "repair-empty"
 empty_dir.mkdir(parents=True, exist_ok=True)
 (empty_dir / "note.md").write_text(clean_note, encoding="utf-8")
-empty_audit = empty_dir / glau.REPORT_NAME
-empty_audit.write_text(json.dumps(glau.Report().as_dict(), ensure_ascii=False), encoding="utf-8")
-zero = glrep.run(
+empty_audit = empty_dir / dyau.REPORT_NAME
+empty_audit.write_text(json.dumps(dyau.Report().as_dict(), ensure_ascii=False), encoding="utf-8")
+zero = dyrep.run(
     empty_dir / "note.md",
     empty_audit,
     empty_dir,
@@ -5161,7 +5161,7 @@ check("a repair run with no findings is not an error", zero is not None, "raised
 check("and it changes nothing", not zero.changed and zero.declined == [], str(zero.as_dict()))
 check(
     "and it still writes the note, so the pipeline has one",
-    (empty_dir / glrep.REPAIRED_NOTE).read_text(encoding="utf-8") == clean_note,
+    (empty_dir / dyrep.REPAIRED_NOTE).read_text(encoding="utf-8") == clean_note,
     "note was altered on a no-op run",
 )
 
@@ -5176,16 +5176,16 @@ probe_src.write_bytes(b"\x1a\x45\xdf\xa3fake")
 def dirty_pipeline(source, work, **kw):
     result = fake_pipeline(source, work, **kw)
     result.audit.findings.append(
-        glau.Finding("tier1", "dimension/mismatch", "ERROR", 12, "terms of different rank summed")
+        dyau.Finding("tier1", "dimension/mismatch", "ERROR", 12, "terms of different rank summed")
     )
     return result
 
 
-glp.run = dirty_pipeline
-rc5 = glc.main(["process", str(probe_src)])
+dyp.run = dirty_pipeline
+rc5 = dyc.main(["process", str(probe_src)])
 check("an error-tier finding exits 5, not 1", rc5 == ec.AUDIT_FINDINGS, f"rc={rc5}")
-glp.run = fake_pipeline
-rc1 = glc.main(["process", str(probe_src)])
+dyp.run = fake_pipeline
+rc1 = dyc.main(["process", str(probe_src)])
 check(
     # The counterpart to the exit-5 assertion above: a clean audit on a verified run
     # now exits 0, because stage 12 exists and every artefact is on disk.
@@ -5211,7 +5211,7 @@ tterms.mkdir(parents=True, exist_ok=True)
 )
 (tterms / "not-a-term.md").write_text("---\ntype: note\n---\n\n# Не термин\n", encoding="utf-8")
 
-terms_loaded = gllk.load_terms(tterms)
+terms_loaded = dylk.load_terms(tterms)
 check(
     "only notes with type: term are loaded",
     sorted(t.canonical for t in terms_loaded) == ["LQR", "MPC"],
@@ -5233,7 +5233,7 @@ probe = (
     "МПЦ применяется. Формула $x = MPC$ и $$\n\\mathcal{L} = MPC\n$$ и `MPC` в коде.\n"
     "Ссылка [[LQR]] уже есть. И mpc строчными.\n"
 )
-linked, counts = gllk.link_text(probe, terms_loaded)
+linked, counts = dylk.link_text(probe, terms_loaded)
 check(
     "an ASR variant is linked to its canonical",
     "[[МПЦ|MPC]]" in linked,
@@ -5245,9 +5245,9 @@ check(
     linked,
 )
 protected = (
-    gllk.MULTILINE.findall(linked)
-    + gllk.INLINE_MATH.findall(linked)
-    + gllk.INLINE_CODE.findall(linked)
+    dylk.MULTILINE.findall(linked)
+    + dylk.INLINE_MATH.findall(linked)
+    + dylk.INLINE_CODE.findall(linked)
 )
 check("protected regions were found to inspect", len(protected) >= 3, str(protected))
 check(
@@ -5256,7 +5256,7 @@ check(
     str(protected),
 )
 check("an existing wikilink is left alone", "[[LQR]]" in linked and "[[LQR|" not in linked, linked)
-again, counts2 = gllk.link_text(linked, terms_loaded)
+again, counts2 = dylk.link_text(linked, terms_loaded)
 check("link is idempotent: byte-identical second run", again == linked, again)
 check("and the second run inserts nothing", sum(counts2.values()) == 0, str(counts2))
 
@@ -5264,40 +5264,40 @@ check("and the second run inserts nothing", sum(counts2.values()) == 0, str(coun
 # where terms load from but not what the sweep skips.
 excl = tvault / "mscs" / "Лекция 1.md"
 excl.write_text("MPC", encoding="utf-8")
-check("a lecture note is a target", excl in gllk.collect_targets([], tterms, tvault))
+check("a lecture note is a target", excl in dylk.collect_targets([], tterms, tvault))
 check(
     "a term note is NOT a target",
-    tterms / "MPC.md" not in gllk.collect_targets([], tterms, tvault),
+    tterms / "MPC.md" not in dylk.collect_targets([], tterms, tvault),
     "term notes would be linked to themselves",
 )
 
 # --- configuration, not constants ---------------------------------------------------
 check(
     "an explicit terms dir wins",
-    gllk.resolve_terms_dir(tterms, None) == tterms,
-    str(gllk.resolve_terms_dir(tterms, None)),
+    dylk.resolve_terms_dir(tterms, None) == tterms,
+    str(dylk.resolve_terms_dir(tterms, None)),
 )
 check(
     "the vault is the fallback",
-    gllk.resolve_terms_dir(None, tvault) == tterms,
-    str(gllk.resolve_terms_dir(None, tvault)),
+    dylk.resolve_terms_dir(None, tvault) == tterms,
+    str(dylk.resolve_terms_dir(None, tvault)),
 )
-real_terms_env = os.environ.get(gllk.TERMS_ENV)
-os.environ[gllk.TERMS_ENV] = str(tterms)
+real_terms_env = os.environ.get(dylk.TERMS_ENV)
+os.environ[dylk.TERMS_ENV] = str(tterms)
 try:
     check(
         "the env var is consulted before the vault",
-        gllk.resolve_terms_dir(None, None) == tterms,
-        str(gllk.resolve_terms_dir(None, None)),
+        dylk.resolve_terms_dir(None, None) == tterms,
+        str(dylk.resolve_terms_dir(None, None)),
     )
 finally:
     if real_terms_env is None:
-        os.environ.pop(gllk.TERMS_ENV, None)
+        os.environ.pop(dylk.TERMS_ENV, None)
     else:
-        os.environ[gllk.TERMS_ENV] = real_terms_env
+        os.environ[dylk.TERMS_ENV] = real_terms_env
 check(
     "no terms dir resolves to None, not to a silent empty run",
-    gllk.resolve_terms_dir(tmp / "no-such-terms", None) is None,
+    dylk.resolve_terms_dir(tmp / "no-such-terms", None) is None,
     "a missing directory must not read as 'zero terms found'",
 )
 
@@ -5305,10 +5305,10 @@ check(
 ldir = tmp / "link-out"
 ldir.mkdir(parents=True, exist_ok=True)
 (ldir / "note.md").write_text(probe, encoding="utf-8")
-lrep = gllk.run(ldir / "note.md", ldir, terms_dir=tterms, stream=io.StringIO())
+lrep = dylk.run(ldir / "note.md", ldir, terms_dir=tterms, stream=io.StringIO())
 check(
     "run writes the linked note",
-    (ldir / gllk.LINKED_NOTE).is_file(),
+    (ldir / dylk.LINKED_NOTE).is_file(),
     str(sorted(p.name for p in ldir.iterdir())),
 )
 check(
@@ -5316,7 +5316,7 @@ check(
     (ldir / "note.md").read_text(encoding="utf-8") == probe,
     "stage 11 rewrote its own input",
 )
-lprov = json.loads((ldir / gllk.PROVENANCE_NAME).read_text())
+lprov = json.loads((ldir / dylk.PROVENANCE_NAME).read_text())
 check("provenance names the port source", "mscs-termlink" in lprov["ported_from"], str(lprov))
 check(
     "provenance lists every protected region",
@@ -5329,10 +5329,10 @@ ndir = tmp / "link-unconfigured"
 ndir.mkdir(parents=True, exist_ok=True)
 (ndir / "note.md").write_text(probe, encoding="utf-8")
 buf = io.StringIO()
-nrep = gllk.run(ndir / "note.md", ndir, terms_dir=None, stream=buf)
+nrep = dylk.run(ndir / "note.md", ndir, terms_dir=None, stream=buf)
 check(
     "an unconfigured stage writes the note unchanged rather than failing",
-    (ndir / gllk.LINKED_NOTE).read_text(encoding="utf-8") == probe,
+    (ndir / dylk.LINKED_NOTE).read_text(encoding="utf-8") == probe,
     "the note was lost",
 )
 check("and it says so", "not configured" in buf.getvalue(), buf.getvalue())
@@ -5345,7 +5345,7 @@ check(
 # --- the CLI keeps dry-run as the default -------------------------------------------
 cbuf = io.StringIO()
 with redirect_stdout(cbuf):
-    rc_dry = glc.main(["term", "link", "--vault-path", str(tvault), str(excl)])
+    rc_dry = dyc.main(["term", "link", "--vault-path", str(tvault), str(excl)])
 check("term link runs", rc_dry == ec.OK, f"rc={rc_dry}")
 check(
     "dry-run says what it would do and leaves the file alone",
@@ -5361,7 +5361,7 @@ bdir = tmp / "report-bundle"
 
 def fill_bundle(with_note=True, frame_count=0, manifest_rows=0, zero_byte=()):
     bdir.mkdir(parents=True, exist_ok=True)
-    for name in glro.REQUIRED:
+    for name in dyro.REQUIRED:
         if name == "note" and not with_note:
             continue
         # The key for the note is "note"; the file on disk is note.md. Writing the key
@@ -5384,11 +5384,11 @@ def fill_bundle(with_note=True, frame_count=0, manifest_rows=0, zero_byte=()):
 
 
 def run_report(stream=None):
-    return glro.run(
+    return dyro.run(
         bdir,
         final_note=bdir / "note.md",
         synth_note=bdir / "note.synth.md",
-        artefacts={name: bdir / name for name in glro.REQUIRED},
+        artefacts={name: bdir / name for name in dyro.REQUIRED},
         stream=stream or io.StringIO(),
     )
 
@@ -5397,7 +5397,7 @@ shutil.rmtree(bdir, ignore_errors=True)
 fill_bundle(frame_count=18, manifest_rows=18)
 good = run_report()
 check("a complete bundle verifies", good.ok, good.summary())
-check("and it names what it verified", len(good.verified) == len(glro.REQUIRED), str(good.verified))
+check("and it names what it verified", len(good.verified) == len(dyro.REQUIRED), str(good.verified))
 check(
     "and the frame count agrees",
     (good.frames_found, good.frames_expected) == (18, 18),
@@ -5460,7 +5460,7 @@ check(
 )
 check(
     "an absent optional artefact is recorded, not counted as a failure",
-    any(a["artefact"] == glau.LLM_TRANSCRIPT_NAME for a in empty.absent),
+    any(a["artefact"] == dyau.LLM_TRANSCRIPT_NAME for a in empty.absent),
     str(empty.absent),
 )
 
@@ -5479,7 +5479,7 @@ pdir = tmp / "promote"
 pdir.mkdir(parents=True, exist_ok=True)
 (pdir / "note.md").write_text("# stage 7\n", encoding="utf-8")
 (pdir / "note.linked.md").write_text("# stage 11\n", encoding="utf-8")
-published, moved = glro.promote_note(pdir, pdir / "note.linked.md", pdir / "note.md")
+published, moved = dyro.promote_note(pdir, pdir / "note.linked.md", pdir / "note.md")
 check("the final note is published as note.md", published.name == "note.md", str(published))
 check(
     "and its content is the LAST stage's",
@@ -5488,11 +5488,11 @@ check(
 )
 check(
     "stage 7's original is preserved, not overwritten",
-    (pdir / glro.SYNTH_NOTE_NAME).read_text() == "# stage 7\n",
+    (pdir / dyro.SYNTH_NOTE_NAME).read_text() == "# stage 7\n",
     "the only record of what stage 7 produced was destroyed",
 )
 check("and it reports that it moved one", moved is True, str(moved))
-_, moved_again = glro.promote_note(pdir, pdir / "note.linked.md", pdir / glro.SYNTH_NOTE_NAME)
+_, moved_again = dyro.promote_note(pdir, pdir / "note.linked.md", pdir / dyro.SYNTH_NOTE_NAME)
 check(
     "promoting again when nothing changed does not duplicate",
     moved_again is False,
@@ -5508,23 +5508,23 @@ check(
 # therefore never dirty when the tests look at it.
 cdir = tmp / "clearroot"
 (cdir / "images").mkdir(parents=True, exist_ok=True)
-stale = cdir / glau.REPORT_NAME
+stale = cdir / dyau.REPORT_NAME
 stale.write_text('{"stale": true}\n', encoding="utf-8")
-(cdir / glp.TIMINGS_NAME).write_text("{}\n", encoding="utf-8")
+(cdir / dyp.TIMINGS_NAME).write_text("{}\n", encoding="utf-8")
 (cdir / "note.md").write_text("# old\n", encoding="utf-8")
 (cdir / "images" / "f_1.png").write_bytes(b"\x89PNG")
 (cdir / "my-own-file.txt").write_text("not a run artefact\n", encoding="utf-8")
 
-bundle = glb.Bundle(root=cdir, created=False)
+bundle = dyb.Bundle(root=cdir, created=False)
 cleared = bundle.clear_root()
 check(
     "the previous run's artefacts are removed from the root",
-    sorted(cleared) == sorted([glau.REPORT_NAME, glp.TIMINGS_NAME, "note.md"]),
+    sorted(cleared) == sorted([dyau.REPORT_NAME, dyp.TIMINGS_NAME, "note.md"]),
     f"cleared {cleared}",
 )
 check(
     "and what was cleared is what was there",
-    not stale.exists() and not (cdir / glp.TIMINGS_NAME).exists(),
+    not stale.exists() and not (cdir / dyp.TIMINGS_NAME).exists(),
     "a REQUIRED artefact from an earlier run survived",
 )
 check(
@@ -5539,7 +5539,7 @@ check(
 )
 check(
     "clearing a bundle that does not exist is not an error",
-    glb.Bundle(root=tmp / "never-created", created=False).clear_root() == [],
+    dyb.Bundle(root=tmp / "never-created", created=False).clear_root() == [],
     "a first run on a fresh path raised instead of returning nothing",
 )
 
@@ -5548,13 +5548,13 @@ check(
 # states the property directly.
 kept_dir = tmp / "stale-required-kept"
 kept_dir.mkdir(parents=True, exist_ok=True)
-(kept_dir / glau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
+(kept_dir / dyau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
 
 # Without the clear, stage 12 finds this file, `_check` accepts it -- it exists and is
 # non-empty -- and records the audit as verified for a run that never ran one. `verified` is
 # asserted per name, not as a non-empty list: with a bare `bool(missing)` the check still
 # passes with the stale file present, because seven other REQUIRED entries are absent anyway.
-kept = glro.run(
+kept = dyro.run(
     kept_dir,
     final_note=kept_dir / "note.linked.md",
     synth_note=kept_dir / "note.md",
@@ -5562,7 +5562,7 @@ kept = glro.run(
 )
 check(
     "WITHOUT the clear, an earlier run's audit.json is accepted as this run's",
-    any(e["artefact"] == glau.REPORT_NAME for e in kept.verified),
+    any(e["artefact"] == dyau.REPORT_NAME for e in kept.verified),
     "the defect #99 describes is not reproducible here, so the fix below proves nothing",
 )
 
@@ -5571,9 +5571,9 @@ check(
 # behaviour and would make the assertion below about the wrong files.
 rdir = tmp / "stale-required"
 rdir.mkdir(parents=True, exist_ok=True)
-(rdir / glau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
-cleared_stale = glb.Bundle(root=rdir, created=False).clear_root()
-stale_report = glro.run(
+(rdir / dyau.REPORT_NAME).write_text('{"stale": true}\n', encoding="utf-8")
+cleared_stale = dyb.Bundle(root=rdir, created=False).clear_root()
+stale_report = dyro.run(
     rdir,
     final_note=rdir / "note.linked.md",
     synth_note=rdir / "note.md",
@@ -5582,56 +5582,56 @@ stale_report = glro.run(
 )
 check(
     "and after the clear it is reported missing, not verified",
-    any(e["artefact"] == glau.REPORT_NAME for e in stale_report.missing)
-    and not any(e["artefact"] == glau.REPORT_NAME for e in stale_report.verified),
+    any(e["artefact"] == dyau.REPORT_NAME for e in stale_report.missing)
+    and not any(e["artefact"] == dyau.REPORT_NAME for e in stale_report.verified),
     f"verified={[e['artefact'] for e in stale_report.verified]}, "
     f"missing={[e['artefact'] for e in stale_report.missing]}",
 )
 check(
     "report.json records what this run superseded",
-    stale_report.as_dict()["superseded_by_this_run"] == [glau.REPORT_NAME],
+    stale_report.as_dict()["superseded_by_this_run"] == [dyau.REPORT_NAME],
     str(stale_report.as_dict()["superseded_by_this_run"]),
 )
 
 # --- 19. the exit contract: what may not produce 0 -----------------------------------
 # Both rules below were decided after the first real 12-stage run, where each one produced a
 # run that looked finished and was not.
-dark = glq.FrameQuality(
+dark = dyq.FrameQuality(
     name="f_0000000000.png",
     source=tmp / "f_0000000000.png",
     passed=False,
     mege=23871.9,
     threshold=26216.7,
     crop_state="full_frame_fallback",
-    content_type=glq.CONTENT_DARK,
+    content_type=dyq.CONTENT_DARK,
     bbox_source="geometric",
     edges=164944,
     luma_mean=35.4,
     luma_std=30.8,
     reason="SOFT",
 )
-white = glq.FrameQuality(
+white = dyq.FrameQuality(
     name="f_0000009124.png",
     source=tmp / "f_0000009124.png",
     passed=False,
     mege=24100.0,
     threshold=26216.7,
     crop_state="cropped",
-    content_type=glq.CONTENT_WHITE,
+    content_type=dyq.CONTENT_WHITE,
     bbox_source="geometric",
     edges=167414,
     luma_mean=210.0,
     luma_std=40.0,
     reason="SOFT",
 )
-good_frame = glq.FrameQuality(
+good_frame = dyq.FrameQuality(
     name="ok.png",
     source=tmp / "ok.png",
     passed=True,
     mege=58925.6,
     threshold=26216.7,
-    crop_state=glq.CROP_CROPPED,
-    content_type=glq.CONTENT_UNKNOWN,
+    crop_state=dyq.CROP_CROPPED,
+    content_type=dyq.CONTENT_UNKNOWN,
     bbox_source="geometric",
     edges=167414,
     luma_mean=63.9,
@@ -5639,60 +5639,60 @@ good_frame = glq.FrameQuality(
 )
 check(
     "a dark canvas is recorded as failed",
-    dark in glq.Report(frames=[dark, good_frame]).failed,
+    dark in dyq.Report(frames=[dark, good_frame]).failed,
     "not recorded",
 )
 check(
     "but it does not decide the exit code",
-    glq.Report(frames=[dark, good_frame]).ok,
+    dyq.Report(frames=[dark, good_frame]).ok,
     "a dark frame at the head of a recording would block exit 0 on almost every lecture",
 )
 check(
     "and the summary says it was excused rather than passed",
-    "dark-canvas not fatal" in glq.Report(frames=[dark, good_frame]).summary(),
-    glq.Report(frames=[dark, good_frame]).summary(),
+    "dark-canvas not fatal" in dyq.Report(frames=[dark, good_frame]).summary(),
+    dyq.Report(frames=[dark, good_frame]).summary(),
 )
 check(
     "a soft content frame is fatal",
-    not glq.Report(frames=[white, good_frame]).ok,
+    not dyq.Report(frames=[white, good_frame]).ok,
     "a soft white document is real material the pipeline could not read",
 )
 check(
     "and it is fatal even alongside passing frames",
-    len(glq.Report(frames=[white, good_frame]).failed_fatal) == 1,
-    str(glq.Report(frames=[white, good_frame]).failed_fatal),
+    len(dyq.Report(frames=[white, good_frame]).failed_fatal) == 1,
+    str(dyq.Report(frames=[white, good_frame]).failed_fatal),
 )
 
 # A template note is not a synthesised note.
 check(
     "the template reports itself degraded even with every section filled",
-    glsy.synthesise(
+    dysy.synthesise(
         json.loads(scaps.read_text())["alignments"],
         "текст",
         src_path,
-        glsy.TemplateSynthesizer(src_path, "текст", cuts),
+        dysy.TemplateSynthesizer(src_path, "текст", cuts),
     ).degraded,
     "a note no model wrote was reported as a clean synthesis",
 )
 
-glc.run_all = real_run_all
-glp.run = real_pipeline_run
-glr.run = real_run
-glr.resolve = real_resolve
-glr.shutil.which = real_which
-glfr.time.sleep = real_sleep
+dyc.run_all = real_run_all
+dyp.run = real_pipeline_run
+dyr.run = real_run
+dyr.resolve = real_resolve
+dyr.shutil.which = real_which
+dyfr.time.sleep = real_sleep
 if real_workdir_env is None:
-    os.environ.pop(glw.WORKDIR_ENV, None)
+    os.environ.pop(dyw.WORKDIR_ENV, None)
 else:
-    os.environ[glw.WORKDIR_ENV] = real_workdir_env
+    os.environ[dyw.WORKDIR_ENV] = real_workdir_env
 if real_settings_env is None:
-    os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+    os.environ.pop(dyd.SETTINGS_PATH_ENV, None)
 else:
-    os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
+    os.environ[dyd.SETTINGS_PATH_ENV] = real_settings_env
 if real_vault_env is None:
-    os.environ.pop(gld.VAULT_ENV, None)
+    os.environ.pop(dyd.VAULT_ENV, None)
 else:
-    os.environ[gld.VAULT_ENV] = real_vault_env
+    os.environ[dyd.VAULT_ENV] = real_vault_env
 shutil.rmtree(tmp, ignore_errors=True)
 
 _env.restore(SAVED_ENV)

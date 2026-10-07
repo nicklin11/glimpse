@@ -83,7 +83,7 @@ jobs:
 
       # The suite is script-based, not pytest: `check(name, cond, detail)` and a
       # non-zero exit. It is invoked directly, and deliberately runs with no
-      # GLIMPSE_* in the environment -- PATH and HTTP are stubbed, so the suite must
+      # DYAK_* in the environment -- PATH and HTTP are stubbed, so the suite must
       # pass on a runner with no ffmpeg, no whisper.cpp and no gateway. A test that
       # silently starts depending on this host stops proving anything.
       - name: Stage suite

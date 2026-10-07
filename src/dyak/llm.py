@@ -47,15 +47,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ENDPOINT_ENV = "GLIMPSE_LLM_ENDPOINT"
-MODEL_ENV = "GLIMPSE_LLM_MODEL"
-KEY_ENV = "GLIMPSE_LLM_KEY"
+ENDPOINT_ENV = "DYAK_LLM_ENDPOINT"
+MODEL_ENV = "DYAK_LLM_MODEL"
+KEY_ENV = "DYAK_LLM_KEY"
 
 #: The vision endpoint has its own names, per ADR-0004 D3: the two roles are separate
 #: sections that may point at the same URL, and switching one later must cost one line.
-VISION_ENDPOINT_ENV = "GLIMPSE_VLM_ENDPOINT"
-VISION_MODEL_ENV = "GLIMPSE_VLM_MODEL"
-VISION_KEY_ENV = "GLIMPSE_VLM_KEY"
+VISION_ENDPOINT_ENV = "DYAK_VLM_ENDPOINT"
+VISION_MODEL_ENV = "DYAK_VLM_MODEL"
+VISION_KEY_ENV = "DYAK_VLM_KEY"
 
 #: Longest edge sent to the vision endpoint. Stage 4 extracts at 1600 px; a model that
 #: resizes internally sees the same content either way, and the request body is 4/3 the

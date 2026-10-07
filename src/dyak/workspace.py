@@ -1,4 +1,4 @@
-"""The managed work directory for one `glimpse process` run (ADR-0001 stage 2).
+"""The managed work directory for one `dyak process` run (ADR-0001 stage 2).
 
 Stage 2's contract is "extract to a managed temp dir, **kept on failure** so a
 failed run can be inspected". That is the whole reason this is a type rather than
@@ -29,8 +29,8 @@ import stat
 import tempfile
 from pathlib import Path
 
-WORKDIR_ENV = "GLIMPSE_WORKDIR"
-PREFIX = "glimpse-"
+WORKDIR_ENV = "DYAK_WORKDIR"
+PREFIX = "dyak-"
 
 
 class WorkDir:
@@ -102,7 +102,7 @@ class WorkDir:
 
 
 def _parent_from_env() -> Path:
-    """`GLIMPSE_WORKDIR` sets the parent of the managed dir, not the dir itself.
+    """`DYAK_WORKDIR` sets the parent of the managed dir, not the dir itself.
 
     A per-run subdirectory is still created under it: two concurrent runs on the
     same machine must not collide on `audio.wav`.

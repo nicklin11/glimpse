@@ -499,7 +499,7 @@ class NullEstimator:
 
 #: `vlm` was registered here until stage 6 gained a vision client (#67). It raised
 #: `NotConfiguredError` on both branches and was never reachable by a run that worked, so
-#: it was a name that promised a capability and could not deliver one: `GLIMPSE_BBOX_SOURCE=vlm`
+#: it was a name that promised a capability and could not deliver one: `DYAK_BBOX_SOURCE=vlm`
 #: failed at the crop instead of being rejected up front as the unknown name it is.
 #:
 #: A vision bbox source is still the right idea -- ADR-0001 D4 asked for one, and

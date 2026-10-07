@@ -34,7 +34,7 @@ linker: the second `[[...]]` renders as visible garbage.
 Behaviour is preserved; three things are not.
 
 *Configuration instead of constants.* The original hardcoded `VAULT` and `TERMS_DIR` at
-module level. They are resolved here from arguments, then `GLIMPSE_TERMS_DIR`, then the
+module level. They are resolved here from arguments, then `DYAK_TERMS_DIR`, then the
 vault path, so the same code runs against any vault (issue #8; ADR-0001 D9).
 
 *`_excluded` follows the configured terms dir.* The original compared against the module
@@ -66,7 +66,7 @@ REPORT_NAME = "link.json"
 PROVENANCE_NAME = "link-provenance.json"
 ALL_ARTEFACTS = (LINKED_NOTE, REPORT_NAME, PROVENANCE_NAME)
 
-TERMS_ENV = "GLIMPSE_TERMS_DIR"
+TERMS_ENV = "DYAK_TERMS_DIR"
 DEFAULT_GLOB = "Лекция*.md"
 #: The directory name under a vault that holds the courses, and the one that holds terms.
 COURSES_DIRNAME = "mscs"
@@ -81,7 +81,7 @@ def resolve_terms_dir(
 ) -> Path | None:
     """Terms directory, most specific source first.
 
-    Explicit argument, then `$GLIMPSE_TERMS_DIR`, then `<vault>/mscs/_terms`. Returns None
+    Explicit argument, then `$DYAK_TERMS_DIR`, then `<vault>/mscs/_terms`. Returns None
     when none of them names a directory that exists -- which the caller must report, because
     a link stage that ran against zero terms is not a link stage that found nothing to link.
     """
@@ -354,7 +354,7 @@ def link_paths(paths: list[Path], terms: list[Term], *, write: bool) -> Report:
         try:
             original = path.read_text(encoding="utf-8")
         except OSError as exc:
-            print(f"glimpse: cannot read {path}: {exc}", file=sys.stderr)
+            print(f"dyak: cannot read {path}: {exc}", file=sys.stderr)
             continue
         new, counts = substitute(original, rx, owner)
         found = sum(counts.values())
@@ -468,7 +468,7 @@ def provenance(report: Report, terms_dir: Path | None) -> str:
     return json.dumps(
         {
             "stage": 11,
-            "tool": "glimpse-link-v1",
+            "tool": "dyak-link-v1",
             "requires_model": False,
             "ported_from": "~/.local/bin/mscs-termlink",
             "terms_dir": str(terms_dir) if terms_dir else None,

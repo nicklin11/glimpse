@@ -316,7 +316,7 @@ def provenance(report: Report) -> str:
     return json.dumps(
         {
             "stage": 12,
-            "tool": "glimpse-report-v1",
+            "tool": "dyak-report-v1",
             "requires_model": False,
             "verified_by": "filesystem stat, not the exit code of any earlier stage",
             "why": (

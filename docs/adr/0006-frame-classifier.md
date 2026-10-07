@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-10-05
-- **Proposal:** [#85](https://github.com/nicklin11/glimpse/issues/85)
+- **Proposal:** [#85](https://github.com/nicklin11/dyak/issues/85)
 - **Scope:** Post-MVP direction. Records what is decided now and what is deferred.
 
 ## Context
@@ -39,7 +39,7 @@ It is not built now because the blocker is elsewhere (#84: the captions never re
 and because the cost argument is weak.
 
 The cost of stage 6, measured on a 180-second clip of lecture 1 (7 frames, 4 of them captioned,
-`/tmp/glimpse-clip/captions.json`, `caption_trace` per frame):
+`/tmp/dyak-clip/captions.json`, `caption_trace` per frame):
 
 | per call | mean | total |
 |---|---|---|

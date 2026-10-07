@@ -25,7 +25,7 @@ itself, `D4` is fine.
 | 0001 | [lecture-pipeline](0001-lecture-pipeline.md) | The twelve-stage pipeline and its nine decisions | ~870 | Always. This is the product. |
 | 0002 | [distribution](0002-distribution.md) | Packaging, zipapps, and where the STT backend lives | ~220 | Packaging, install, or the "no runtime dependencies" rule |
 | 0003 | [events](0003-events.md) | The pipeline emits events instead of rendering; progress semantics | ~95 | Working on progress, the event stream, or the terminal renderer |
-| 0004 | [endpoints](0004-endpoints.md) | Model endpoint configuration and artefact provenance | ~90 | Configuring models. Defines the `GLIMPSE_*` surface. |
+| 0004 | [endpoints](0004-endpoints.md) | Model endpoint configuration and artefact provenance | ~90 | Configuring models. Defines the `DYAK_*` surface. |
 | 0005 | [caption-budget](0005-caption-budget.md) | Why stage 6 captions screen states, not frames | ~160 | Working on captions or on cost |
 
 ## Reading order

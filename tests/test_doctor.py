@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression: `glimpse doctor` honours the ADR-0001 exit-code contract.
+"""Regression: `dyak doctor` honours the ADR-0001 exit-code contract.
 
 Stage 0 exists to pin the error contract before four other stages grow their own
 ad-hoc reporting. So the thing under test is mostly the distinction between:
@@ -28,9 +28,9 @@ import _env  # noqa: E402
 
 SAVED_ENV = _env.isolate()
 sys.path.insert(0, str(REPO / "src"))
-from glimpse import cli as glc  # noqa: E402
-from glimpse import deps as gld  # noqa: E402
-from glimpse import exitcodes as ec  # noqa: E402
+from dyak import cli as dyc  # noqa: E402
+from dyak import deps as dyd  # noqa: E402
+from dyak import exitcodes as ec  # noqa: E402
 
 failures: list[str] = []
 
@@ -43,8 +43,8 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 # --- stubs -------------------------------------------------------------------
 PRESENT = {"ffmpeg", "ffprobe"}
-real_which = gld.shutil.which
-real_run = gld.subprocess.run
+real_which = dyd.shutil.which
+real_run = dyd.subprocess.run
 
 which_set: set[str] = set(PRESENT)
 run_rc = 0
@@ -68,19 +68,19 @@ def fake_run(argv, **kwargs):
     return subprocess.CompletedProcess(argv, run_rc, out, run_stderr)
 
 
-import glimpse.stt as gld_stt  # noqa: E402
-import glimpse.stt.whispercpp as glwsc  # noqa: E402
+import dyak.stt as gld_stt  # noqa: E402
+import dyak.stt.whispercpp as dywsc  # noqa: E402
 
-gld.shutil.which = fake_which
-gld.subprocess.run = fake_run
+dyd.shutil.which = fake_which
+dyd.subprocess.run = fake_run
 
 # The model endpoint must never be probed against the real network in this test, and
 # neither must the STT endpoint. Before this pin, `doctor` reached whatever was listening
 # on 127.0.0.1:10302, so the suite's verdict depended on container state.
-os.environ.pop(gld.LLM_ENV, None)
+os.environ.pop(dyd.LLM_ENV, None)
 real_stt_backend = os.environ.pop(gld_stt.ENV_BACKEND, None)
 os.environ[gld_stt.ENV_BACKEND] = "whispercpp"
-real_stt_urlopen = glwsc.urllib.request.urlopen
+real_stt_urlopen = dywsc.urllib.request.urlopen
 
 stt_reachable = True
 
@@ -102,33 +102,33 @@ class _HealthResponse:
         return False
 
 
-glwsc.urllib.request.urlopen = fake_stt_urlopen
+dywsc.urllib.request.urlopen = fake_stt_urlopen
 tmp = Path(tempfile.mkdtemp())
-os.environ[gld.VAULT_ENV] = str(tmp)
-# `glimpse process` on a first run writes the vault it used to the settings file. Keep that
+os.environ[dyd.VAULT_ENV] = str(tmp)
+# `dyak process` on a first run writes the vault it used to the settings file. Keep that
 # inside the temp dir: a suite must not create files in the developer's home.
-real_settings_env = os.environ.get(gld.SETTINGS_PATH_ENV)
-os.environ[gld.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
+real_settings_env = os.environ.get(dyd.SETTINGS_PATH_ENV)
+os.environ[dyd.SETTINGS_PATH_ENV] = str(tmp / "settings.toml")
 
 
 def restore():
-    gld.shutil.which = real_which
-    gld.subprocess.run = real_run
-    glwsc.urllib.request.urlopen = real_stt_urlopen
+    dyd.shutil.which = real_which
+    dyd.subprocess.run = real_run
+    dywsc.urllib.request.urlopen = real_stt_urlopen
     if real_stt_backend is None:
         os.environ.pop(gld_stt.ENV_BACKEND, None)
     else:
         os.environ[gld_stt.ENV_BACKEND] = real_stt_backend
     if real_settings_env is None:
-        os.environ.pop(gld.SETTINGS_PATH_ENV, None)
+        os.environ.pop(dyd.SETTINGS_PATH_ENV, None)
     else:
-        os.environ[gld.SETTINGS_PATH_ENV] = real_settings_env
+        os.environ[dyd.SETTINGS_PATH_ENV] = real_settings_env
 
 
 # --- 1. everything present -> 0, with path and version listed -----------------
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 text = out.getvalue()
 check("all present -> exit 0", rc == ec.OK, f"rc={rc}")
 check("nothing on stderr when healthy", err.getvalue() == "", err.getvalue())
@@ -151,14 +151,14 @@ check("an unconfigured model endpoint is skipped, not failed", "[skip]" in text,
 stt_reachable = False
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 msg = err.getvalue()
 check("unreachable STT endpoint -> exit 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
 check("the failing check is named", "stt" in msg, msg)
 # The detail line (with the target URL) is rendered on stdout by _render; stderr
 # carries the name and the remediation.
 check("the unreachable target is named", "127.0.0.1" in out.getvalue(), out.getvalue())
-check("the remediation names the env var", "GLIMPSE_WHISPERCPP_URL" in msg, msg)
+check("the remediation names the env var", "DYAK_WHISPERCPP_URL" in msg, msg)
 check("shipboard is no longer the reason", "pipx install shipboard" not in msg, msg)
 check(
     "present deps still reported as ok",
@@ -171,7 +171,7 @@ which_set = {"ffmpeg"}  # ffprobe gone, shipboard is not consulted any more
 stt_reachable = True
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 msg = err.getvalue()
 check("missing binary -> exit 2", rc == ec.MISSING_DEPENDENCY, f"rc={rc}")
 check("missing binary is named", "ffprobe" in msg, msg)
@@ -190,7 +190,7 @@ run_stderr = (
 )
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 msg = err.getvalue()
 check("present-but-failing -> exit 3", rc == ec.DEPENDENCY_FAILED, f"rc={rc}")
 check("failure names the dependency", "ffmpeg" in msg, msg)
@@ -215,71 +215,71 @@ run_rc = 1
 run_stderr = "boom\n"
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 check("worst-code wins over present-but-failing", rc == ec.MISSING_DEPENDENCY, f"rc={rc}")
 run_rc = 0
 run_stderr = ""
 
 # --- 5. vault: missing path, not a dir, unwritable ---------------------------
 which_set = set(PRESENT)
-os.environ[gld.VAULT_ENV] = str(tmp / "nope")
+os.environ[dyd.VAULT_ENV] = str(tmp / "nope")
 check(
-    "absent vault -> 2", gld.check_vault().code == ec.MISSING_DEPENDENCY, gld.check_vault().detail
+    "absent vault -> 2", dyd.check_vault().code == ec.MISSING_DEPENDENCY, dyd.check_vault().detail
 )
 
 a_file = tmp / "a-file"
 a_file.write_text("x")
-os.environ[gld.VAULT_ENV] = str(a_file)
+os.environ[dyd.VAULT_ENV] = str(a_file)
 check(
     "vault that is a file -> 2",
-    gld.check_vault().code == ec.MISSING_DEPENDENCY,
-    gld.check_vault().detail,
+    dyd.check_vault().code == ec.MISSING_DEPENDENCY,
+    dyd.check_vault().detail,
 )
 
 # unwritable: chmod 500 leaves the dir non-writable for a non-root user
 locked = tmp / "locked"
 locked.mkdir()
 locked.chmod(0o500)
-os.environ[gld.VAULT_ENV] = str(locked)
-c = gld.check_vault()
+os.environ[dyd.VAULT_ENV] = str(locked)
+c = dyd.check_vault()
 if os.geteuid() == 0:
     check("unwritable vault -> 3 (skipped: running as root)", True, "root bypasses perms")
 else:
     check("unwritable vault -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code} {c.detail}")
 locked.chmod(0o700)
-os.environ[gld.VAULT_ENV] = str(tmp)
+os.environ[dyd.VAULT_ENV] = str(tmp)
 
 # the write probe must not leave litter behind
-check("vault probe cleans up after itself", not (tmp / ".glimpse-write-probe").exists())
+check("vault probe cleans up after itself", not (tmp / ".dyak-write-probe").exists())
 
 
 # --- 6. gateway: configured but unreachable -> 3, no real network in tests ----
 def boom_urlopen(url, timeout=None):
-    raise gld.urllib.error.URLError("connection refused")
+    raise dyd.urllib.error.URLError("connection refused")
 
 
-real_urlopen = gld.urllib.request.urlopen
-gld.urllib.request.urlopen = boom_urlopen
-# This checked `check_gateway()` against `GLIMPSE_GATEWAY_URL`, a variable nothing wrote.
-# The endpoint the pipeline actually uses is `GLIMPSE_LLM_ENDPOINT`, and `check_llm` is
+real_urlopen = dyd.urllib.request.urlopen
+dyd.urllib.request.urlopen = boom_urlopen
+# This checked `check_gateway()` against `DYAK_GATEWAY_URL`, a variable nothing wrote.
+# The endpoint the pipeline actually uses is `DYAK_LLM_ENDPOINT`, and `check_llm` is
 # the check that observes it -- so the unreachability assertions moved onto the check that
 # is real (#68). Same behaviour under test, no phantom dependency.
-os.environ[gld.LLM_ENV] = "http://127.0.0.1:1/inference"
-os.environ[gld.LLM_MODEL_ENV] = "some/model"
-c = gld.check_llm()
+os.environ[dyd.LLM_ENV] = "http://127.0.0.1:1/inference"
+os.environ[dyd.LLM_MODEL_ENV] = "some/model"
+c = dyd.check_llm()
 check("unreachable endpoint -> 3", c.code == ec.DEPENDENCY_FAILED, f"{c.code}")
 check("unreachable endpoint explains itself", "unreachable" in c.detail, c.detail)
 check("unreachable endpoint has a remediation", bool(c.remediation), str(c.remediation))
-gld.urllib.request.urlopen = real_urlopen
-os.environ.pop(gld.LLM_ENV, None)
-os.environ.pop(gld.LLM_MODEL_ENV, None)
+dyd.urllib.request.urlopen = real_urlopen
+os.environ.pop(dyd.LLM_ENV, None)
+os.environ.pop(dyd.LLM_MODEL_ENV, None)
 
 # --- 7. a tool with no --version must not report usage text AS a version -----
 # shipboard has no --version flag; `shipboard --help` prints argparse usage.
 # Labelling that "version" tells the reader nothing and looks like a bug.
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["doctor"])
+    rc = dyc.main(["doctor"])
 text = out.getvalue()
 # The shipboard check is gone entirely. This inverts what the suite asserted before #44:
 # it used to require the name to be absent from *its own check line*, which kept the check
@@ -306,7 +306,7 @@ check("ffprobe version reported separately", "ffprobe version 7.1.1-1" in text, 
 # --- 8. unimplemented subcommands point at their issue, not a dead end -------
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["audit"])
+    rc = dyc.main(["audit"])
 check("`audit` -> exit 1", rc == ec.USAGE, f"rc={rc}")
 check("`audit` names its tracking issue", "#11" in err.getvalue(), err.getvalue())
 check("`audit` suggests doctor", "doctor" in err.getvalue(), err.getvalue())
@@ -315,11 +315,11 @@ check("`audit` suggests doctor", "doctor" in err.getvalue(), err.getvalue())
 # usage error, and it must print the form rather than a dead end.
 out, err = io.StringIO(), io.StringIO()
 with redirect_stdout(out), redirect_stderr(err):
-    rc = glc.main(["process"])
+    rc = dyc.main(["process"])
 check("`process` with no path -> exit 1", rc == ec.USAGE, f"rc={rc}")
 check(
     "`process` with no path prints the form",
-    "glimpse process PATH" in err.getvalue(),
+    "dyak process PATH" in err.getvalue(),
     err.getvalue(),
 )
 
@@ -327,7 +327,7 @@ check(
 # which is MISSING_DEPENDENCY in the ADR table
 try:
     with redirect_stderr(io.StringIO()):
-        rc = glc.main(["nonsense"])
+        rc = dyc.main(["nonsense"])
     check("unknown subcommand -> exit 1, not 2", rc == ec.USAGE, f"rc={rc}")
 except SystemExit as exc:
     check("unknown subcommand -> exit 1, not 2", False, f"argparse exited {exc.code} uncaught")
@@ -346,7 +346,7 @@ restore()
 # happens either way, which is exactly why the bug survived thirteen runs.
 KILL_SCRIPT = (
     "import sys, time\n"
-    "from glimpse.cli import _line_buffer\n"
+    "from dyak.cli import _line_buffer\n"
     "_line_buffer()\n"
     "sys.stdout.write('[1/12] probe  0.3s\\n')\n"
     "time.sleep(60)\n"

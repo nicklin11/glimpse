@@ -18,10 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from glimpse import quality as q  # noqa: E402
+from dyak import quality as q  # noqa: E402
 
 VIDEO = Path("~/Videos/lectures/Оптимальные СУ/1_lecture_OCS.webm").expanduser()
-IMAGES = Path("/tmp/glimpse-probe/b1/images")
+IMAGES = Path("/tmp/dyak-probe/b1/images")
 OUT = Path("/tmp/jpegprobe")
 WIDTH = 1600
 

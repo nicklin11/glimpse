@@ -722,7 +722,7 @@ def provenance(report: Report) -> str:
     return json.dumps(
         {
             "stage": 9,
-            "tool": "glimpse-audit-v1",
+            "tool": "dyak-audit-v1",
             "tier1": {
                 "requires_model": False,
                 "rules": [

@@ -32,7 +32,7 @@ import _env  # noqa: E402
 SAVED_ENV = _env.isolate()
 
 
-from glimpse import llm  # noqa: E402
+from dyak import llm  # noqa: E402
 
 failures: list[str] = []
 

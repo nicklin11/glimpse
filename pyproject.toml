@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "glimpse"
+name = "dyak"
 version = "0.1.0"
 description = "One-command lecture pipeline: video/audio -> audited Obsidian note"
 readme = "README.md"
@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
 
 [project.scripts]
-glimpse = "glimpse.cli:main"
+dyak = "dyak.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

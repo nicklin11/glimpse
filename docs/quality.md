@@ -50,7 +50,7 @@ of 57 captioned is a success. Read the counts on the `[6/12] caption` line, or c
 Nine mechanical checks against the note before the audit runs. Findings land in `lint.json`.
 On run 13: `9 checks, 0 errors, 0 warnings`. That the deterministic half of the audit chain has
 run but never produced a finding on a real run is itself tracked:
-[#93](https://github.com/nicklin11/glimpse/issues/93).
+[#93](https://github.com/nicklin11/dyak/issues/93).
 
 ## Stage 9 — the audit
 
@@ -76,4 +76,4 @@ Against the hand-written baseline (re-measured on run 7, not carried forward):
 
 The section skeleton matches; the two structural gaps — no tables, no numbered subsections —
 belong to the synthesizer, not the pipeline, and are tracked with their measurements in
-[#74](https://github.com/nicklin11/glimpse/issues/74).
+[#74](https://github.com/nicklin11/dyak/issues/74).

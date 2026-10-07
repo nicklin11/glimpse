@@ -32,5 +32,5 @@ output/
 # a bundle written into the tree carries its frames in `images/`, not `frames/`
 images/
 
-# the zipapp the README's single-file build writes with `-o glimpse`
-/glimpse
+# the zipapp the README's single-file build writes with `-o dyak`
+/dyak

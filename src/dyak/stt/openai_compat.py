@@ -29,12 +29,12 @@ from .. import runner
 from .backends import DEFAULT_ENDPOINTS, BackendInfo, _env_endpoint
 
 REMEDIATION = (
-    "set GLIMPSE_OPENAI_URL to an OpenAI-compatible endpoint "
+    "set DYAK_OPENAI_URL to an OpenAI-compatible endpoint "
     f"(default {DEFAULT_ENDPOINTS['openai']})"
 )
 
-ENV_KEY = "GLIMPSE_OPENAI_KEY"
-ENV_MODEL = "GLIMPSE_OPENAI_MODEL"
+ENV_KEY = "DYAK_OPENAI_KEY"
+ENV_MODEL = "DYAK_OPENAI_MODEL"
 
 CHUNK = 1 << 20
 
@@ -72,7 +72,7 @@ class OpenAICompat:
             raise runner.DependencyError(
                 name=self.name,
                 code=ec.USAGE,
-                message=f"GLIMPSE_OPENAI_URL is not an http(s) URL: {self.base_url!r}",
+                message=f"DYAK_OPENAI_URL is not an http(s) URL: {self.base_url!r}",
                 remediation=REMEDIATION,
             )
         headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
@@ -104,7 +104,7 @@ class OpenAICompat:
             ) from exc
 
     def run(self, wav: Path, *, timeout: float) -> bytes:
-        boundary = f"glimpse-{uuid.uuid4().hex}"
+        boundary = f"dyak-{uuid.uuid4().hex}"
         body = self._multipart(boundary, Path(wav))
         headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
         if self.key:

@@ -4,7 +4,7 @@ This is the check that matters: the previous version rejected two frames scoring
 91 629 MEGE because their canvas is dark, and claimed a 12/16 pass rate on that basis. It
 should now be 14/16, failing only the two measurably blank frames.
 
-    python tools/run_quality.py /tmp/glimpse-probe/b1/images
+    python tools/run_quality.py /tmp/dyak-probe/b1/images
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from glimpse import quality as q  # noqa: E402
+from dyak import quality as q  # noqa: E402
 
 
 def main() -> None:

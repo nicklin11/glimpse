@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
-- **Proposal:** [#13](https://github.com/nicklin11/glimpse/issues/13)
+- **Proposal:** [#13](https://github.com/nicklin11/dyak/issues/13)
 - **Scope:** MVP packaging. Publishes nothing to any index.
 
 > **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
@@ -19,7 +19,7 @@ Measured on lecture 1 (`1_lecture_OCS.webm`, 4396 s container, 4520 s of audio):
 
 One measured fact decides most of the design:
 
-- `glimpse` imports the standard library plus **exactly one third-party module**: `numpy`,
+- `dyak` imports the standard library plus **exactly one third-party module**: `numpy`,
   in `quality.py`, for stage 5's MEGE measurement at the frame's native resolution. The
   complete import set in `src/` is `argparse`, `json`, `os`, `shutil`, `stat`, `subprocess`,
   `sys`, `tempfile`, `time`, `urllib.error`, `urllib.request`, `dataclasses`, `pathlib`,
@@ -64,14 +64,14 @@ taste. A second runtime dependency needs the cost argument in D1 re-run against 
 
 **Status: SUPERSEDED.** The premise is dead. This decision rests on ADR-0001 D2, which was
 superseded on 2026-10-03; shipboard is no longer a mandatory dependency, and
-`grep -rn shipboard src/glimpse/` returns **nothing** — no module requires, probes or
+`grep -rn shipboard src/dyak/` returns **nothing** — no module requires, probes or
 mentions it. The distribution logic below (never vendor, never a `dependencies = []` entry,
 exit 2 with a remediation line) survives as a rule but has no current subject.
 
 Retained because the reasoning is sound and applies to whatever the backend turns out to be:
 a backend must never be vendored into the zipapp or installed by the install step.
 
-ADR-0001 D2 decides the delegation: STT belongs to shipboard and glimpse does not reimplement
+ADR-0001 D2 decides the delegation: STT belongs to shipboard and dyak does not reimplement
 it. This ADR adds only the distribution consequence:
 
 - shipboard is **not** vendored into the zipapp, **not** a `dependencies = [...]` entry, and
@@ -123,21 +123,21 @@ because a wrong URL is a configuration the user may not care about until stage 3
 reported loudly enough that it is not discovered 30 minutes into a run. `shutil.which` alone
 cannot catch any of this.
 
-### D5 — The install burden belongs to shipboard, not to glimpse
+### D5 — The install burden belongs to shipboard, not to dyak
 
 Setting up a second machine takes nine steps, and **four of them exist only because shipboard
 is not packaged as a package**:
 
 ```
 pacman -S ffmpeg
-pipx install glimpse
+pipx install dyak
 git clone … ~/Coding/shipboard          # not an install
 pipx install -e ~/Coding/shipboard      # editable, path-dependent
 docker volume create whisper-local-data # compose names it as external
 docker compose up -d                    # from inside the checkout
 scripts/install.sh                      # hardcodes ~/Coding/shipboard
 shipboard setup                         # writes whisper_url
-glimpse doctor
+dyak doctor
 ```
 
 Two things are already solved and must not be mistaken for remaining work: the ggml and VAD
@@ -145,8 +145,8 @@ models download themselves inside the container, and the image is pinned by dige
 no model step and no tag drift.
 
 The four path-dependent steps are a packaging defect in shipboard, tracked as
-[shipboard#9](https://github.com/nicklin11/shipboard/issues/9). **glimpse does not absorb
-it.** Copying a compose file or a model path into glimpse would create a second owner of the
+[shipboard#9](https://github.com/nicklin11/shipboard/issues/9). **dyak does not absorb
+it.** Copying a compose file or a model path into dyak would create a second owner of the
 backend, and the two would drift.
 
 **Rejected alternative: call the inference endpoint directly instead of going through
@@ -163,8 +163,8 @@ do not re-resolve anything. The console script points at the updated source, so 
 current, and the run dies at import time:
 
 ```
-File "/home/existingloner/.local/bin/glimpse", line 3, in <module>
-    from glimpse.cli import main
+File "/home/existingloner/.local/bin/dyak", line 3, in <module>
+    from dyak.cli import main
 ModuleNotFoundError: No module named 'numpy'
 ```
 
@@ -180,18 +180,18 @@ instead of leaving the traceback as the first diagnostic.
 
 - **Publish to PyPI.** Out of scope by request. Recorded so it is not rediscovered as a
   blocker: `pipx install` from git needs no index, and ADR-0001 records that the name
-  `glimpse` collides there.
+  `dyak` collides there.
 - **PyInstaller onefile.** See D1.
 - **Shipboard as a declared `pip` dependency.** Would put a second application inside
-  glimpse's dependency closure and make `pipx uninstall glimpse` leave it behind. Rejected by
+  dyak's dependency closure and make `pipx uninstall dyak` leave it behind. Rejected by
   D3.
 - **Install-time side effects.** See D3.
-- **whisper.cpp as glimpse's only STT dependency.** See D5, last paragraph.
+- **whisper.cpp as dyak's only STT dependency.** See D5, last paragraph.
 
 ## Consequences
 
 **Good.** One artefact to copy, no dependency closure to reason about. The code stays
-diffable. Cold start stays flat. Updating shipboard is `pipx upgrade`, not a glimpse release.
+diffable. Cold start stays flat. Updating shipboard is `pipx upgrade`, not a dyak release.
 
 **Bad.** A fresh machine is not ready in one command, and the reason is shipboard's
 packaging, not this project's. Stated rather than hidden: `doctor` is stage 0 of every run,
@@ -218,7 +218,7 @@ path, and not a second owner of the backend.
 
 ## Acceptance
 
-- `glimpse` runs from a zipapp with no virtualenv and no `pip install`.
+- `dyak` runs from a zipapp with no virtualenv and no `pip install`.
 - `pyproject.toml` keeps `dependencies` at numpy and nothing else. **Was `[]`; falsified by
   the quality gate, see Context.**
 - Removing shipboard from `PATH` produces exit 2, not a traceback, and `doctor` prints the

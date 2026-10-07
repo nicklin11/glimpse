@@ -35,7 +35,7 @@ AUDIT_FINDINGS = 5
 # here so the table below stays the single source of truth.
 INTERRUPTED = 130
 
-# An *uncaught* internal error (a bug in glimpse itself) deliberately has no code
+# An *uncaught* internal error (a bug in dyak itself) deliberately has no code
 # here: it propagates as a traceback, which is louder than any summary line, and
 # Python exits it with 1. Recorded so the absence is a decision rather than a gap.
 

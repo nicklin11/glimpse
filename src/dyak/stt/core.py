@@ -43,7 +43,7 @@ from .. import exitcodes as ec
 from .. import runner
 
 PROVENANCE_NAME = "stt-provenance.json"
-REMEDIATION = "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or set GLIMPSE_STT to an endpoint"
+REMEDIATION = "start whisper.cpp and set DYAK_WHISPERCPP_URL, or set DYAK_STT to an endpoint"
 
 # Measured on this host, CPU whisper.cpp:
 #   25 s clip   ->   4.9 s wall  (0.20x realtime; server warm-up dominates here)
@@ -316,7 +316,7 @@ def provenance(transcript: Transcript, workdir: Path) -> str:
     return json.dumps(
         {
             "stage": 3,
-            "tool": "glimpse-stt-v1",
+            "tool": "dyak-stt-v1",
             "requires_model": True,
             "backend": transcript.backend,
             "parameters": transcript.parameters,

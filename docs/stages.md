@@ -62,7 +62,7 @@ over the lecture**, which is a different and cheaper claim to earn.
 ## Stage 6 — what was added, and what it is still not
 
 Stage 6 was two halves: a deterministic alignment that worked, and a captioning half that
-had **no vision client at all**. `llm.py` was text-only — `grep -niE 'image|vision|b64|base64|multimodal|image_url' src/glimpse/llm.py` returned nothing — and `caption.py` said so itself:
+had **no vision client at all**. `llm.py` was text-only — `grep -niE 'image|vision|b64|base64|multimodal|image_url' src/dyak/llm.py` returned nothing — and `caption.py` said so itself:
 
 ```
 captioning is NOT_CONFIGURED -- no vision client in this codebase
@@ -107,7 +107,7 @@ worse note the run must say out loud.
 ## Stage 5 is **not** open, despite what the code used to say
 
 `resolve_estimator` registered three names. `vlm` raised `NotConfiguredError` on both
-branches, so `GLIMPSE_BBOX_SOURCE=vlm` failed at the crop instead of being refused as the
+branches, so `DYAK_BBOX_SOURCE=vlm` failed at the crop instead of being refused as the
 unknown name it is. It has been removed from the registry (#67): a vision bbox source is a
 real idea that is still unbuilt, and an unbuilt option should be absent rather than present
 and broken.
@@ -122,14 +122,14 @@ failures, note 53.5 kB, lint `9 checks, 0 errors, 0 warnings`, stage 12
 `8 verified, 0 optional absent, frames 58/58`, exit 0 in 1935.6 s.
 
 **2. The suites are still not hermetic.** `tests/test_stages.py` and `tests/test_doctor.py`
-read ambient `GLIMPSE_*` and fail when those are exported. Pre-existing, reproduced on
+read ambient `DYAK_*` and fail when those are exported. Pre-existing, reproduced on
 pristine `main`, filed as #63. "The tests pass" still means "the tests pass in a clean shell".
 
 Two variables are pinned by this work rather than deferred to #63, because the changes that
 introduced them also introduced writes. Without the pin, running the suite created
-`~/.config/glimpse/settings.toml` holding the developer's real vault path, and wrote
+`~/.config/dyak/settings.toml` holding the developer's real vault path, and wrote
 `audio.wav`, `transcript.txt`, `transcript.json` and `transcript.raw.json` into
-`~/Documents/obs_notes/glimpse/`. `GLIMPSE_SETTINGS` also belongs in the CI scrub list.
+`~/Documents/obs_notes/dyak/`. `DYAK_SETTINGS` also belongs in the CI scrub list.
 
 **3. Compared against the hand-written baseline.** Run 7's `note.linked.md` against
 `Лекция 1. 01.10.26.md` (64150 bytes), re-measured rather than carried forward:
@@ -174,26 +174,26 @@ artefact itself, and a reader can compute the coverage claim rather than trust t
 Before that release, the module's prose claimed 143 files were checked when 65 were — the
 artefact above is the correction. `files_checked ==
 files_in_bundle_excluding_this_stage` is the end state; the gap is
-[#87](https://github.com/nicklin11/glimpse/issues/87), and the presence-only character of the
+[#87](https://github.com/nicklin11/dyak/issues/87), and the presence-only character of the
 per-file check is the deeper constraint recorded in the same issue.
 
 ## Where the note is written
 
-`glimpse process` exports into the vault by default, into `<vault>/glimpse/`. The vault
-resolves `--vault-path` → `$GLIMPSE_VAULT` → the `vault` key in
-`$XDG_CONFIG_HOME/glimpse/settings.toml` → `~/Documents/obs_notes`, and the settings file is
+`dyak process` exports into the vault by default, into `<vault>/dyak/`. The vault
+resolves `--vault-path` → `$DYAK_VAULT` → the `vault` key in
+`$XDG_CONFIG_HOME/dyak/settings.toml` → `~/Documents/obs_notes`, and the settings file is
 written on a first run with nothing configured. Before this, a run with no flag wrote nothing
-to the vault at all and left the note in `~/.local/state/glimpse/` (#71).
+to the vault at all and left the note in `~/.local/state/dyak/` (#71).
 
 The subdirectory is not cosmetic: a bundle is ~170 files, 25 in the bundle root and 145 under
 `images/`, and the vault root is where the user's own notes live. A vault path that does not
 exist is reported and named, never created — `export_to_vault` ends in `mkdir(parents=True)`,
-so exporting to a typo would materialise an empty directory that `glimpse doctor` then
+so exporting to a typo would materialise an empty directory that `dyak doctor` then
 certifies as healthy.
 
 ## Claims in the code that are now true
 
-`src/glimpse/stages.py` states:
+`src/dyak/stages.py` states:
 
 ```python
 IMPLEMENTED = 12

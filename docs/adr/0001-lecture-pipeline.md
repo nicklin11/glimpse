@@ -48,12 +48,12 @@ The pipeline therefore needs two properties that pull in opposite directions:
 
 **Status:** in force. Amended 2026-10-02 — the package was renamed; the rule is unchanged.
 
-The package is `glimpse`. The subcommand surface carries the meaning:
+The package is `dyak`. The subcommand surface carries the meaning:
 
 ```
-glimpse process <video|audio>   # full pipeline
-glimpse audit <note.md>         # audit an existing note
-glimpse doctor                  # report missing/conflicting dependencies
+dyak process <video|audio>   # full pipeline
+dyak audit <note.md>         # audit an existing note
+dyak doctor                  # report missing/conflicting dependencies
 ```
 
 Rationale: a CLI binary name cannot teach another agent what a tool does. `--help`,
@@ -61,23 +61,23 @@ the repository description and the skill description can. Names containing `ai`,
 `auto` or `smart` were rejected — they make a promise that cannot be verified before
 running the tool, and they go stale when the backing model changes.
 
-**Amendment 2026-10-02 — renamed `glimpse` → `glimpse`.** The rule above is unchanged;
-only the name is. Recorded because this section previously named `glimpse` as the
+**Amendment 2026-10-02 — renamed `dyak` → `dyak`.** The rule above is unchanged;
+only the name is. Recorded because this section previously named `dyak` as the
 choice, and an ADR that names a different package than the repository ships is a
 document that actively misleads.
 
 Two honest notes on the new name:
 
-- It sits closer to the line the rule draws than `glimpse` did. A "glimpse" suggests
+- It sits closer to the line the rule draws than `dyak` did. A "dyak" suggests
   a partial view, and this tool produces a complete, audited note. The mitigation is
   the same one that always applied: the description, `--help` and the skill text
   carry the meaning, and they are what another agent reads first.
-- `glimpse` is **taken on PyPI** ("Hierarchical visual models in C++ and Python").
+- `dyak` is **taken on PyPI** ("Hierarchical visual models in C++ and Python").
   That is irrelevant for a `pipx install` from git, and only becomes a problem if
   the package is ever published under that name. Recorded now so the collision is not
   rediscovered later.
 
-### D2 — glimpse depends on `shipboard`, and does not reimplement STT
+### D2 — dyak depends on `shipboard`, and does not reimplement STT
 
 **Status: SUPERSEDED 2026-10-03 and again 2026-10-04. Do not implement this text.**
 The shipboard dependency was removed (PR #50) and the backend became a pluggable
@@ -87,11 +87,11 @@ specifics do not.
 
 STT is delegated: `shipboard process PATH` already transcribes an existing file to
 stdout. whisper.cpp runs **CPU-only by design**, which keeps roughly 1.5 GiB of VRAM
-free for llama-swap. A second STT stack inside glimpse would duplicate that
+free for llama-swap. A second STT stack inside dyak would duplicate that
 configuration and silently compete for the same resources.
 
-**Error propagation is part of the contract.** glimpse captures shipboard's stderr
-and surfaces it verbatim. If `shipboard` is absent, `glimpse doctor` says so with a
+**Error propagation is part of the contract.** dyak captures shipboard's stderr
+and surfaces it verbatim. If `shipboard` is absent, `dyak doctor` says so with a
 remediation line; `process` refuses to start rather than silently degrading. A tool
 that swallows its dependency's errors is worse than no tool, because the failure
 looks like success.
@@ -244,13 +244,13 @@ number was never measured. #96.
 ### D8 — The vision backend is pluggable; local is deferred
 
 **Status: in force. Implemented 2026-10-04 (#67).**
-Stage 5 (`quality`) works through `GeometricEstimator`, the `GLIMPSE_BBOX_SOURCE` default.
+Stage 5 (`quality`) works through `GeometricEstimator`, the `DYAK_BBOX_SOURCE` default.
 The `vlm` bbox source was never built and has been removed from the registry — an unbuilt
 option that raised rather than being refused as unknown.
 
 Stage 6 (`captions`) now calls a vision model. The transport was never the missing piece:
 `llm.chat` passes `messages` through without inspecting them, so an OpenAI-compatible
-`image_url` content part is all a vision request is. `llm.py` gained `GLIMPSE_VLM_*`
+`image_url` content part is all a vision request is. `llm.py` gained `DYAK_VLM_*`
 configuration (falling back to the text names when unset), `vision_message()`,
 `frame_fingerprint()`, and stage 6 captions each frame the gate passed, cached by
 `(frame fingerprint, model id)` as this decision specifies.
@@ -290,7 +290,7 @@ participant name, a personal IP or a hostname.
 > should link to this section.
 
 ```
-glimpse process ~/Videos/lectures/.../1_lecture_OCS.webm
+dyak process ~/Videos/lectures/.../1_lecture_OCS.webm
 
   0  doctor      verify ffmpeg/ffprobe, shipboard, gateway reachability, vault
   1  probe       ffprobe: streams, duration, codecs -> decide audio-only or not
@@ -322,7 +322,7 @@ one that is loud:
 | 5 | audit found errors above threshold; note written and **flagged** |
 | 130 | interrupted (128 + SIGINT); work dir kept |
 
-An uncaught internal error — a bug in glimpse — has no row on purpose: it
+An uncaught internal error — a bug in dyak — has no row on purpose: it
 propagates as a traceback. The work dir is retained and its path printed first.
 
 ## Amendment 2026-10-02 — stages 0-3 shipped, and two corrections
@@ -378,10 +378,10 @@ not be broader than the stages it guards: `ffmpeg`, `ffprobe` and `shipboard` ar
 fatal for `process`, the vault and the gateway are not. Stages 0-3 write only into
 the managed work dir and never call the gateway, so refusing to transcribe
 because stage 12's output directory is missing — or because stage 5's VLM backend
-is offline — would be a gate protecting nothing. `glimpse doctor` keeps both
+is offline — would be a gate protecting nothing. `dyak doctor` keeps both
 fatal, because its job is to report the whole environment.
 
-**`glimpse process` exits 1 until stage 12 exists.** Exit 0 means "all artefacts
+**`dyak process` exits 1 until stage 12 exists.** Exit 0 means "all artefacts
 written and verified" in the table above, and no note is produced yet, so a
 successful partial run claiming 0 would be the silent degradation D2 exists to
 prevent. The work dir is kept on failure and its path printed: a failed
@@ -511,7 +511,7 @@ timestamps. A regression check can still be exact on the frame half.
 
 ### Amendment to D9 (2026-10-03) — the vault is an export target, not the artefact root
 
-Deliverables go to a **bundle**: `--output-dir`, else `$XDG_STATE_HOME/glimpse/<lecture>`.
+Deliverables go to a **bundle**: `--output-dir`, else `$XDG_STATE_HOME/dyak/<lecture>`.
 The vault, when given, is copied into.
 
 **Not `./output/<lecture>`.** D9 exists because artefacts written into a working directory
@@ -789,7 +789,7 @@ The MVP is 12 stages. The run below is the first one to execute all of them agai
 
 ### The infrastructure, not the pipeline, is what fails on a long lecture
 
-Two attempts died at stage 3. Neither was a glimpse defect, and both are in shipboard:
+Two attempts died at stage 3. Neither was a dyak defect, and both are in shipboard:
 
 - `whisper_wake_proxy.py:152` sets `HTTPConnection(..., timeout=300)`, hardcoded and not
   configurable by environment. A request whose backend work exceeds 300 s returns
@@ -841,7 +841,7 @@ because the directory holds 18 files either way.
 ### What this run does not establish
 
 The synthesis ran in template mode and the audit's tier 2 did not run, because
-`GLIMPSE_LLM_ENDPOINT` is unset. **The 0 findings this run reports are not evidence about the
+`DYAK_LLM_ENDPOINT` is unset. **The 0 findings this run reports are not evidence about the
 audit.** Tier 1 ran four deterministic rules against a template note; the 21-finding baseline
 was measured against a hand-written note. Comparing the two sets would compare a template
 against prose, which is not a regression check in any direction.

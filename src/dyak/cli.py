@@ -1,7 +1,7 @@
 """Entry point and subcommand dispatch (ADR-0001 D1).
 
 The surface is the documentation: a binary name cannot teach another agent what
-a tool does, so `glimpse --help` and each subcommand's help can.
+a tool does, so `dyak --help` and each subcommand's help can.
 """
 
 from __future__ import annotations
@@ -11,13 +11,13 @@ import os
 import sys
 from pathlib import Path
 
-from . import audit as gla
-from . import deps as gld
+from . import audit as dya
+from . import deps as dyd
 from . import exitcodes as ec
-from . import bundle as glb
-from . import link as gllnk
-from . import pipeline as glp
-from . import repair as glr
+from . import bundle as dyb
+from . import link as dylnk
+from . import pipeline as dyp
+from . import repair as dyr
 from . import runner
 from .deps import PROCESS_REQUIRES, Check, run_all, worst_code
 from .workspace import WorkDir
@@ -26,7 +26,7 @@ from .workspace import WorkDir
 # pointer, not a dead end. The standalone subcommand is unbuilt; the stage itself runs inside
 # `process`, so "stage 9, tracked in #11" would now be a false statement about the pipeline.
 PENDING: dict[str, str] = {
-    "audit": "the standalone `glimpse audit NOTE` entry point, tracked in #11; stage 9 "
+    "audit": "the standalone `dyak audit NOTE` entry point, tracked in #11; stage 9 "
     "does run as part of `process`",
 }
 
@@ -54,23 +54,23 @@ def _doctor(_args: argparse.Namespace) -> int:
 
     failed = [c for c in checks if c.failed]
     if not failed:
-        print("\nglimpse: all required dependencies present.")
+        print("\ndyak: all required dependencies present.")
         return ec.OK
 
     print("", file=sys.stderr)
     for c in failed:
-        print(f"glimpse: missing or broken dependency: {c.name}", file=sys.stderr)
+        print(f"dyak: missing or broken dependency: {c.name}", file=sys.stderr)
         # The remediation is printed for *every* failure, not only for exit 2. It used to
         # be gated on MISSING_DEPENDENCY, which meant a dependency that is installed and
         # unreachable -- the case an endpoint backend introduces -- was named and then
         # abandoned with no indication of what to do about it.
         if c.remediation:
-            print(f"glimpse:   remediation: {c.remediation}", file=sys.stderr)
+            print(f"dyak:   remediation: {c.remediation}", file=sys.stderr)
         # ADR-0001 D2: the dependency's own stderr, reproduced verbatim.
         if c.stderr:
-            print(f"glimpse:   {c.name} stderr:", file=sys.stderr)
+            print(f"dyak:   {c.name} stderr:", file=sys.stderr)
             for line in c.stderr.splitlines():
-                print(f"glimpse:     {line}", file=sys.stderr)
+                print(f"dyak:     {line}", file=sys.stderr)
     return worst_code(checks)
 
 
@@ -92,24 +92,24 @@ def _preflight() -> int:
         # reason to refuse this run, but it is still a fact the user wants
         # before stage 5 rather than after it.
         print(
-            f"glimpse: note: {c.name} is unavailable, but stages 0-{glp.IMPLEMENTED} do not use it",
+            f"dyak: note: {c.name} is unavailable, but stages 0-{dyp.IMPLEMENTED} do not use it",
             file=sys.stderr,
         )
     if not failed:
         return ec.OK
 
-    print("glimpse: refusing to start; run `glimpse doctor` for detail.", file=sys.stderr)
+    print("dyak: refusing to start; run `dyak doctor` for detail.", file=sys.stderr)
     for c in failed:
-        print(f"glimpse: {c.name}: {c.detail}", file=sys.stderr)
+        print(f"dyak: {c.name}: {c.detail}", file=sys.stderr)
         if c.remediation:
-            print(f"glimpse:   remediation: {c.remediation}", file=sys.stderr)
+            print(f"dyak:   remediation: {c.remediation}", file=sys.stderr)
     return worst_code(checks)
 
 
 def _pending(name: str) -> int:
     print(
-        f"glimpse: `{name}` is not implemented yet ({PENDING[name]}).\n"
-        f"glimpse: run `glimpse doctor` for what is available.",
+        f"dyak: `{name}` is not implemented yet ({PENDING[name]}).\n"
+        f"dyak: run `dyak doctor` for what is available.",
         file=sys.stderr,
     )
     return ec.USAGE
@@ -129,8 +129,8 @@ def _process(args: argparse.Namespace) -> int:
     0, and every message is printed regardless of which code comes out.
     """
     if not args.path:
-        print("glimpse: process needs a recording to work on.", file=sys.stderr)
-        print("glimpse:   usage: glimpse process PATH", file=sys.stderr)
+        print("dyak: process needs a recording to work on.", file=sys.stderr)
+        print("dyak:   usage: dyak process PATH", file=sys.stderr)
         return ec.USAGE
 
     code = _preflight()
@@ -144,32 +144,32 @@ def _process(args: argparse.Namespace) -> int:
         # --workdir is user-supplied, so a bad parent is a usage error rather
         # than an internal one, and it is far more likely than a real mkdtemp
         # failure. Checked here because nothing exists yet to retain.
-        print(f"glimpse: cannot use the work directory: {exc}", file=sys.stderr)
+        print(f"dyak: cannot use the work directory: {exc}", file=sys.stderr)
         print(
-            "glimpse:   remediation: --workdir must name an existing writable directory",
+            "dyak:   remediation: --workdir must name an existing writable directory",
             file=sys.stderr,
         )
         return ec.USAGE
     try:
         source = Path(args.path).expanduser()
     except (OSError, RuntimeError) as exc:
-        print(f"glimpse: cannot expand the input path: {exc}", file=sys.stderr)
+        print(f"dyak: cannot expand the input path: {exc}", file=sys.stderr)
         return ec.USAGE
     try:
-        output = glb.Bundle.open(
+        output = dyb.Bundle.open(
             source,
             output_dir=getattr(args, "output_dir", None),
             overwrite=getattr(args, "overwrite", False),
         )
     except OSError as exc:
-        print(f"glimpse: cannot use the output directory: {exc}", file=sys.stderr)
+        print(f"dyak: cannot use the output directory: {exc}", file=sys.stderr)
         print(
-            "glimpse:   remediation: --output-dir must name a writable location",
+            "dyak:   remediation: --output-dir must name a writable location",
             file=sys.stderr,
         )
         return ec.USAGE
     try:
-        result = glp.run(
+        result = dyp.run(
             source,
             work,
             bundle=output,
@@ -180,18 +180,18 @@ def _process(args: argparse.Namespace) -> int:
     except runner.DependencyError as exc:
         work.retain(exc.message)
         runner.report(exc)
-        print(f"glimpse: {work.note()}", file=sys.stderr)
+        print(f"dyak: {work.note()}", file=sys.stderr)
         return exc.code
     except KeyboardInterrupt:
         work.retain("interrupted by the user")
-        print(f"glimpse: {work.note()}", file=sys.stderr)
+        print(f"dyak: {work.note()}", file=sys.stderr)
         return ec.INTERRUPTED
     except Exception as exc:  # noqa: BLE001 -- retain, print where, then propagate
         work.retain(f"{type(exc).__name__}: {exc}")
         # An unexpected exception reaches the user as a traceback. Without this
         # line the traceback would be the only thing they see, and the retained
         # artefacts -- the reason retention exists -- would be unfindable.
-        print(f"glimpse: {work.note()}", file=sys.stderr)
+        print(f"dyak: {work.note()}", file=sys.stderr)
         raise
     else:
         work.release()
@@ -199,28 +199,28 @@ def _process(args: argparse.Namespace) -> int:
     print()
     print(f"  source     {result.source}")
     print(f"  transcript {result.transcript.summary()}")
-    print(f"  stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} done in {result.seconds:.1f}s")
+    print(f"  stages {dyp.FIRST_STAGE}-{dyp.IMPLEMENTED} done in {result.seconds:.1f}s")
     print(f"  output     {result.bundle.root}  ({result.bundle.summary()})")
     # "One command" has to mean the note ends up in the vault, not that it ends up somewhere
     # the user has to know to open. The vault resolves the same way doctor resolves it, so
-    # `glimpse process video.mp4` with nothing configured does what doctor just reported.
+    # `dyak process video.mp4` with nothing configured does what doctor just reported.
     # `--no-vault-export` is the opt-out; the export is verified by size and never blocks.
     if not getattr(args, "no_vault_export", False):
-        vault = gld.resolve_vault(getattr(args, "vault_path", None))
-        subdir = getattr(args, "vault_subdir", None) or glb.DEFAULT_EXPORT_SUBDIR
+        vault = dyd.resolve_vault(getattr(args, "vault_path", None))
+        subdir = getattr(args, "vault_subdir", None) or dyb.DEFAULT_EXPORT_SUBDIR
         # A vault that does not exist is reported, not created. `export_to_vault` ends in
         # `mkdir(parents=True)`, so exporting to a mistyped path silently materialises an
         # empty directory -- and then `check_vault` finds it exists, is a directory and is
-        # writable, so the next `glimpse doctor` reports a healthy vault that is empty.
+        # writable, so the next `dyak doctor` reports a healthy vault that is empty.
         # That turns a configuration mistake into a state the tool then certifies.
         if not vault.is_dir():
             print(
-                f"glimpse: vault does not exist, so the note was not exported: {vault}",
+                f"dyak: vault does not exist, so the note was not exported: {vault}",
                 file=sys.stderr,
             )
             print(
-                f"glimpse:   the bundle is intact at {result.bundle.root}; set "
-                f"{gld.VAULT_ENV} or pass --vault-path to export it",
+                f"dyak:   the bundle is intact at {result.bundle.root}; set "
+                f"{dyd.VAULT_ENV} or pass --vault-path to export it",
                 file=sys.stderr,
             )
         else:
@@ -228,17 +228,17 @@ def _process(args: argparse.Namespace) -> int:
             # A default nobody can find is a default nobody will change, and this is meant
             # to be settable rather than compiled in -- which needs somewhere to set it.
             unset_everywhere = (
-                not gld.settings_path().is_file()
-                and not os.environ.get(gld.VAULT_ENV, "").strip()
+                not dyd.settings_path().is_file()
+                and not os.environ.get(dyd.VAULT_ENV, "").strip()
                 and getattr(args, "vault_path", None) is None
             )
             written = None
             if unset_everywhere:
                 try:
-                    written = gld.write_settings(vault)
+                    written = dyd.write_settings(vault)
                 except OSError as exc:
                     print(
-                        f"glimpse: could not write {gld.settings_path()}: {exc}",
+                        f"dyak: could not write {dyd.settings_path()}: {exc}",
                         file=sys.stderr,
                     )
             try:
@@ -246,9 +246,9 @@ def _process(args: argparse.Namespace) -> int:
                     vault, subdir=subdir, images=getattr(args, "vault_images", False)
                 )
             except OSError as exc:
-                print(f"glimpse: vault export failed: {exc}", file=sys.stderr)
+                print(f"dyak: vault export failed: {exc}", file=sys.stderr)
                 print(
-                    "glimpse:   remediation: the vault is an export target; the bundle is intact",
+                    "dyak:   remediation: the vault is an export target; the bundle is intact",
                     file=sys.stderr,
                 )
                 return ec.DEPENDENCY_FAILED
@@ -258,21 +258,21 @@ def _process(args: argparse.Namespace) -> int:
             else:
                 print(f"  vault      {len(copied)} files exported to {vault / subdir}")
                 print(
-                    f"             (change with {gld.VAULT_ENV}, --vault-path, or "
-                    f"{gld.settings_path()})"
+                    f"             (change with {dyd.VAULT_ENV}, --vault-path, or "
+                    f"{dyd.settings_path()})"
                 )
     if not result.quality.ok:
         # ADR-0001 D4: the note is still written; a bad frame means the crops are soft, not that
         # the pipeline stopped. The quality report is the artefact that explains why.
         print(
-            f"glimpse: quality gate failed for {len(result.quality.failed)}"
+            f"dyak: quality gate failed for {len(result.quality.failed)}"
             f"/{len(result.quality.frames)} frames; see {result.bundle.root}",
             file=sys.stderr,
         )
         for line in result.quality.explain().splitlines():
-            print(f"glimpse: {line.strip()}", file=sys.stderr)
+            print(f"dyak: {line.strip()}", file=sys.stderr)
         print(
-            "glimpse:   remediation: lower quality.decay to tighten the gate, or "
+            "dyak:   remediation: lower quality.decay to tighten the gate, or "
             "re-extract with a higher source bitrate -- interpolation cannot recover "
             "text that was never encoded",
             file=sys.stderr,
@@ -283,18 +283,18 @@ def _process(args: argparse.Namespace) -> int:
         # Naming the count and the rule is the whole point -- an exit code with no list
         # attached is a code the reader cannot act on.
         print(
-            f"glimpse: audit found {len(audit_errors)} error-tier findings; the note is "
+            f"dyak: audit found {len(audit_errors)} error-tier findings; the note is "
             f"written and flagged, not withheld; see {result.bundle.root}",
             file=sys.stderr,
         )
         for finding in audit_errors[:10]:
             print(
-                f"glimpse:   line {finding.line} {finding.rule}: {finding.detail}", file=sys.stderr
+                f"dyak:   line {finding.line} {finding.rule}: {finding.detail}", file=sys.stderr
             )
         if len(audit_errors) > 10:
             print(
-                f"glimpse:   ... and {len(audit_errors) - 10} more in "
-                f"{result.bundle.root / gla.REPORT_NAME}",
+                f"dyak:   ... and {len(audit_errors) - 10} more in "
+                f"{result.bundle.root / dya.REPORT_NAME}",
                 file=sys.stderr,
             )
         # Built from the constant the stage publishes with and the bundle root the run wrote
@@ -305,19 +305,19 @@ def _process(args: argparse.Namespace) -> int:
         # bundle has no `audit/` or `repair/` directory. Both branches are exit 5 and exit 1,
         # and thirteen runs have exited 0, so the wrong path was never shown to anyone. #91.
         print(
-            "glimpse:   remediation: read the quoted line in "
-            f"{result.bundle.root / gla.REPORT_NAME} and check it against the recording -- "
+            "dyak:   remediation: read the quoted line in "
+            f"{result.bundle.root / dya.REPORT_NAME} and check it against the recording -- "
             f"stage 10 repaired what was mechanical and declined the rest, by name, in "
-            f"{result.bundle.root / glr.REPORT_NAME}",
+            f"{result.bundle.root / dyr.REPORT_NAME}",
             file=sys.stderr,
         )
-    print(f"glimpse: {work.note()}")
+    print(f"dyak: {work.note()}")
     # Artefact paths are printed only when the directory still exists. Pointing
     # the reader at files that release() just deleted is worse than saying
     # nothing: it looks like an output location and is not one.
     if work.retained:
         for name in sorted(p.name for p in work.path.iterdir()):
-            print(f"glimpse:   {work.path / name}")
+            print(f"dyak:   {work.path / name}")
 
     # Exit code precedence, and why it is this order.
     #
@@ -342,21 +342,21 @@ def _process(args: argparse.Namespace) -> int:
         # reported as soft crops, sending the reader to tune the wrong thing.
         outcome = result.caption_outcome
         print(
-            f"glimpse: stage 6 captioned 0 of {len(result.caption.considered)} frames "
+            f"dyak: stage 6 captioned 0 of {len(result.caption.considered)} frames "
             f"via {outcome.model} ({outcome.failed} failed); see {result.bundle.root}",
             file=sys.stderr,
         )
         for alignment in result.caption.alignments:
             if alignment.caption_status not in ("OK", "GATED_OUT"):
                 print(
-                    f"glimpse:   {alignment.frame}: {alignment.caption_status} "
+                    f"dyak:   {alignment.frame}: {alignment.caption_status} "
                     f"-- {alignment.reason}",
                     file=sys.stderr,
                 )
         print(
-            "glimpse:   remediation: check that the model serves vision requests; "
-            "GLIMPSE_VLM_ENDPOINT/GLIMPSE_VLM_MODEL select it, and fall back to the "
-            "GLIMPSE_LLM_* pair when unset",
+            "dyak:   remediation: check that the model serves vision requests; "
+            "DYAK_VLM_ENDPOINT/DYAK_VLM_MODEL select it, and fall back to the "
+            "DYAK_LLM_* pair when unset",
             file=sys.stderr,
         )
         return ec.DEPENDENCY_FAILED
@@ -364,26 +364,26 @@ def _process(args: argparse.Namespace) -> int:
         return ec.QUALITY_GATE_FAILED
     if result.note.degraded:
         for warning in result.note.notes:
-            print(f"glimpse: synthesis: {warning}", file=sys.stderr)
+            print(f"dyak: synthesis: {warning}", file=sys.stderr)
         print(
-            f"glimpse: the note was produced by '{result.note.synthesizer}', not by a "
-            f"model. Set GLIMPSE_LLM_ENDPOINT and re-run for a synthesised note.",
+            f"dyak: the note was produced by '{result.note.synthesizer}', not by a "
+            f"model. Set DYAK_LLM_ENDPOINT and re-run for a synthesised note.",
             file=sys.stderr,
         )
         return ec.USAGE
     if not result.report.ok:
         for entry in result.report.missing:
             print(
-                f"glimpse: MISSING {entry['artefact']} ({entry['detail']}): {entry['why']}",
+                f"dyak: MISSING {entry['artefact']} ({entry['detail']}): {entry['why']}",
                 file=sys.stderr,
             )
         print(
-            "glimpse:   this is ADR-0001 D3: stages above reported success, and the filesystem "
+            "dyak:   this is ADR-0001 D3: stages above reported success, and the filesystem "
             "disagrees. Not exiting 0.",
             file=sys.stderr,
         )
         return ec.USAGE
-    print(f"glimpse: all stages complete; artefacts verified in {result.bundle.root}")
+    print(f"dyak: all stages complete; artefacts verified in {result.bundle.root}")
     return ec.OK
 
 
@@ -397,14 +397,14 @@ def _terms_dir(args: argparse.Namespace):
     `_term_*` refuses to run rather than reporting "no terms found": those two look the
     same in the output and only one of them means the vault was read.
     """
-    resolved = gllnk.resolve_terms_dir(
+    resolved = dylnk.resolve_terms_dir(
         getattr(args, "terms_dir", None), getattr(args, "vault_path", None)
     )
     if resolved is None:
         print(
-            f"glimpse: no terms directory. Pass --terms-dir DIR, set "
-            f"{gllnk.TERMS_ENV}, or pass --vault-path DIR "
-            f"(looked for <vault>/{gllnk.COURSES_DIRNAME}/{gllnk.TERMS_DIRNAME}).",
+            f"dyak: no terms directory. Pass --terms-dir DIR, set "
+            f"{dylnk.TERMS_ENV}, or pass --vault-path DIR "
+            f"(looked for <vault>/{dylnk.COURSES_DIRNAME}/{dylnk.TERMS_DIRNAME}).",
             file=sys.stderr,
         )
     return resolved
@@ -414,21 +414,21 @@ def _term_link(args: argparse.Namespace) -> int:
     terms_dir = _terms_dir(args)
     if terms_dir is None:
         return ec.USAGE
-    terms = gllnk.load_terms(terms_dir)
+    terms = dylnk.load_terms(terms_dir)
     if not terms:
-        print(f"glimpse: no term notes in {terms_dir}", file=sys.stderr)
+        print(f"dyak: no term notes in {terms_dir}", file=sys.stderr)
         return ec.USAGE
-    targets = gllnk.collect_targets(args.paths, terms_dir, args.vault_path)
+    targets = dylnk.collect_targets(args.paths, terms_dir, args.vault_path)
     if not targets:
-        print("glimpse: no target notes to link", file=sys.stderr)
+        print("dyak: no target notes to link", file=sys.stderr)
         return ec.USAGE
-    report = gllnk.link_paths(targets, terms, write=args.write)
-    print(f"glimpse: {report.summary()}")
+    report = dylnk.link_paths(targets, terms, write=args.write)
+    print(f"dyak: {report.summary()}")
     if report.per_term:
         top = sorted(report.per_term.items(), key=lambda kv: -kv[1])[:10]
-        print("glimpse:   " + ", ".join(f"{name}x{count}" for name, count in top))
+        print("dyak:   " + ", ".join(f"{name}x{count}" for name, count in top))
     if not args.write and report.changed:
-        print("glimpse:   dry run -- pass --write to apply")
+        print("dyak:   dry run -- pass --write to apply")
     return ec.OK
 
 
@@ -436,19 +436,19 @@ def _term_index(args: argparse.Namespace) -> int:
     terms_dir = _terms_dir(args)
     if terms_dir is None:
         return ec.USAGE
-    terms = gllnk.load_terms(terms_dir)
-    lectures = gllnk.collect_targets([], terms_dir, args.vault_path)
-    table = gllnk.index_report(lectures, terms, only_used=args.only_used)
+    terms = dylnk.load_terms(terms_dir)
+    lectures = dylnk.collect_targets([], terms_dir, args.vault_path)
+    table = dylnk.index_report(lectures, terms, only_used=args.only_used)
     if not args.write:
         print(table)
         return ec.OK
     dest = terms_dir / "_index.md"
     dest.write_text(
         "---\ntype: generated\n---\n\n"
-        "> Сгенерировано `glimpse term index --write`. Правь не руками.\n\n" + table + "\n",
+        "> Сгенерировано `dyak term index --write`. Правь не руками.\n\n" + table + "\n",
         encoding="utf-8",
     )
-    print(f"glimpse: wrote {dest}")
+    print(f"dyak: wrote {dest}")
     return ec.OK
 
 
@@ -456,17 +456,17 @@ def _term_check(args: argparse.Namespace) -> int:
     terms_dir = _terms_dir(args)
     if terms_dir is None:
         return ec.USAGE
-    terms = gllnk.load_terms(terms_dir)
-    lectures = gllnk.collect_targets([], terms_dir, args.vault_path)
-    print(gllnk.check_report(terms, lectures, terms_dir))
+    terms = dylnk.load_terms(terms_dir)
+    lectures = dylnk.collect_targets([], terms_dir, args.vault_path)
+    print(dylnk.check_report(terms, lectures, terms_dir))
     return ec.OK
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="glimpse",
+        prog="dyak",
         description="Turn a lecture recording into a structured, audited Markdown note. "
-        f"Stages {glp.FIRST_STAGE}-{glp.IMPLEMENTED} are implemented. process exits 0 "
+        f"Stages {dyp.FIRST_STAGE}-{dyp.IMPLEMENTED} are implemented. process exits 0 "
         f"only when stage 12 has verified the artefacts on disk: {ec.AUDIT_FINDINGS} if "
         f"the audit found errors, {ec.QUALITY_GATE_FAILED} if frames were soft, "
         f"{ec.DEPENDENCY_FAILED} if a tool failed, {ec.USAGE} if it could not verify.",
@@ -485,21 +485,21 @@ def build_parser() -> argparse.ArgumentParser:
         "process",
         help="run the pipeline on a recording",
         description="Transcribe, extract frames, synthesise, audit, link, report. "
-        f"Stages 0-{glp.IMPLEMENTED} are all implemented. Exits 0 only when the "
+        f"Stages 0-{dyp.IMPLEMENTED} are all implemented. Exits 0 only when the "
         "bundle it wrote has been verified on disk.",
     )
     p_process.add_argument("path", nargs="?", help="video or audio file")
     p_process.add_argument(
         "--workdir",
         metavar="DIR",
-        help="parent directory for the managed work dir (default: $TMPDIR, or $GLIMPSE_WORKDIR)",
+        help="parent directory for the managed work dir (default: $TMPDIR, or $DYAK_WORKDIR)",
     )
     p_process.add_argument(
         "--output-dir",
         metavar="DIR",
         help=(
             "where to write the output bundle (default: "
-            "$XDG_STATE_HOME/glimpse/<lecture>, or ./output/<lecture> if unset)"
+            "$XDG_STATE_HOME/dyak/<lecture>, or ./output/<lecture> if unset)"
         ),
     )
     p_process.add_argument(
@@ -536,7 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "where inside the vault the bundle lands, relative to it "
-            f"(default: {glb.DEFAULT_EXPORT_SUBDIR}/). Not optional in practice: a bundle is "
+            f"(default: {dyb.DEFAULT_EXPORT_SUBDIR}/). Not optional in practice: a bundle is "
             "~188 files, and the vault root holds the user's own notes"
         ),
     )
@@ -558,7 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--terms-dir",
         metavar="DIR",
         help=(
-            "atomic term notes for stage 11. Default: $GLIMPSE_TERMS_DIR, then "
+            "atomic term notes for stage 11. Default: $DYAK_TERMS_DIR, then "
             "<vault-path>/mscs/_terms. Without it the note is written unlinked and the "
             "stage says so."
         ),
@@ -580,7 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="term vocabulary: link / index / check the vault's atomic term notes",
         description=(
             "Ported from ~/.local/bin/mscs-termlink (issue #8). The terms directory is "
-            "resolved from --terms-dir, then $GLIMPSE_TERMS_DIR, then "
+            "resolved from --terms-dir, then $DYAK_TERMS_DIR, then "
             "<--vault-path>/mscs/_terms."
         ),
     )

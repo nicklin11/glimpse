@@ -158,7 +158,7 @@ def _run_ffmpeg(args: list[str], *, timeout: float, source: Path) -> None:
 
 def detect(source: Path, settings: Settings = Settings()) -> list[int]:
     """Pass 1: full decode, timestamps only. Returns PTS in milliseconds."""
-    tmp = Path(tempfile.mkdtemp(prefix="glimpse-detect-"))
+    tmp = Path(tempfile.mkdtemp(prefix="dyak-detect-"))
     try:
         _run_ffmpeg(
             [

@@ -1,4 +1,4 @@
-"""Stage orchestration for `glimpse process`.
+"""Stage orchestration for `dyak process`.
 
 Stages 1-4 live here. Stage 0 (`doctor`) runs in the CLI before this is called,
 because its output is a rendered report rather than a pipeline artefact, and
@@ -140,7 +140,7 @@ def write_timings(bundle: Bundle, reports: list[StageReport]) -> Path:
         target.write_text(
             json.dumps(
                 {
-                    "tool": "glimpse-timings-v1",
+                    "tool": "dyak-timings-v1",
                     "total_seconds": round(sum(r.seconds for r in reports), 1),
                     "stages": [
                         {
@@ -346,7 +346,7 @@ def run(
     # looking at.
     began = time.monotonic()
     qs = quality.Settings()
-    bbox_source = os.environ.get("GLIMPSE_BBOX_SOURCE", "geometric")
+    bbox_source = os.environ.get("DYAK_BBOX_SOURCE", "geometric")
     quality.resolve_estimator(bbox_source)
     qreport = quality.run(produced, work.path, settings=qs, bbox_source=bbox_source, stream=out)
 
@@ -508,7 +508,7 @@ def run(
     ldir2 = work.dir("link")
     # The vault is resolved the same way `doctor` resolves it, not only when `--vault` was
     # passed. Otherwise stage 11 looks for `mscs/_terms` under a `None` vault and reports
-    # "not configured" on a machine where `glimpse doctor` just named the directory that
+    # "not configured" on a machine where `dyak doctor` just named the directory that
     # holds them.
     tdir = link.resolve_terms_dir(terms_dir, deps.resolve_vault(vault_path))
     lreport2 = link.run(

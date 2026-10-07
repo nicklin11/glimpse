@@ -33,13 +33,13 @@ SAVED_ENV = _env.isolate()
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
-PKG = SRC / "glimpse"
+PKG = SRC / "dyak"
 
 # The one permitted third-party import, and the reason it is permitted.
 ALLOWED = {"numpy"}
-# The package under test. Everything below `src/glimpse/` may import it freely;
+# The package under test. Everything below `src/dyak/` may import it freely;
 # treating it as third-party would flag every module in the codebase.
-SELF = {"glimpse"}
+SELF = {"dyak"}
 # Sibling modules in `tests/` itself. `tests/_env.py` is not a dependency the zipapp
 # would have to ship -- it is the file next door, which is a different property. Before
 # #63's fix each suite duplicated the env handling inline; sharing it means the suites now
@@ -65,7 +65,7 @@ def imports_of(tree: ast.AST) -> list[tuple[str, int]]:
 
     Relative imports (`from .x import y`) are skipped outright. For those,
     `ImportFrom.module` is only the *tail* -- `from .cli import main` yields
-    "cli", not "glimpse.cli" -- so it names a module that does not exist at any
+    "cli", not "dyak.cli" -- so it names a module that does not exist at any
     absolute path. And `level > 0` cannot escape the package by definition,
     which is exactly what this check is about.
     """

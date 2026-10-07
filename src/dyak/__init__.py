@@ -1,4 +1,4 @@
-"""glimpse — one command turns a lecture recording into an audited note.
+"""dyak — one command turns a lecture recording into an audited note.
 
 See docs/adr/0001-lecture-pipeline.md for the pipeline and the reasoning
 behind each stage.

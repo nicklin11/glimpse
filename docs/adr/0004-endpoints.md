@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
-- **Proposal:** [#15](https://github.com/nicklin11/glimpse/issues/15)
+- **Proposal:** [#15](https://github.com/nicklin11/dyak/issues/15)
 - **Scope:** MVP. Endpoint configuration and artefact provenance.
 
 > **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
@@ -23,13 +23,13 @@ the vault (ADR-0001 D9).
 
 ### D1 — One configuration file, environment overrides on top
 
-`~/.config/glimpse/config.toml`. Precedence: **environment > file > built-in default**.
+`~/.config/dyak/config.toml`. Precedence: **environment > file > built-in default**.
 
 The file holds URLs, model ids and non-secret settings. Keys come from the environment only,
 so the file is safe to keep in a dotfiles repository and the vault sync cannot leak a
 credential.
 
-### D2 — `glimpse config set|get|list`, validating as it writes
+### D2 — `dyak config set|get|list`, validating as it writes
 
 Validates on write: the URL parses, the key is present in the environment. Hand-editing the
 file stays supported — the CLI is a convenience, not the only path. This is the whole "fast
@@ -65,7 +65,7 @@ wonder whether it is reversible.
 - **Keys in the config file.** Rejected: the vault is a sync target (D9), and a config file
   living beside notes is the likeliest place for a secret to be committed by accident.
 - **A TUI for configuration.** Rejected: a second binary to save two command-line arguments.
-- **A credential/config library.** Rejected: it would become glimpse's first and only runtime
+- **A credential/config library.** Rejected: it would become dyak's first and only runtime
   dependency, to read six keys from a TOML file. The `dependencies = []` property (ADR-0002 D2)
   is worth more than the library.
 
@@ -81,7 +81,7 @@ question 1 stands, and remains the largest unmeasured thing in the pipeline.
 
 ## Acceptance
 
-- `glimpse config set vision.model_id X` round-trips through the file.
+- `dyak config set vision.model_id X` round-trips through the file.
 - An artefact written by stage 6 or stage 7 names the model id that produced it.
 - `doctor` shows both endpoints and prints no key under any circumstance.
 - Changing the model id changes the stage 6 cache key.

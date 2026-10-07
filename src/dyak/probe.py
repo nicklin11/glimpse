@@ -86,7 +86,7 @@ def provenance(info: MediaInfo, audio_artefact=None, *, ffmpeg_version: str = ""
     """
     payload: dict = {
         "stages": [1, 2],
-        "tool": "glimpse-probe-v1",
+        "tool": "dyak-probe-v1",
         "requires_model": False,
         "source": {
             "name": info.path.name,
@@ -237,14 +237,14 @@ def require_supported(info: MediaInfo) -> None:
     """
     if not info.has_audio and not info.has_video:
         raise runner.DependencyError(
-            name="glimpse",
+            name="dyak",
             code=ec.USAGE,
             message=f"no audio or video stream in {info.path}",
             remediation="pass a lecture recording, not a data file",
         )
     if not info.has_video:
         raise runner.DependencyError(
-            name="glimpse",
+            name="dyak",
             code=ec.USAGE,
             message=(
                 f"{info.path} is audio-only; the MVP pipeline expects a video source "
@@ -254,7 +254,7 @@ def require_supported(info: MediaInfo) -> None:
         )
     if not info.has_audio:
         raise runner.DependencyError(
-            name="glimpse",
+            name="dyak",
             code=ec.USAGE,
             message=f"{info.path} has video but no audio stream; nothing to transcribe",
             remediation="pass a recording that contains the lecture audio",
@@ -263,10 +263,10 @@ def require_supported(info: MediaInfo) -> None:
 
 def _no_such_file(path: Path) -> runner.DependencyError:
     return runner.DependencyError(
-        name="glimpse",
+        name="dyak",
         code=ec.USAGE,
         message=f"input does not exist: {path}",
-        remediation="check the path; `glimpse process --help` shows the expected form",
+        remediation="check the path; `dyak process --help` shows the expected form",
     )
 
 

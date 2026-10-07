@@ -5,7 +5,7 @@ scratch: it is removed on success unless asked otherwise. The bundle is the deli
 and must survive. Folding them together would mean either keeping 137.9 MiB of extracted
 audio on every successful run, or deleting the note.
 
-**The default is `$XDG_STATE_HOME/glimpse/<lecture>`, not `./output/<lecture>`.** ADR-0001 D9
+**The default is `$XDG_STATE_HOME/dyak/<lecture>`, not `./output/<lecture>`.** ADR-0001 D9
 exists because artefacts written into a working directory end up in whatever repository
 the user happened to be standing in. A CWD-relative default reintroduces that one level
 down: run it from a git checkout and a 137.9 MiB wav plus a 3.7 MB transcript land in the
@@ -82,14 +82,14 @@ RUN_ARTEFACTS: frozenset[str] = frozenset(
 
 #: Where a bundle lands inside a vault unless told otherwise. Its own directory, because the
 #: alternative is writing ~188 files into the directory the user's own notes live in.
-DEFAULT_EXPORT_SUBDIR = "glimpse"
+DEFAULT_EXPORT_SUBDIR = "dyak"
 
 
 def state_root() -> Path:
-    """`$XDG_STATE_HOME/glimpse`, or `~/.local/state/glimpse`."""
+    """`$XDG_STATE_HOME/dyak`, or `~/.local/state/dyak`."""
     configured = os.environ.get("XDG_STATE_HOME", "").strip()
     base = Path(configured).expanduser() if configured else Path.home() / ".local/state"
-    return base / "glimpse"
+    return base / "dyak"
 
 
 def slugify(name: str) -> str:
@@ -122,12 +122,12 @@ class Bundle:
     ) -> Bundle:
         """Resolve the bundle root and create it.
 
-        Precedence: `--output-dir` > `GLIMPSE_OUTPUT_DIR` > `$XDG_STATE_HOME/glimpse`.
+        Precedence: `--output-dir` > `DYAK_OUTPUT_DIR` > `$XDG_STATE_HOME/dyak`.
         The name comes from the source file's stem unless an explicit directory was given,
         in which case that directory *is* the bundle root -- `--output-dir /tmp/x` must not
         produce `/tmp/x/1_lecture_OCS`, which is a different path than the user asked for.
         """
-        explicit = output_dir or os.environ.get("GLIMPSE_OUTPUT_DIR", "").strip() or None
+        explicit = output_dir or os.environ.get("DYAK_OUTPUT_DIR", "").strip() or None
         if explicit:
             root = Path(explicit).expanduser().resolve()
         else:

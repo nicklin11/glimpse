@@ -1,4 +1,4 @@
-# glimpse
+# dyak
 
 Turns a lecture recording into a structured, **independently audited** Markdown note for an
 Obsidian vault. Every stage of the pipeline records *provenance* — which model, which
@@ -7,8 +7,8 @@ parameters, how many tokens, what changed — so a note is accounted for, not ju
 ## Install
 
 ```
-git clone https://github.com/nicklin11/glimpse
-cd glimpse
+git clone https://github.com/nicklin11/dyak
+cd dyak
 pipx install .
 ```
 
@@ -16,10 +16,10 @@ Python 3.11+, `ffmpeg`/`ffprobe` on `PATH`, one Python dependency (`numpy`, for 
 gate). Verify the environment before a run:
 
 ```
-glimpse doctor
+dyak doctor
 ```
 
-If `glimpse` dies at import with `ModuleNotFoundError`, the environment is stale, not broken:
+If `dyak` dies at import with `ModuleNotFoundError`, the environment is stale, not broken:
 `pipx install -e` resolves dependencies once, so a later change to `pyproject.toml` does not
 reach it. Re-install with `pipx install --force -e <path>`.
 
@@ -29,23 +29,23 @@ Two things minimum: an OpenAI-compatible LLM endpoint for synthesis and audit, a
 transcription backend (local whisper.cpp preferred when it answers).
 
 ```
-GLIMPSE_LLM_ENDPOINT=http://127.0.0.1:8317/v1
-GLIMPSE_LLM_MODEL=<model>
-GLIMPSE_VAULT=/path/to/Obsidian-vault          # where the note is copied
+DYAK_LLM_ENDPOINT=http://127.0.0.1:8317/v1
+DYAK_LLM_MODEL=<model>
+DYAK_VAULT=/path/to/Obsidian-vault          # where the note is copied
 ```
 
-With `GLIMPSE_STT=auto` (the default) the local whisper.cpp endpoint keeps the recording on
-this machine; set `GLIMPSE_OPENAI_URL` for a hosted one. The full variable table, every flag
+With `DYAK_STT=auto` (the default) the local whisper.cpp endpoint keeps the recording on
+this machine; set `DYAK_OPENAI_URL` for a hosted one. The full variable table, every flag
 and every subcommand: [`docs/running.md`](docs/running.md).
 
 ## Run
 
 ```
-glimpse process lecture.webm
+dyak process lecture.webm
 echo $?
 ```
 
-The bundle lands in `$XDG_STATE_HOME/glimpse/<lecture>/`, the note in the vault. What the
+The bundle lands in `$XDG_STATE_HOME/dyak/<lecture>/`, the note in the vault. What the
 bundle contains and who wrote each file: [`docs/artefacts.md`](docs/artefacts.md).
 
 ## Exit codes
@@ -65,8 +65,8 @@ bundle contains and who wrote each file: [`docs/artefacts.md`](docs/artefacts.md
 - [`docs/`](docs/README.md) — one-line index. [`running.md`](docs/running.md) (configuration),
   [`artefacts.md`](docs/artefacts.md) (the bundle), [`quality.md`](docs/quality.md) (the gates),
   [`stages.md`](docs/stages.md) (the 12 stages), [`adr/`](docs/adr/README.md) (decisions).
-- [Issues](https://github.com/nicklin11/glimpse/issues) grouped by
-  [milestones](https://github.com/nicklin11/glimpse/milestones) — what is open and why.
+- [Issues](https://github.com/nicklin11/dyak/issues) grouped by
+  [milestones](https://github.com/nicklin11/dyak/milestones) — what is open and why.
 
 ## Licence
 

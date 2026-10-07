@@ -1,4 +1,4 @@
-"""Dependency detection for `glimpse doctor` (ADR-0001 stage 0).
+"""Dependency detection for `dyak doctor` (ADR-0001 stage 0).
 
 Two failure modes, and keeping them apart is load-bearing:
 
@@ -22,21 +22,21 @@ from pathlib import Path
 from . import exitcodes as ec
 from . import runner, stt
 
-VAULT_ENV = "GLIMPSE_VAULT"
-LLM_ENV = "GLIMPSE_LLM_ENDPOINT"
-LLM_MODEL_ENV = "GLIMPSE_LLM_MODEL"
-LLM_KEY_ENV = "GLIMPSE_LLM_KEY"
+VAULT_ENV = "DYAK_VAULT"
+LLM_ENV = "DYAK_LLM_ENDPOINT"
+LLM_MODEL_ENV = "DYAK_LLM_MODEL"
+LLM_KEY_ENV = "DYAK_LLM_KEY"
 DEFAULT_VAULT = Path.home() / "Documents/obs_notes"
 PROBE_TIMEOUT = 10.0
 
-SETTINGS_PATH_ENV = "GLIMPSE_SETTINGS"
+SETTINGS_PATH_ENV = "DYAK_SETTINGS"
 SETTINGS_KEY = "vault"
 #: Written by `write_settings`, read by `resolve_vault`. One key, one file.
-SETTINGS_TEMPLATE = "# glimpse settings. Written on first run; edit by hand.\n"
+SETTINGS_TEMPLATE = "# dyak settings. Written on first run; edit by hand.\n"
 
 
 def settings_path() -> Path:
-    """The settings file: `$GLIMPSE_SETTINGS` if set, else `$XDG_CONFIG_HOME/glimpse/settings.toml`.
+    """The settings file: `$DYAK_SETTINGS` if set, else `$XDG_CONFIG_HOME/dyak/settings.toml`.
 
     The env var names the *file*, not a directory, which is what the name says and what
     testing needs. Issue #52 wants a real config file with a real precedence resolver; this
@@ -49,7 +49,7 @@ def settings_path() -> Path:
     base = Path(
         os.environ.get("XDG_CONFIG_HOME", "").strip() or Path.home() / ".config"
     ).expanduser()
-    return base / "glimpse" / "settings.toml"
+    return base / "dyak" / "settings.toml"
 
 
 def read_settings() -> dict[str, str]:
@@ -81,7 +81,7 @@ def write_settings(vault: Path) -> Path:
     """Persist the vault, creating the file on first use. Returns the path written.
 
     Writing is the whole point of the first run: without it, "settable at setup" means the
-    user has to guess that `GLIMPSE_VAULT` exists, and a default nobody can discover is a
+    user has to guess that `DYAK_VAULT` exists, and a default nobody can discover is a
     default nobody will change.
     """
     path = settings_path()
@@ -232,14 +232,14 @@ def check_stt() -> Check:
 def resolve_vault(explicit: str | Path | None = None) -> Path:
     """The vault ADR-0001 D9 names, from the most specific source available.
 
-    Precedence: explicit argument, then `$GLIMPSE_VAULT`, then the persisted `vault` key in
+    Precedence: explicit argument, then `$DYAK_VAULT`, then the persisted `vault` key in
     the settings file, then the built-in default directory.
 
     The result is a path, not a judgement about it: a vault that does not exist is still what
     the user named, and whether that is fatal is `check_vault`'s question, not this one's.
 
-    This exists because the default lived only inside `check_vault`, so `glimpse doctor`
-    reported a vault that `glimpse process` never consulted. Measured on lecture 1,
+    This exists because the default lived only inside `check_vault`, so `dyak doctor`
+    reported a vault that `dyak process` never consulted. Measured on lecture 1,
     2026-10-04: doctor named `~/Documents/obs_notes`, the process ran with `vault_path=None`
     throughout, and stage 11 resolved no terms directory -- while `~/Documents/obs_notes/
     mcs/_terms` existed with 34 term notes. Stage 12 had the same gap.
@@ -276,7 +276,7 @@ def check_vault() -> Check:
             remediation=f"point {VAULT_ENV} at the vault directory",
             code=ec.MISSING_DEPENDENCY,
         )
-    probe = vault / ".glimpse-write-probe"
+    probe = vault / ".dyak-write-probe"
     try:
         probe.write_text("", encoding="utf-8")
         probe.unlink()
@@ -368,19 +368,19 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     """Every check, with `required` names promoted to fatal.
 
     `required` exists because "the dependency is broken" and "this run needs
-    that dependency" are different questions. `glimpse process` stages 0-4 use
+    that dependency" are different questions. `dyak process` stages 0-4 use
     ffmpeg, ffprobe and an STT endpoint, and write nothing outside the managed work
     dir, so refusing to transcribe because the *vault* is missing -- a directory
     stage 12 will need -- is the wrong answer. Without this the preflight gate is
     broader than the run it guards.
     """
-    # There is no `check_gateway`. It read `GLIMPSE_GATEWAY_URL`, a name nothing in
+    # There is no `check_gateway`. It read `DYAK_GATEWAY_URL`, a name nothing in
     # the codebase ever wrote and nothing in the docs ever told a user to set, and it
     # reported the *model* gateway under the name `gateway` while the endpoint the
-    # pipeline actually uses is `GLIMPSE_LLM_ENDPOINT` / `GLIMPSE_VLM_ENDPOINT` --
+    # pipeline actually uses is `DYAK_LLM_ENDPOINT` / `DYAK_VLM_ENDPOINT` --
     # checked by `check_llm`. So a fully working run still printed
     #
-    #     glimpse: note: gateway is unavailable, but stages 0-12 do not use it
+    #     dyak: note: gateway is unavailable, but stages 0-12 do not use it
     #
     # which was false in both halves: the gateway was up, and stage 6 uses it (#68).
     checks = [
@@ -404,7 +404,7 @@ def run_all(*, required: frozenset[str] | None = None) -> list[Check]:
     return checks
 
 
-# What `glimpse process` stages 0-3 actually invoke.
+# What `dyak process` stages 0-3 actually invoke.
 # No STT binary is required: stage 3 reaches whichever endpoint is configured, and the
 # check above probes that endpoint rather than looking for a program on PATH.
 PROCESS_REQUIRES = frozenset({"ffmpeg", "ffprobe", "numpy", "stt"})

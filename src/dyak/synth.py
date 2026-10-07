@@ -542,7 +542,7 @@ def provenance(note: Note, config: llm.Config | None) -> str:
     return json.dumps(
         {
             "stage": 7,
-            "tool": "glimpse-synth-v1",
+            "tool": "dyak-synth-v1",
             "requires_model": False,
             "synthesizer": note.synthesizer,
             "model": note.model,

@@ -32,7 +32,7 @@ from typing import Protocol, runtime_checkable
 
 from .. import runner
 
-ENV_BACKEND = "GLIMPSE_STT"
+ENV_BACKEND = "DYAK_STT"
 
 DEFAULT_ENDPOINTS = {
     "whispercpp": "http://127.0.0.1:10302",
@@ -83,11 +83,11 @@ class TranscriptionBackend(Protocol):
 
 
 def _env_endpoint(name: str) -> str:
-    return os.environ.get(f"GLIMPSE_{name.upper()}_URL", DEFAULT_ENDPOINTS[name]).rstrip("/")
+    return os.environ.get(f"DYAK_{name.upper()}_URL", DEFAULT_ENDPOINTS[name]).rstrip("/")
 
 
 def resolve(name: str | None = None) -> TranscriptionBackend:
-    """Pick a backend. `GLIMPSE_STT` wins; otherwise whisper.cpp native, then OpenAI.
+    """Pick a backend. `DYAK_STT` wins; otherwise whisper.cpp native, then OpenAI.
 
     Both candidates are HTTP endpoints. `auto` probes them in that order and takes the first
     that answers, because a local whisper.cpp keeps the audio on the machine and a configured
@@ -104,11 +104,11 @@ def resolve(name: str | None = None) -> TranscriptionBackend:
         raise runner.DependencyError(
             name="stt",
             code=2,
-            message="no transcription backend is reachable; set GLIMPSE_STT to one of "
+            message="no transcription backend is reachable; set DYAK_STT to one of "
             "whispercpp, openai",
             remediation=(
-                "start whisper.cpp and set GLIMPSE_WHISPERCPP_URL, or point "
-                "GLIMPSE_OPENAI_URL at an OpenAI-compatible endpoint"
+                "start whisper.cpp and set DYAK_WHISPERCPP_URL, or point "
+                "DYAK_OPENAI_URL at an OpenAI-compatible endpoint"
             ),
         )
 
@@ -123,7 +123,7 @@ def resolve(name: str | None = None) -> TranscriptionBackend:
             name="stt",
             code=1,
             message=f"unknown STT backend {chosen!r}",
-            remediation=f"GLIMPSE_STT must be one of: {', '.join(sorted(table))}",
+            remediation=f"DYAK_STT must be one of: {', '.join(sorted(table))}",
         )
     return table[chosen]()
 

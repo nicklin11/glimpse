@@ -1,6 +1,6 @@
 # The bundle — what a run writes
 
-The bundle lives in `$XDG_STATE_HOME/glimpse/<lecture>/` by default (`$GLIMPSE_OUTPUT_DIR` or
+The bundle lives in `$XDG_STATE_HOME/dyak/<lecture>/` by default (`$DYAK_OUTPUT_DIR` or
 `--output-dir` name it explicitly). The root is **flat**: `images/` is the only subdirectory.
 
 Produced by run 13, `1_lecture_OCS.mp4` (4520 s): 30 entries in the root, 58 frames under
@@ -64,7 +64,7 @@ names its parent.
 | `verified` / `absent` / `missing` | artefacts checked on disk, expected-but-absent optional ones, and required-but-not-found ones |
 | `frames_expected` / `frames_found` | frame count against `manifest.tsv` |
 | `note_promoted` | whether the vault copy happened |
-| `files_checked` | files whose presence stage 12 confirmed (65 of 144 on run 13 — the gap is [#87](https://github.com/nicklin11/glimpse/issues/87)) |
+| `files_checked` | files whose presence stage 12 confirmed (65 of 144 on run 13 — the gap is [#87](https://github.com/nicklin11/dyak/issues/87)) |
 | `files_in_bundle_excluding_this_stage` | everything present on disk the stage could have checked (144) |
 | `unchecked` | the absolute list of files stage 12 did not check |
 

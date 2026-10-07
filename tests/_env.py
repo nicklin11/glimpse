@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Make a test suite independent of the developer's shell.
 
-The suites read `GLIMPSE_*` through `deps.Config.from_env()` and `resolve_vault()`, which is
+The suites read `DYAK_*` through `deps.Config.from_env()` and `resolve_vault()`, which is
 correct for the tool and wrong for a test: whatever the developer has exported changes what
 the code under test sees. Two failures follow from that, both reproduced on pristine `main`
 and filed as #63.
 
     AttributeError: '_HealthResponse' object has no attribute 'status'
 
-`deps.check_llm` takes the real network path because `GLIMPSE_LLM_ENDPOINT` happens to be
+`deps.check_llm` takes the real network path because `DYAK_LLM_ENDPOINT` happens to be
 set, so the suite's own stub is never consulted -- and the crash happens before `check_llm`
 returns, so the suite dies at module scope with zero checks printed rather than accumulating
 failures. In `test_stages.py` the same cause shows up as
@@ -20,8 +20,8 @@ apart from a mistake. A suite whose result depends on the shell cannot gate anyt
 green on CI only because CI exports nothing.
 
 The fix is to clear the prefix rather than a hand-maintained list of names: #68 added
-`GLIMPSE_GATEWAY_URL`, and a scrub list would have missed it the same way it missed the last
-four. Anything that is genuinely `GLIMPSE_*` belongs in a test's own arrangement, set after
+`DYAK_GATEWAY_URL`, and a scrub list would have missed it the same way it missed the last
+four. Anything that is genuinely `DYAK_*` belongs in a test's own arrangement, set after
 `isolate()` and therefore unaffected by it.
 """
 
@@ -29,11 +29,11 @@ from __future__ import annotations
 
 import os
 
-PREFIX = "GLIMPSE_"
+PREFIX = "DYAK_"
 
 
 def isolate() -> dict[str, str]:
-    """Remove every `GLIMPSE_*` variable from `os.environ`; return them to restore later."""
+    """Remove every `DYAK_*` variable from `os.environ`; return them to restore later."""
     saved = {key: value for key, value in os.environ.items() if key.startswith(PREFIX)}
     for key in saved:
         del os.environ[key]
@@ -50,7 +50,7 @@ def restore(saved: dict[str, str]) -> None:
 if __name__ == "__main__":
     # `python tests/_env.py` reports what a developer who runs the tool has configured.
     found = {k: v for k, v in sorted(os.environ.items()) if k.startswith(PREFIX)}
-    print(f"{len(found)} GLIMPSE_* variable(s) in the environment:")
+    print(f"{len(found)} DYAK_* variable(s) in the environment:")
     for key, value in found.items():
         print(f"  {key}={value}")
     if found:

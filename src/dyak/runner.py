@@ -1,6 +1,6 @@
 """Running an external dependency, and the exit-code contract around it.
 
-`deps.py` answers "is this installed and does it run?" for `glimpse doctor`. This
+`deps.py` answers "is this installed and does it run?" for `dyak doctor`. This
 module answers the different question the stages ask: *I need this to produce a
 file right now, so what happened?*
 
@@ -98,18 +98,18 @@ def report(exc: DependencyError) -> None:
     The trailing `sys.stderr.flush()` covers the `print()` calls above, which go through the
     text layer that `emit_verbatim` bypasses. See its docstring for why this flush remains.
     """
-    print(f"glimpse: {exc.message}", file=sys.stderr)
+    print(f"dyak: {exc.message}", file=sys.stderr)
     if exc.remediation:
-        print(f"glimpse:   remediation: {exc.remediation}", file=sys.stderr)
+        print(f"dyak:   remediation: {exc.remediation}", file=sys.stderr)
     if exc.stderr:
         emit_verbatim(exc.stderr)
     elif not exc.stdout:
         # Silence is a claim about the dependency; say that it was silence
         # rather than let it read as a dropped message.
-        print(f"glimpse:   ({exc.name} wrote nothing to stderr)", file=sys.stderr)
+        print(f"dyak:   ({exc.name} wrote nothing to stderr)", file=sys.stderr)
     if exc.stdout:
         # Labelled, because it is stdout and not the stderr ADR-0001 D2 promises above.
-        print(f"glimpse:   {exc.name} stdout:", file=sys.stderr)
+        print(f"dyak:   {exc.name} stdout:", file=sys.stderr)
         emit_verbatim(exc.stdout)
     sys.stderr.flush()
 

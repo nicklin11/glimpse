@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
-- **Proposal:** [#14](https://github.com/nicklin11/glimpse/issues/14)
+- **Proposal:** [#14](https://github.com/nicklin11/dyak/issues/14)
 - **Scope:** MVP. The terminal renderer is not designed here.
 
 > **`D<n>`** = decision *n* within *this* ADR. The number is local to this file and
@@ -30,7 +30,7 @@ cosmetics, and makes the note's shape non-diffable against the baseline in #3.
 
 ### D1 — The pipeline does not render. It emits.
 
-`glimpse process --events jsonl` writes one JSON object per line to stdout, or to a file with
+`dyak process --events jsonl` writes one JSON object per line to stdout, or to a file with
 `--events FILE`:
 
 ```json
@@ -69,7 +69,7 @@ Stage 3 already prints this bracket; D1 generalises it to every blocking stage.
 - **Streaming model reasoning as progress.** Rejected: it changes what the model produces and
   destroys the fixed output shape the #3 regression check depends on.
 - **An interactive TUI for configuration.** Rejected: a second binary to save two command-line
-  arguments. `glimpse config set` is the deliverable (ADR-0004 D2).
+  arguments. `dyak config set` is the deliverable (ADR-0004 D2).
 
 ## Consequences
 
